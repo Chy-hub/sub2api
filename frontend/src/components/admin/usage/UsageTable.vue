@@ -251,6 +251,16 @@
           </div>
         </template>
 
+        <!-- TPS 双行：上行=去除首字时间的生成速度，下行=总耗时整体速度 -->
+        <template #cell-token_speed="{ row }">
+          <div class="grid grid-cols-[max-content_max-content] items-baseline gap-x-2 gap-y-0.5 text-xs">
+            <span class="text-gray-400 dark:text-gray-500">{{ t('usage.tokenSpeedGenerate') }}</span>
+            <span class="font-medium tabular-nums" :class="tokenSpeedColor(row)">{{ formatTokenSpeedGenerate(row) }}</span>
+            <span class="text-gray-400 dark:text-gray-500">{{ t('usage.tokenSpeedOverall') }}</span>
+            <span class="font-medium tabular-nums" :class="tokenSpeedColor(row)">{{ formatTokenSpeedOverall(row) }}</span>
+          </div>
+        </template>
+
         <template #cell-created_at="{ value }">
           <span class="text-sm text-gray-600 dark:text-gray-400">{{ formatDateTime(value) }}</span>
         </template>
@@ -710,6 +720,37 @@ const formatDuration = (ms: number | null | undefined): string => {
   const totalSec = Math.round(ms / 1000)
   if (totalSec < 3600) return `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`
   return `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m`
+}
+
+// 生成速度（净速）：output_tokens / (总耗时 - 首字时间)
+// 仅流式请求有首字时间；图片请求、无输出、非流式、或生成阶段耗时为 0 均返回 '-'
+const formatTokenSpeedGenerate = (row: AdminUsageLog): string => {
+  const output = row.output_tokens || 0
+  if (isImageUsage(row) || output <= 0) return '-'
+  if (row.first_token_ms == null) return '-' // 非流式无首字时间，与流式口径不同，不显示
+  if (row.duration_ms == null || row.duration_ms <= 0) return '-'
+  const generateMs = row.duration_ms - row.first_token_ms
+  if (generateMs <= 0) return '-'
+  const speed = output / (generateMs / 1000)
+  return speed.toLocaleString(undefined, { maximumFractionDigits: 1 })
+}
+
+// 整体速度（总速）：output_tokens / 总耗时
+// 图片请求、无输出、或总耗时不合法均返回 '-'；非流式也有总耗时，故此处可用
+const formatTokenSpeedOverall = (row: AdminUsageLog): string => {
+  const output = row.output_tokens || 0
+  if (isImageUsage(row) || output <= 0) return '-'
+  if (row.duration_ms == null || row.duration_ms <= 0) return '-'
+  const speed = output / (row.duration_ms / 1000)
+  return speed.toLocaleString(undefined, { maximumFractionDigits: 1 })
+}
+
+const tokenSpeedColor = (row: AdminUsageLog): string => {
+  // 任一速度有值即上色，全部为 '-' 时灰显
+  if (formatTokenSpeedGenerate(row) === '-' && formatTokenSpeedOverall(row) === '-') {
+    return 'text-gray-400 dark:text-gray-500'
+  }
+  return 'text-emerald-600 dark:text-emerald-400'
 }
 
 // Cost tooltip functions

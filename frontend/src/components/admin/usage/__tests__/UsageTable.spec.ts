@@ -20,6 +20,8 @@ import UsageTable from '../UsageTable.vue'
 
 const messages: Record<string, string> = {
   'admin.usage.userDeletedBadge': 'Deleted',
+  'usage.tokenSpeedGenerate': 'Gen',
+  'usage.tokenSpeedOverall': 'Overall',
   'usage.costDetails': 'Cost Breakdown',
   'admin.usage.inputCost': 'Input Cost',
   'admin.usage.outputCost': 'Output Cost',
@@ -773,5 +775,84 @@ describe('admin UsageTable deleted-user badge', () => {
 
     expect(wrapper.text()).not.toContain('Deleted')
     expect(wrapper.text()).toContain('active@test.com')
+  })
+})
+
+// DataTable stub 仅渲染 token_speed 单元格，便于断言 TPS 双行结构。
+const DataTableStubWithTokenSpeed = {
+  props: ['data'],
+  template: `
+    <div>
+      <div v-for="row in data" :key="row.request_id">
+        <slot name="cell-token_speed" :row="row" />
+      </div>
+    </div>
+  `,
+}
+
+describe('admin UsageTable TPS dual-row column', () => {
+  const mountTable = (row: Record<string, unknown>) =>
+    mount(UsageTable, {
+      props: { data: [row], loading: false, columns: [] },
+      global: {
+        stubs: { DataTable: DataTableStubWithTokenSpeed, EmptyState: true, Icon: true, Teleport: true },
+      },
+    })
+
+  it('shows both generate and overall speeds for a streaming row with first-token timing', () => {
+    // output=1000, first_token=500ms, duration=2500ms
+    // 生成(净): 1000 / ((2500-500)/1000) = 500.0
+    // 整体(总): 1000 / (2500/1000) = 400.0
+    const wrapper = mountTable({
+      request_id: 'req-stream-1',
+      billing_mode: 'token',
+      image_count: 0,
+      output_tokens: 1000,
+      first_token_ms: 500,
+      duration_ms: 2500,
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('Gen')
+    expect(text).toContain('Overall')
+    expect(text).toContain('500')
+    expect(text).toContain('400')
+  })
+
+  it('shows overall speed but dashes generate speed for a non-streaming row (no first-token time)', () => {
+    // 非流式无首字时间：生成速度返回 '-'；整体仍可按总耗时计算
+    // 整体(总): 1000 / (2000/1000) = 500.0
+    const wrapper = mountTable({
+      request_id: 'req-non-stream-1',
+      billing_mode: 'token',
+      image_count: 0,
+      output_tokens: 1000,
+      first_token_ms: null,
+      duration_ms: 2000,
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('Gen')
+    expect(text).toContain('Overall')
+    expect(text).toContain('500')
+    // 生成行应显示占位短横
+    const cells = wrapper.findAll('.tabular-nums')
+    expect(cells.length).toBeGreaterThanOrEqual(2)
+    expect(cells[0].text()).toBe('-')
+  })
+
+  it('dashes both speeds when there is no output', () => {
+    const wrapper = mountTable({
+      request_id: 'req-no-output',
+      billing_mode: 'token',
+      image_count: 0,
+      output_tokens: 0,
+      first_token_ms: 300,
+      duration_ms: 1500,
+    })
+
+    const cells = wrapper.findAll('.tabular-nums')
+    expect(cells[0].text()).toBe('-')
+    expect(cells[1].text()).toBe('-')
   })
 })
