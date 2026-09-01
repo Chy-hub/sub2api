@@ -1676,7 +1676,7 @@ func TestOpenAIStreamingPostOutputDisconnectQuarantinesSharedProxyWithoutSameStr
 	}
 
 	scheduler := &defaultOpenAIAccountScheduler{service: svc}
-	compatible, reason := scheduler.isAccountRequestCompatibleReason(context.Background(), account, OpenAIAccountScheduleRequest{})
+	compatible, reason := scheduler.isAccountRequestCompatibleReason(context.Background(), account, OpenAIAccountScheduleRequest{}, false)
 	require.False(t, compatible, "the next request must exclude accounts sharing the quarantined proxy")
 	require.Equal(t, "proxy_stream_quarantined", reason)
 }
@@ -1724,7 +1724,7 @@ func TestOpenAIStreamingTerminalAndClientCancellationDoNotQuarantineProxy(t *tes
 	}
 
 	scheduler := &defaultOpenAIAccountScheduler{service: svc}
-	compatible, reason := scheduler.isAccountRequestCompatibleReason(context.Background(), account, OpenAIAccountScheduleRequest{})
+	compatible, reason := scheduler.isAccountRequestCompatibleReason(context.Background(), account, OpenAIAccountScheduleRequest{}, false)
 	require.True(t, compatible)
 	require.Empty(t, reason)
 }
