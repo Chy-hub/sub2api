@@ -34,7 +34,7 @@ type noAccountErrorClassification struct {
 	ModelNotFound bool // true when this is a 404 model_not_found classification
 }
 
-var selectionModelRateLimitedPattern = regexp.MustCompile(`(?:model_rate_limited|rate_limited)=(\d+)`)
+var selectionModelRateLimitedPattern = regexp.MustCompile(`(?:model_rate_limited|rate_limited|rpm_exceeded)=(\d+)`)
 
 // classifySelectionFailureError preserves the scheduler's compact reason when
 // every model-capable account is temporarily rate limited.
@@ -72,6 +72,17 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 		ErrType: "rate_limit_error",
 		Message: "All available accounts are currently rate-limited. Please retry later.",
 	}
+}
+
+// selectionRPMExceeded reports whether account selection came up empty because
+// every candidate was dropped by the account-level RPM gate (rpm_exceeded). The
+// handler uses this to attach a Retry-After header pointing at the next minute
+// boundary, matching the user/group RPM 429 path.
+func selectionRPMExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "rpm_exceeded=")
 }
 
 // classifyNoAccountError decides between 404 model_not_found and 503

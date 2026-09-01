@@ -65,6 +65,12 @@ const isAnthropicOAuthOrSetupToken = computed(() =>
   (props.account.type === 'oauth' || props.account.type === 'setup-token')
 )
 
+// 账号级 RPM 限流对 Anthropic OAuth/SetupToken 与 OpenAI API Key 均生效
+const isRPMEligible = computed(() =>
+  isAnthropicOAuthOrSetupToken.value ||
+  (props.account.platform === 'openai' && props.account.type === 'apikey')
+)
+
 const showWindowCost = computed(() =>
   isAnthropicOAuthOrSetupToken.value &&
   props.account.window_cost_limit != null &&
@@ -123,7 +129,7 @@ const sessionLimitTooltip = computed(() => {
 
 // ====== RPM ======
 const showRpmLimit = computed(() =>
-  isAnthropicOAuthOrSetupToken.value &&
+  isRPMEligible.value &&
   props.account.base_rpm != null &&
   props.account.base_rpm > 0
 )

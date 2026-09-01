@@ -76,6 +76,28 @@ func TestClassifySelectionFailureError_RateLimitedPool(t *testing.T) {
 	require.Equal(t, fallback, classifySelectionFailureError(fmt.Errorf("no available accounts"), fallback))
 }
 
+// RPM 耗尽同样映射为 429 rate_limit_error，复用现成的限流分类路径。
+func TestClassifySelectionFailureError_RPMExceeded(t *testing.T) {
+	fallback := noAccountErrorClassification{Status: http.StatusServiceUnavailable, ErrType: "api_error", Message: "Service temporarily unavailable"}
+
+	got := classifySelectionFailureError(
+		fmt.Errorf("no available OpenAI accounts supporting model: gpt-5.6-sol (pool=2, filtered: rpm_exceeded=2)"),
+		fallback,
+	)
+
+	require.Equal(t, http.StatusTooManyRequests, got.Status)
+	require.Equal(t, "rate_limit_error", got.ErrType)
+}
+
+// selectionRPMExceeded 仅在选号因 rpm_exceeded 耗尽时为真，用于在 429 响应上追加 Retry-After。
+func TestSelectionRPMExceeded(t *testing.T) {
+	require.True(t, selectionRPMExceeded(fmt.Errorf("pool=2, filtered: rpm_exceeded=2")))
+	require.True(t, selectionRPMExceeded(fmt.Errorf("RPM_EXCEEDED=1")))
+	require.False(t, selectionRPMExceeded(fmt.Errorf("pool=2, filtered: model_not_supported=2")))
+	require.False(t, selectionRPMExceeded(nil))
+	require.False(t, selectionRPMExceeded(fmt.Errorf("model_rate_limited=3")))
+}
+
 func TestClassifyNoAccountError_NilAPIKey_Falls503(t *testing.T) {
 	c := newTestGinContextWithRequest()
 	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
