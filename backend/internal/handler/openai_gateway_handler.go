@@ -658,6 +658,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
+				if selectionRPMExceeded(err) {
+					c.Header("Retry-After", strconv.Itoa(60-int(time.Now().Unix()%60)))
+				}
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 				return
 			}
@@ -931,6 +934,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
+		// RPM 计数递增（Forward 成功后，soft-limit）
+		if account.IsRPMEligible() && account.GetBaseRPM() > 0 {
+			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
+				reqLog.Warn("openai.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			}
+		}
 		submitResponsesUsage(result)
 		reqLog.Debug("openai.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -1255,8 +1264,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			if len(failedAccountIDs) == 0 {
 				if err != nil {
 					cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
+					cls = classifySelectionFailureError(err, cls)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					}
+					if selectionRPMExceeded(err) {
+						c.Header("Retry-After", strconv.Itoa(60-int(time.Now().Unix()%60)))
 					}
 					h.anthropicStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 					return
@@ -1471,6 +1484,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), true, nil)
 		}
 
+		// RPM 计数递增（Forward 成功后，soft-limit）
+		if account.IsRPMEligible() && account.GetBaseRPM() > 0 {
+			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
+				reqLog.Warn("openai_messages.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			}
+		}
 		submitMessagesUsage(result)
 		reqLog.Debug("openai_messages.request_completed",
 			zap.Int64("account_id", account.ID),

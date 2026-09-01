@@ -292,13 +292,6 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		if idleTimeout := a.GetSessionIdleTimeoutMinutes(); idleTimeout > 0 {
 			out.SessionIdleTimeoutMin = &idleTimeout
 		}
-		if rpm := a.GetBaseRPM(); rpm > 0 {
-			out.BaseRPM = &rpm
-			strategy := a.GetRPMStrategy()
-			out.RPMStrategy = &strategy
-			buffer := a.GetRPMStickyBuffer()
-			out.RPMStickyBuffer = &buffer
-		}
 		// 用户消息队列模式
 		if mode := a.GetUserMsgQueueMode(); mode != "" {
 			out.UserMsgQueueMode = &mode
@@ -331,6 +324,17 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			if customURL := a.GetCustomBaseURL(); customURL != "" {
 				out.CustomBaseURL = &customURL
 			}
+		}
+	}
+
+	// 提取账号级 RPM 限流配置（Anthropic OAuth/SetupToken 与 OpenAI API Key 有效）
+	if a.IsRPMEligible() {
+		if rpm := a.GetBaseRPM(); rpm > 0 {
+			out.BaseRPM = &rpm
+			strategy := a.GetRPMStrategy()
+			out.RPMStrategy = &strategy
+			buffer := a.GetRPMStickyBuffer()
+			out.RPMStickyBuffer = &buffer
 		}
 	}
 

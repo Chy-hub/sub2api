@@ -2318,6 +2318,17 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
+// IsRPMEligible 判断账号是否参与账号级 RPM 限流调度。
+// 账号级 RPM 的计数器、三态判断与配置存储均平台无关，本方法只用于放宽
+// 调度期/递增期的资格闸门：Anthropic OAuth/SetupToken 与 OpenAI API Key 均参与。
+// WindowCost、Session、UMQ、TLS 等 Anthropic 专属功能仍由 IsAnthropicOAuthOrSetupToken 守卫。
+func (a *Account) IsRPMEligible() bool {
+	if a.IsAnthropicOAuthOrSetupToken() {
+		return true
+	}
+	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+}
+
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
 // 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征

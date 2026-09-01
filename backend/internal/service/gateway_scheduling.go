@@ -1339,13 +1339,19 @@ func rpmFromPrefetchContext(ctx context.Context, accountID int64) (int, bool) {
 
 // withRPMPrefetch 批量预取所有候选账号的 RPM 计数
 func (s *GatewayService) withRPMPrefetch(ctx context.Context, accounts []Account) context.Context {
-	if s.rpmCache == nil {
+	return prefetchRPMCounts(ctx, s.rpmCache, accounts)
+}
+
+// prefetchRPMCounts 批量预取候选账号的 RPM 计数并注入 context，供调度期共享读取。
+// 失败开放（fail-open）：Redis 故障时返回原 ctx，不影响调度。
+func prefetchRPMCounts(ctx context.Context, cache RPMCache, accounts []Account) context.Context {
+	if cache == nil {
 		return ctx
 	}
 
 	var ids []int64
 	for i := range accounts {
-		if accounts[i].IsAnthropicOAuthOrSetupToken() && accounts[i].GetBaseRPM() > 0 {
+		if accounts[i].IsRPMEligible() && accounts[i].GetBaseRPM() > 0 {
 			ids = append(ids, accounts[i].ID)
 		}
 	}
@@ -1353,7 +1359,7 @@ func (s *GatewayService) withRPMPrefetch(ctx context.Context, accounts []Account
 		return ctx
 	}
 
-	counts, err := s.rpmCache.GetRPMBatch(ctx, ids)
+	counts, err := cache.GetRPMBatch(ctx, ids)
 	if err != nil {
 		return ctx // 失败开放
 	}
@@ -1361,9 +1367,9 @@ func (s *GatewayService) withRPMPrefetch(ctx context.Context, accounts []Account
 }
 
 // isAccountSchedulableForRPM 检查账号是否可根据 RPM 进行调度
-// 仅适用于 Anthropic OAuth/SetupToken 账号
+// 适用于 IsRPMEligible 的账号（Anthropic OAuth/SetupToken 与 OpenAI API Key）
 func (s *GatewayService) isAccountSchedulableForRPM(ctx context.Context, account *Account, isSticky bool) bool {
-	if !account.IsAnthropicOAuthOrSetupToken() {
+	if !account.IsRPMEligible() {
 		return true
 	}
 	baseRPM := account.GetBaseRPM()

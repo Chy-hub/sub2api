@@ -435,6 +435,7 @@ type OpenAIGatewayService struct {
 	concurrencyService    *ConcurrencyService
 	billingService        *BillingService
 	rateLimitService      *RateLimitService
+	rpmCache              RPMCache // 账号级 RPM 计数（OpenAI API Key 与 Anthropic OAuth/SetupToken 共用）
 	billingCacheService   *BillingCacheService
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream
@@ -567,6 +568,62 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// withRPMPrefetch 批量预取候选账号的 RPM 计数，与 GatewayService 共用同一套 ctx 预取机制。
+func (s *OpenAIGatewayService) withRPMPrefetch(ctx context.Context, accounts []Account) context.Context {
+	return prefetchRPMCounts(ctx, s.rpmCache, accounts)
+}
+
+// rpmSchedulable 检查账号是否可按 RPM 调度，返回 (是否可调度, 不可调度原因)。
+// 绿区放行；黄区仅粘性会话放行，非粘性返回 rpm_sticky_only；红区返回 rpm_exceeded。
+// 未启用 RPM 或非 RPM 资格账号一律放行；Redis 故障 fail-open。
+func (s *OpenAIGatewayService) rpmSchedulable(ctx context.Context, account *Account, isSticky bool) (bool, string) {
+	if s.rpmCache == nil || !account.IsRPMEligible() {
+		return true, ""
+	}
+	baseRPM := account.GetBaseRPM()
+	if baseRPM <= 0 {
+		return true, ""
+	}
+
+	var currentRPM int
+	if count, ok := rpmFromPrefetchContext(ctx, account.ID); ok {
+		currentRPM = count
+	} else if count, err := s.rpmCache.GetRPM(ctx, account.ID); err == nil {
+		currentRPM = count
+	}
+
+	switch account.CheckRPMSchedulability(currentRPM) {
+	case WindowCostSchedulable:
+		return true, ""
+	case WindowCostStickyOnly:
+		if isSticky {
+			return true, ""
+		}
+		return false, "rpm_sticky_only"
+	case WindowCostNotSchedulable:
+		return false, "rpm_exceeded"
+	}
+	return true, ""
+}
+
+// IncrementAccountRPM 递增账号的 RPM 计数。与 GatewayService 一致采用成功后递增的
+// soft-limit 语义，可接受的 TOCTOU 竞态优于加锁带来的延迟与复杂度。
+func (s *OpenAIGatewayService) IncrementAccountRPM(ctx context.Context, accountID int64) error {
+	if s.rpmCache == nil {
+		return nil
+	}
+	_, err := s.rpmCache.IncrementRPM(ctx, accountID)
+	return err
+}
+
+// SetRPMCache 注入账号级 RPM 计数器。采用构造后 setter 注入而非扩大构造签名，
+// 与 RateLimitService.SetAccountRuntimeBlocker 同模式，避免波及大量测试构造调用。
+func (s *OpenAIGatewayService) SetRPMCache(cache RPMCache) {
+	if s != nil {
+		s.rpmCache = cache
+	}
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）
