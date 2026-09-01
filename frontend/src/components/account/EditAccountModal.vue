@@ -4438,6 +4438,14 @@ function loadQuotaControlSettings(account: Account) {
   customBaseUrlEnabled.value = false
   customBaseUrl.value = ''
 
+  // RPM 限流配置对 Anthropic OAuth/SetupToken 与 OpenAI API Key 均生效，须在 Anthropic 早退之前加载。
+  if (account.base_rpm != null && account.base_rpm > 0) {
+    rpmLimitEnabled.value = true
+    baseRpm.value = account.base_rpm
+    rpmStrategy.value = (account.rpm_strategy as 'tiered' | 'sticky_exempt') || 'tiered'
+    rpmStickyBuffer.value = account.rpm_sticky_buffer ?? null
+  }
+
   // Remaining quota control settings only apply to Anthropic accounts
   if (account.platform !== 'anthropic') {
     return
@@ -4459,14 +4467,6 @@ function loadQuotaControlSettings(account: Account) {
     sessionLimitEnabled.value = true
     maxSessions.value = account.max_sessions
     sessionIdleTimeout.value = account.session_idle_timeout_minutes ?? 5
-  }
-
-  // RPM limit
-  if (account.base_rpm != null && account.base_rpm > 0) {
-    rpmLimitEnabled.value = true
-    baseRpm.value = account.base_rpm
-    rpmStrategy.value = (account.rpm_strategy as 'tiered' | 'sticky_exempt') || 'tiered'
-    rpmStickyBuffer.value = account.rpm_sticky_buffer ?? null
   }
 
   // UMQ mode（独立于 RPM 加载，防止编辑无 RPM 账号时丢失已有配置）
