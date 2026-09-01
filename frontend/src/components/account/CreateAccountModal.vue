@@ -5772,6 +5772,24 @@ const createAccountAndFinish = async (
       delete credentials.model_mapping
     }
   }
+  // 账号级 RPM 限流配置（Anthropic OAuth/SetupToken 与 OpenAI API Key 通用）
+  const rpmEligible = (platform === 'anthropic' && (type === 'oauth' || type === 'setup-token')) ||
+    (platform === 'openai' && type === 'apikey')
+  if (rpmEligible) {
+    const rpmExtra: Record<string, unknown> = { ...(finalExtra || {}) }
+    if (rpmLimitEnabled.value) {
+      const DEFAULT_BASE_RPM = 15
+      rpmExtra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
+        ? baseRpm.value
+        : DEFAULT_BASE_RPM
+      rpmExtra.rpm_strategy = rpmStrategy.value
+      if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
+        rpmExtra.rpm_sticky_buffer = rpmStickyBuffer.value
+      }
+    }
+    finalExtra = rpmExtra
+  }
+
   await doCreateAccount({
     name: form.name,
     notes: form.notes,
