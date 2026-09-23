@@ -2290,7 +2290,7 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		RequireCompact:          requireCompact,
 		ExcludedIDs:             excludedIDs,
 		RequirePrivacySet:       s.openAIGroupRequiresPrivacySet(ctx, groupID),
-	})
+	}, true)
 	if !s.openAIAccountMatchesSchedulingGroup(account, groupID) || !compatible || !scheduler.isAccountTransportCompatible(account, requiredTransport) {
 		if selection.ReleaseFunc != nil {
 			selection.ReleaseFunc()
