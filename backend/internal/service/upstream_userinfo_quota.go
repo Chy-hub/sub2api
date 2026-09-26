@@ -96,6 +96,17 @@ func userInfoQuotaHost(baseURL string) string {
 // userInfoQuotaURL 由账号 base_url 派生 /key/info 端点。
 // 兼容 base_url 带 /v1 前缀的写法（如 https://host/v1 → https://host/key/info）。
 func userInfoQuotaURL(baseURL string) string {
+	return userInfoSiteURL(baseURL, "/key/info")
+}
+
+// userInfoUserURL 由账号 base_url 派生 /user/info 端点。
+// LiteLLM 的用户级预算（max_budget + budget_duration，如 24h）挂在 user 上，
+// key 的 /key/info 只有短窗 budget_limits，24h 必须从 /user/info 补。
+func userInfoUserURL(baseURL string) string {
+	return userInfoSiteURL(baseURL, "/user/info")
+}
+
+func userInfoSiteURL(baseURL, suffix string) string {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		return ""
@@ -106,7 +117,7 @@ func userInfoQuotaURL(baseURL string) string {
 	// 去掉尾部斜杠后，剥离末级 /v1（LiteLLM 管理端点在站点根）。
 	trimmed := strings.TrimRight(baseURL, "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")
-	return trimmed + "/key/info"
+	return trimmed + suffix
 }
 
 // UserInfoBudgetWindow 单档预算窗口（如 3h/12h/24h 多层预算）。
