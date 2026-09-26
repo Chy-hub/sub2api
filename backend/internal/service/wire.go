@@ -306,6 +306,17 @@ func ProvideCNProviderQuotaService(
 	return NewCNProviderQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
 }
 
+// ProvideUpstreamUserInfoQuotaService 构造上游 /key/info 额度探测服务
+// （LiteLLM 网关，如 api.llm.ustc.edu.cn）。
+func ProvideUpstreamUserInfoQuotaService(
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+) *UpstreamUserInfoQuotaService {
+	return NewUpstreamUserInfoQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
+}
+
 // ProvideCNProviderBalanceService 构造国产供应商余额探测服务。
 func ProvideCNProviderBalanceService(
 	accountRepo AccountRepository,
@@ -900,6 +911,8 @@ var ProviderSet = wire.NewSet(
 	ProvideCNProviderQuotaService,
 	ProvideCNProviderBalanceService,
 	ProvideCNProviderBalanceCheckService,
+	ProvideUpstreamUserInfoQuotaService,
+
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,

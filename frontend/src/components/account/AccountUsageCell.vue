@@ -588,8 +588,10 @@
   <div ref="rootRef" v-else>
     <!-- Gemini API Key accounts: show quota info -->
     <AccountQuotaInfo v-if="account.platform === 'gemini'" :account="account" />
-    <!-- Key/Bedrock accounts: show today stats + optional quota bars -->
+    <!-- Key/Bedrock accounts: today stats + optional quota bars -->
     <div v-else class="space-y-1">
+      <!-- LiteLLM 网关（api.llm.ustc.edu.cn 等）：/key/info 预算额度，追加展示不吞掉今日用量 -->
+      <UpstreamUserInfoQuotaCell v-if="userInfoQuotaVisible" :account="account" />
       <OllamaCloudUsageCell
         v-if="account.ollama_cloud_usage?.eligible"
         :account="account"
@@ -660,7 +662,7 @@
 
       <!-- No data at all -->
       <div
-        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
+        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !userInfoQuotaVisible && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
         class="text-xs text-gray-400"
       >-</div>
     </div>
@@ -681,8 +683,9 @@ import OpenAIQuotaResetCell from './OpenAIQuotaResetCell.vue'
 import GrokQuotaProbeCell from './GrokQuotaProbeCell.vue'
 import CNProviderQuotaCell from './CNProviderQuotaCell.vue'
 import CNProviderBalanceCell from './CNProviderBalanceCell.vue'
+import UpstreamUserInfoQuotaCell from './UpstreamUserInfoQuotaCell.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
-import { cnQuotaCellVisible as cnQuotaCellVisibleFn, cnBalanceCellVisible as cnBalanceCellVisibleFn } from './credentialsBuilder'
+import { cnQuotaCellVisible as cnQuotaCellVisibleFn, cnBalanceCellVisible as cnBalanceCellVisibleFn, userInfoQuotaCellVisible } from './credentialsBuilder'
 import OpenCodeGoUsageCell from './OpenCodeGoUsageCell.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
@@ -786,6 +789,8 @@ const cnAccountMode = computed(() => {
 })
 const cnQuotaCellVisible = computed(() => cnQuotaCellVisibleFn(props.account.platform, cnAccountMode.value))
 const cnBalanceCellVisible = computed(() => cnBalanceCellVisibleFn(props.account.platform, cnAccountMode.value))
+// LiteLLM 网关 /key/info 额度（api.llm.ustc.edu.cn 等）。
+const userInfoQuotaVisible = computed(() => userInfoQuotaCellVisible(props.account))
 
 const isBatchManaged = computed(() => typeof props.requestBatchedUsage === 'function')
 

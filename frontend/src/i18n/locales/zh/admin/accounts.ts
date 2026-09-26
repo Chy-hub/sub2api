@@ -360,6 +360,17 @@ export default {
         balanceLow: '余额不足',
         noBalanceEndpoint: '该平台暂无余额查询接口',
       },
+      userInfoQuota: {
+        empty: '额度 --',
+        budget: '{remaining} / {max}',
+        remainingOnly: '剩余 {remaining}',
+        unlimited: '不限额',
+        barLabel: '预算',
+        probe: '查询',
+        probeTooltip: '请求上游 /key/info 额度端点，查询预算余额',
+        invalid: '已失效',
+        usageUnknown: '上游未提供本时段用量，暂不显示已用百分比',
+      },
       opencodeGo: {
         accountMode: {
           zen: 'Zen',

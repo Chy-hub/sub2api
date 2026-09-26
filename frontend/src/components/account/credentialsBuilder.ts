@@ -472,6 +472,31 @@ export function cnBalanceCellVisible(platform: string, accountMode: string): boo
   return (platform === 'kimi' || platform === 'deepseek') && accountMode !== 'coding'
 }
 
+// ===== 上游 /key/info 额度（LiteLLM 网关）识别 =====
+// 与后端 service.IsUserInfoQuotaUpstream 的主机名单保持一致。
+
+const USERINFO_QUOTA_HOSTS = new Set(['api.llm.ustc.edu.cn'])
+
+/**
+ * 账号 base_url 是否指向已知的 /key/info 额度上游。
+ * 仅 apikey / upstream 类型账号有 base_url + api_key 可用于探测。
+ */
+export function userInfoQuotaCellVisible(account: {
+  type?: string
+  credentials?: Record<string, unknown>
+}): boolean {
+  if (account.type !== 'apikey' && account.type !== 'upstream') return false
+  const raw = account.credentials?.base_url
+  if (typeof raw !== 'string' || !raw.trim()) return false
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`)
+    const host = url.hostname.toLowerCase().replace(/\.$/, '')
+    return USERINFO_QUOTA_HOSTS.has(host)
+  } catch {
+    return false
+  }
+}
+
 /**
  * 将请求头覆写写入 credentials。
  * create 模式：关闭时不写入任何字段；edit 模式：关闭时删除字段（全量替换语义）。

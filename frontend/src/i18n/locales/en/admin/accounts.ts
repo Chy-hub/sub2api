@@ -157,6 +157,17 @@ export default {
         balanceLow: 'Insufficient balance',
         noBalanceEndpoint: 'This platform has no balance query endpoint',
       },
+      userInfoQuota: {
+        empty: 'Quota --',
+        budget: '{remaining} / {max}',
+        remainingOnly: '{remaining} left',
+        unlimited: 'Unlimited',
+        barLabel: 'Budget',
+        probe: 'Query',
+        probeTooltip: 'Query the upstream /key/info endpoint for budget balance',
+        invalid: 'Invalid',
+        usageUnknown: 'Upstream does not provide usage for this window; usage percent withheld',
+      },
       opencodeGo: {
         accountMode: {
           zen: 'Zen',

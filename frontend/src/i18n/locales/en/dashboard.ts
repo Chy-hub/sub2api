@@ -343,7 +343,7 @@ export default {
     userBilled: 'User billed',
     accountBilled: 'Account billed',
     resetNow: 'Now',
-    resetPending: 'Pending refresh',
+    resetPending: 'Pending',
     accountMultiplier: 'Account rate',
     avgDuration: 'Avg Duration',
     inSelectedRange: 'in selected range',
