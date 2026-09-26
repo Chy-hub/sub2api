@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sort"
 	"testing"
 	"time"
 
@@ -42,6 +43,9 @@ func TestUserInfoQuotaURL(t *testing.T) {
 	for _, tc := range cases {
 		if got := userInfoQuotaURL(tc.baseURL); got != tc.want {
 			t.Errorf("userInfoQuotaURL(%q) = %q, want %q", tc.baseURL, got, tc.want)
+		}
+		if wantUser := userInfoUserURL(tc.baseURL); wantUser != "https://api.llm.ustc.edu.cn/user/info" {
+			t.Errorf("userInfoUserURL(%q) = %q, want user/info", tc.baseURL, wantUser)
 		}
 	}
 }
@@ -190,6 +194,180 @@ func TestUserInfoBudgetWindows_UsageBareNumber(t *testing.T) {
 	}
 }
 
+// 今天没用（spend=0）时 24h 主窗口必须仍在 windows 里，前端才能画出第三条。
+func TestUserInfoBudgetWindows_ZeroSpendKeeps24h(t *testing.T) {
+	keyNode := gjson.Parse(`{
+		"spend": 0,
+		"max_budget": 100.0,
+		"budget_duration": "24h",
+		"budget_reset_at": "2026-09-27T00:00:00+08:00",
+		"budget_limits": [
+			{"reset_at": "2026-09-26T18:00:00+08:00", "max_budget": 30.0, "budget_duration": "3h"},
+			{"reset_at": "2026-09-27T00:00:00+08:00", "max_budget": 70.0, "budget_duration": "12h"}
+		],
+		"budget_limits_usage": {
+			"3h": {"current_spend": 0},
+			"12h": {"current_spend": 0}
+		}
+	}`)
+	spend := parseUserInfoF64(keyNode.Get("spend"))
+	_, _, _, windows := userInfoBudgetWindows(keyNode, spend, "24h")
+	if len(windows) != 3 {
+		t.Fatalf("windows len = %d, want 3 (24h must not vanish when unused), got %+v", len(windows), windows)
+	}
+	w24 := windows[2]
+	if w24.Duration != "24h" || !w24.UsedKnown || w24.UsedPercent != 0 {
+		t.Fatalf("24h window = %+v, want known 0%% when unused", w24)
+	}
+}
+
+// 账号只配了短窗 budget_limits、没有 max_budget 时，确实不存在 24h 档
+// （这是账号/上游配置问题，不是展示层把 24h 吃掉）。
+func TestUserInfoBudgetWindows_NoPrimaryNo24h(t *testing.T) {
+	keyNode := gjson.Parse(`{
+		"spend": 5.0,
+		"budget_limits": [
+			{"reset_at": "2026-09-26T18:00:00+08:00", "max_budget": 30.0, "budget_duration": "3h"},
+			{"reset_at": "2026-09-27T00:00:00+08:00", "max_budget": 70.0, "budget_duration": "12h"}
+		],
+		"budget_limits_usage": {
+			"3h": {"current_spend": 1.0},
+			"12h": {"current_spend": 1.0}
+		}
+	}`)
+	spend := parseUserInfoF64(keyNode.Get("spend"))
+	_, _, _, windows := userInfoBudgetWindows(keyNode, spend, "")
+	if len(windows) != 2 {
+		t.Fatalf("windows len = %d, want 2 (only 3h/12h when no primary budget), got %+v", len(windows), windows)
+	}
+	for _, w := range windows {
+		if w.Duration == "24h" {
+			t.Fatalf("unexpected 24h window without max_budget: %+v", w)
+		}
+	}
+}
+
+// USTC 真实形状：key 只有 3h/12h 短窗（max_budget=null），24h 在 /user/info.user_info 上。
+// 合并用户级窗口后必须出现 24h 第三条。
+func TestUserInfoMergeUserWindow_Restores24h(t *testing.T) {
+	keyNode := gjson.Parse(`{
+		"spend": 26.1032844,
+		"max_budget": null,
+		"budget_duration": null,
+		"budget_limits": [
+			{"reset_at": "2026-09-27T00:00:00+08:00", "max_budget": 30.0, "budget_duration": "3h"},
+			{"reset_at": "2026-09-27T00:00:00+08:00", "max_budget": 70.0, "budget_duration": "12h"}
+		],
+		"budget_limits_usage": {
+			"3h": {"current_spend": 0.3907},
+			"12h": {"current_spend": 0.3907}
+		}
+	}`)
+	spend := parseUserInfoF64(keyNode.Get("spend"))
+	_, _, _, windows := userInfoBudgetWindows(keyNode, spend, "")
+	if len(windows) != 2 {
+		t.Fatalf("key-only windows len = %d, want 2, got %+v", len(windows), windows)
+	}
+
+	userNode := gjson.Parse(`{
+		"max_budget": 100.0,
+		"spend": 0.390654,
+		"budget_duration": "24h",
+		"budget_reset_at": "2026-09-26T16:00:00Z"
+	}`)
+	userWindow := userInfoUserBudgetWindow(userNode)
+	if userWindow == nil {
+		t.Fatal("user window must be parsed from /user/info.user_info")
+	}
+	merged := userInfoMergeUserWindow(windows, *userWindow)
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Limit < merged[j].Limit })
+	if len(merged) != 3 {
+		t.Fatalf("merged len = %d, want 3, got %+v", len(merged), merged)
+	}
+	w24 := merged[2]
+	if w24.Duration != "24h" || w24.Limit != 100.0 || !w24.UsedKnown {
+		t.Fatalf("24h window = %+v, want limit=100 known", w24)
+	}
+	if w24.WindowSpend != 0.390654 {
+		t.Fatalf("24h spend = %v, want 0.390654", w24.WindowSpend)
+	}
+	// 合并后约束档仍是 3h（剩余最少）。
+	maxBudget, remaining, _ := userInfoConstraint(merged)
+	if maxBudget != 30.0 {
+		t.Fatalf("constraint maxBudget = %v, want 30", maxBudget)
+	}
+	if remaining < 29.6 || remaining > 29.7 {
+		t.Fatalf("constraint remaining = %v, want ~29.61", remaining)
+	}
+}
+
+// 同 duration 已存在时不重复合并（key 主窗口已是 24h 时不再叠用户级）。
+func TestUserInfoMergeUserWindow_SkipDuplicateDuration(t *testing.T) {
+	existing := []UserInfoBudgetWindow{{Duration: "24h", Limit: 100, UsedKnown: true}}
+	user := UserInfoBudgetWindow{Duration: "24h", Limit: 100, UsedKnown: true}
+	merged := userInfoMergeUserWindow(existing, user)
+	if len(merged) != 1 {
+		t.Fatalf("merged len = %d, want 1 (no duplicate 24h), got %+v", len(merged), merged)
+	}
+}
+
+// key 侧 24h 用量未知（budget_limits 有 24h 但 usage 缺失）时，
+// 用用户级已知窗口顶上，避免 24h 退化成 chip「看起来没显示」。
+func TestUserInfoMergeUserWindow_ReplacesUnknownWithKnown(t *testing.T) {
+	existing := []UserInfoBudgetWindow{{
+		Duration: "24h", Limit: 100, UsedKnown: false,
+	}}
+	user := UserInfoBudgetWindow{
+		Duration: "24h", Limit: 100, Remaining: 99.61,
+		WindowSpend: 0.39, UsedPercent: 0.4, UsedKnown: true,
+	}
+	merged := userInfoMergeUserWindow(existing, user)
+	if len(merged) != 1 {
+		t.Fatalf("merged len = %d, want 1, got %+v", len(merged), merged)
+	}
+	if !merged[0].UsedKnown || merged[0].Remaining != 99.61 {
+		t.Fatalf("24h = %+v, want known remaining=99.61", merged[0])
+	}
+}
+
+// 另一类账号：key 级自带 24h 主窗口（max_budget=100, budget_duration=24h），
+// 用户级无预算（max_budget=null）。合并前后都应是 3h/12h/24h 三条，且 24h 保持 key 口径。
+func TestUserInfoBudgetWindows_KeyLevel24hUnchanged(t *testing.T) {
+	keyNode := gjson.Parse(`{
+		"spend": 10.6551396,
+		"max_budget": 100.0,
+		"budget_duration": "24h",
+		"budget_reset_at": "2026-09-27T00:00:00+08:00",
+		"budget_limits": [
+			{"reset_at": "2026-09-27T00:00:00+08:00", "max_budget": 30.0, "budget_duration": "3h"},
+			{"reset_at": "2026-09-27T00:00:00+08:00", "max_budget": 70.0, "budget_duration": "12h"}
+		],
+		"budget_limits_usage": {
+			"3h": {"current_spend": 0.0},
+			"12h": {"current_spend": 4.6981}
+		}
+	}`)
+	spend := parseUserInfoF64(keyNode.Get("spend"))
+	_, _, _, windows := userInfoBudgetWindows(keyNode, spend, "24h")
+	if len(windows) != 3 {
+		t.Fatalf("windows len = %d, want 3, got %+v", len(windows), windows)
+	}
+	w24 := windows[2]
+	if w24.Duration != "24h" || w24.Limit != 100.0 || w24.WindowSpend != 10.6551396 || !w24.UsedKnown {
+		t.Fatalf("24h window = %+v, want key spend=10.6551396 known", w24)
+	}
+
+	// 用户级无预算 → 不合并，列表不变。
+	userNode := gjson.Parse(`{"max_budget": null, "budget_duration": null, "spend": 5959.99}`)
+	if userWindow := userInfoUserBudgetWindow(userNode); userWindow != nil {
+		t.Fatalf("user window must be nil when max_budget is null, got %+v", userWindow)
+	}
+	merged := userInfoMergeUserWindow(windows, UserInfoBudgetWindow{Duration: "24h", Limit: 100, UsedKnown: true})
+	if len(merged) != 3 {
+		t.Fatalf("merged len = %d, want 3 (key 24h kept), got %+v", len(merged), merged)
+	}
+}
+
 func TestUserInfoBudgetWindows_Unlimited(t *testing.T) {
 	keyNode := gjson.Parse(`{"spend": 5543.01, "max_budget": null, "budget_limits": null}`)
 	maxBudget, remaining, resetAt, windows := userInfoBudgetWindows(keyNode, 5543.01, "")
@@ -201,9 +379,9 @@ func TestUserInfoBudgetWindows_Unlimited(t *testing.T) {
 // /key/info 形如 {"key": "<hash>", "info": {...}}，预算字段在 info 下。
 func TestUserInfoKeyNodeFromKeyInfo(t *testing.T) {
 	root := gjson.Parse(`{
-		"key": "3247797b04f83afe549c5ea298aae48681cc42da0608ee8be762c20d87681b34",
+		"key": "0000000000000000000000000000000000000000000000000000000000000000",
 		"info": {
-			"key_alias": "SA24038005_64938656173",
+			"key_alias": "SYNTH_KEY_ALIAS",
 			"spend": 7.9387204,
 			"max_budget": 100.0,
 			"budget_duration": "24h",
@@ -217,7 +395,7 @@ func TestUserInfoKeyNodeFromKeyInfo(t *testing.T) {
 	if !keyNode.IsObject() {
 		t.Fatal("expected info object")
 	}
-	if keyNode.Get("key_alias").String() != "SA24038005_64938656173" {
+	if keyNode.Get("key_alias").String() != "SYNTH_KEY_ALIAS" {
 		t.Fatalf("key_alias = %q", keyNode.Get("key_alias").String())
 	}
 	spend := parseUserInfoF64(keyNode.Get("spend"))
