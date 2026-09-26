@@ -62,6 +62,7 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 	"upstream_billing_probe",
 	"upstream_billing_rate_sync",
 	"upstream_billing_group_sync",
+	"upstream_userinfo_",
 	"ollama_cloud_usage",
 }
 
