@@ -69,6 +69,12 @@ type AccountHandler struct {
 	ollamaCloudUsage        *service.OllamaCloudUsageService
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
+	userInfoQuotaService    *service.UpstreamUserInfoQuotaService
+}
+
+// SetUpstreamUserInfoQuotaService attaches the /key/info quota probe service.
+func (h *AccountHandler) SetUpstreamUserInfoQuotaService(svc *service.UpstreamUserInfoQuotaService) {
+	h.userInfoQuotaService = svc
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -2565,6 +2571,26 @@ func (h *AccountHandler) GetUsage(c *gin.Context) {
 	}
 
 	response.Success(c, usage)
+}
+
+// GetUserInfoQuota probes the upstream /key/info budget quota (LiteLLM gateways).
+// GET /api/v1/admin/accounts/:id/userinfo-quota
+func (h *AccountHandler) GetUserInfoQuota(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h == nil || h.userInfoQuotaService == nil {
+		response.BadRequest(c, "upstream userinfo quota service is not enabled")
+		return
+	}
+	result, err := h.userInfoQuotaService.QueryQuota(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
 }
 
 // ClearRateLimit handles clearing account rate limit status

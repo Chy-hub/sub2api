@@ -385,6 +385,50 @@ export async function getUsage(id: number, source?: 'passive' | 'active', force?
   return data
 }
 
+/** 单档预算窗口（LiteLLM 多层预算，如 3h/12h/24h）。 */
+export interface UserInfoBudgetWindow {
+  /** 窗口周期（如 "3h" / "12h" / "24h"）。 */
+  duration?: string
+  limit: number
+  remaining: number
+  /** 窗口内已用百分比（0-100）。 */
+  used_percent: number
+  /** 窗口内消耗（主窗口 = spend；短窗口 = spend − 槽基线）。 */
+  window_spend: number
+  /** false = 本槽尚无基线，百分比不可信，前端降级为限额+倒计时。 */
+  used_known: boolean
+  reset_at?: string
+}
+
+/** 上游 /key/info 额度探测结果（LiteLLM 网关）。 */
+export interface UserInfoQuotaResult {
+  provider: string
+  success: boolean
+  remaining: number
+  max_budget: number
+  spend: number
+  unit: string
+  valid: boolean
+  expires_at?: string
+  blocked?: boolean
+  /** 当前约束窗口的重置时间（RFC3339）。 */
+  budget_reset_at?: string
+  /** 匹配到的 key 别名（多 key 账号核对用）。 */
+  key_alias?: string
+  /** 全部预算窗口，按 limit 升序（3h → 12h → 24h）。 */
+  windows?: UserInfoBudgetWindow[]
+  status_code?: number
+  fetched_at: number
+  persisted: boolean
+  error?: string
+}
+
+/** 探测上游 /key/info 额度（api.llm.ustc.edu.cn 等已知 LiteLLM 网关）。 */
+export async function getUserInfoQuota(id: number): Promise<UserInfoQuotaResult> {
+  const { data } = await apiClient.get<UserInfoQuotaResult>(`/admin/accounts/${id}/userinfo-quota`)
+  return data
+}
+
 export interface BatchAccountUsageResponse {
   usage: Record<string, AccountUsageInfo>
   errors: Record<string, string>
@@ -1151,6 +1195,7 @@ export const accountsAPI = {
   clearError,
   getUsage,
   getBatchUsage,
+  getUserInfoQuota,
   getTodayStats,
   getBatchTodayStats,
   clearRateLimit,
