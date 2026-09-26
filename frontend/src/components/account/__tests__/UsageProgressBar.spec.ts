@@ -203,4 +203,31 @@ describe('UsageProgressBar', () => {
     expect(percent.classes()).toContain('w-[32px]')
     expect(percent.classes()).toContain('text-right')
   })
+
+  it('金额列定宽等宽数字，倒计时列定宽右对齐，保证各行纵向对齐', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '3h',
+        utilization: 10,
+        color: 'indigo',
+        money: '¥30.00 / ¥30.00',
+        resetsAt: '2026-03-17T02:30:00Z'
+      }
+    })
+
+    const money = wrapper.get('[data-test="usage-progress-money"]')
+    expect(money.classes()).toContain('w-[112px]')
+    expect(money.classes()).toContain('tabular-nums')
+    expect(money.attributes('title')).toBe('¥30.00 / ¥30.00')
+    expect(money.text()).toBe('¥30.00 / ¥30.00')
+
+    const reset = money.element.nextElementSibling as HTMLElement
+    expect(reset.className).toContain('w-[44px]')
+    expect(reset.className).toContain('text-right')
+    expect(reset.className).toContain('tabular-nums')
+    // 截断 + title：英文 Pending refresh 等长文案超出定宽时不得撑破行高。
+    expect(reset.className).toContain('truncate')
+    expect(reset.className).toContain('whitespace-nowrap')
+    expect(reset.textContent).toContain('2h 30m')
+  })
 })
