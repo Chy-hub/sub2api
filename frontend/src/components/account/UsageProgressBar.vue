@@ -53,8 +53,22 @@
         {{ displayPercent }}
       </span>
 
+      <!-- 金额（如 ¥25 / ¥30），可选；定宽等宽数字，保证各行金额/时间列对齐 -->
+      <span
+        v-if="money"
+        data-test="usage-progress-money"
+        class="w-[112px] shrink-0 truncate whitespace-nowrap tabular-nums text-[10px] text-gray-500 dark:text-gray-400"
+        :title="money"
+      >
+        {{ money }}
+      </span>
+
       <!-- Reset time -->
-      <span v-if="shouldShowResetTime" class="shrink-0 text-[10px] text-gray-400">
+      <span
+        v-if="shouldShowResetTime"
+        class="w-[44px] shrink-0 truncate whitespace-nowrap text-right tabular-nums text-[10px] text-gray-400"
+        :title="formatResetTime"
+      >
         {{ formatResetTime }}
       </span>
     </div>
@@ -80,6 +94,8 @@ const props = withDefaults(
     remainingCapacity?: boolean
     /** fixed: 定宽居中徽章（账号页纵向对齐）；auto: 限宽截断左对齐（监控页组合标签） */
     labelWidth?: 'fixed' | 'auto'
+    /** 百分比右侧的金额文本（如 ¥25 / ¥30），可选 */
+    money?: string
   }>(),
   { labelWidth: 'fixed' }
 )
