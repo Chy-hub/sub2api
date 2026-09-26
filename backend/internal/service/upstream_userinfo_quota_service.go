@@ -73,7 +73,7 @@ func (s *UpstreamUserInfoQuotaService) QueryQuotaForAccount(ctx context.Context,
 	}
 	key := "userinfo_quota:" + strconv.FormatInt(account.ID, 10)
 	resultCh := s.flight.DoChan(key, func() (any, error) {
-		probeCtx, cancel := context.WithTimeout(context.Background(), userInfoQuotaUpstreamTimeout+5*time.Second)
+		probeCtx, cancel := context.WithTimeout(context.Background(), 2*userInfoQuotaUpstreamTimeout+5*time.Second)
 		defer cancel()
 		return s.queryQuotaForAccount(probeCtx, account)
 	})
@@ -165,6 +165,16 @@ func (s *UpstreamUserInfoQuotaService) queryQuotaForAccount(ctx context.Context,
 	// 短窗口从 budget_limits_usage[duration].current_spend 直读。
 	primaryDuration := strings.TrimSpace(keyNode.Get("budget_duration").String())
 	maxBudget, remaining, resetAt, budgetWindows := userInfoBudgetWindows(keyNode, spend, primaryDuration)
+
+	// LiteLLM 用户级预算（如 24h）挂在 /user/info.user_info 上，key 的 /key/info
+	// 只有短窗 budget_limits 且 max_budget 为 null。24h 必须从用户级补，否则永远不显示。
+	if userWindow := s.fetchUserInfoBudgetWindow(ctx, account, apiKey); userWindow != nil {
+		budgetWindows = userInfoMergeUserWindow(budgetWindows, *userWindow)
+		// 合并后按 limit 升序重排（3h → 12h → 24h）。
+		sort.SliceStable(budgetWindows, func(i, j int) bool { return budgetWindows[i].Limit < budgetWindows[j].Limit })
+		// 用户级 24h 若比 key 侧更松/更紧，约束档可能变化，重算 remaining。
+		maxBudget, remaining, resetAt = userInfoConstraint(budgetWindows)
+	}
 
 	blocked := keyNode.Get("blocked").Bool()
 	expiresRaw := strings.TrimSpace(keyNode.Get("expires").String())
@@ -355,26 +365,8 @@ func userInfoBudgetWindows(keyNode gjson.Result, spend float64, primaryDuration 
 	}
 
 	// 「剩余最少」的已知窗口作为约束档；都未知时退回第一档的 limit。
-	best := raws[0]
-	bestRemain := math.Inf(1)
-	for i, r := range raws {
-		w := windows[i]
-		if !w.UsedKnown {
-			continue
-		}
-		if rem := r.limit - w.WindowSpend; rem < bestRemain {
-			best, bestRemain = r, rem
-		}
-	}
-	if math.IsInf(bestRemain, 1) {
-		// 没有任何已知窗口（罕见）：拿第一档 limit 兜底，剩余=limit。
-		return best.limit, best.limit, best.resetAt, windows
-	}
-	remaining = math.Round(bestRemain*100) / 100
-	if remaining < 0 {
-		remaining = 0
-	}
-	return best.limit, remaining, best.resetAt, windows
+	maxBudget, remaining, resetAt = userInfoConstraint(windows)
+	return maxBudget, remaining, resetAt, windows
 }
 
 // userInfoWindowSpend 计算单窗口的窗口内消耗。
@@ -406,6 +398,127 @@ func userInfoWindowSpend(primary bool, duration string, spend float64, primaryDu
 		return ws, true
 	}
 	return 0, false
+}
+
+// userInfoConstraint 从窗口列表取「剩余最少」的已知窗口作为约束档（任一档触顶即不可用）。
+// userInfoBudgetWindows 与合并用户级窗口后的重算都走这里。
+func userInfoConstraint(windows []UserInfoBudgetWindow) (maxBudget, remaining float64, resetAt string) {
+	if len(windows) == 0 {
+		return 0, 0, ""
+	}
+	best := windows[0]
+	bestRemain := math.Inf(1)
+	for _, w := range windows {
+		if !w.UsedKnown {
+			continue
+		}
+		if rem := w.Limit - w.WindowSpend; rem < bestRemain {
+			best, bestRemain = w, rem
+		}
+	}
+	if math.IsInf(bestRemain, 1) {
+		return best.Limit, best.Limit, best.ResetAt
+	}
+	remaining = math.Round(bestRemain*100) / 100
+	if remaining < 0 {
+		remaining = 0
+	}
+	return best.Limit, remaining, best.ResetAt
+}
+
+// userInfoMergeUserWindow 把用户级预算窗口（如 24h）并入 key 侧窗口列表。
+// 同 duration 时：两侧都已知则视为同一份预算的两种写法，保留 key 级不重复；
+// key 侧 used_known=false 时用用户级那份已知数据顶上，避免 24h 退化成 chip。
+func userInfoMergeUserWindow(windows []UserInfoBudgetWindow, user UserInfoBudgetWindow) []UserInfoBudgetWindow {
+	if user.Limit <= 0 {
+		return windows
+	}
+	for i, w := range windows {
+		if w.Duration == user.Duration && user.Duration != "" {
+			if !w.UsedKnown && user.UsedKnown {
+				windows[i] = user
+			}
+			return windows
+		}
+	}
+	return append(windows, user)
+}
+
+// fetchUserInfoBudgetWindow 拉取 /user/info 的用户级预算窗口（如 24h）。
+// 拉取失败或无用户级预算时返回 nil，不影响 key 侧已解析的短窗。
+func (s *UpstreamUserInfoQuotaService) fetchUserInfoBudgetWindow(ctx context.Context, account *Account, apiKey string) *UserInfoBudgetWindow {
+	targetURL := userInfoUserURL(account.userInfoQuotaBaseURL())
+	if targetURL == "" {
+		return nil
+	}
+	validatedURL, err := cnValidateProbeURL(s.cfg, targetURL)
+	if err != nil {
+		return nil
+	}
+	proxyURL := s.resolveProxyURL(ctx, account)
+	callCtx, cancel := context.WithTimeout(ctx, userInfoQuotaUpstreamTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, validatedURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	account.ApplyHeaderOverrides(req.Header)
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxInt(account.Concurrency, 1))
+	if err != nil {
+		slog.Warn("userinfo_user_budget_fetch_failed", "account_id", account.ID, "error", err)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Warn("userinfo_user_budget_http_error", "account_id", account.ID, "status", resp.StatusCode)
+		return nil
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, userInfoQuotaMaxBodyBytes))
+	root := gjson.ParseBytes(bodyBytes)
+	userNode := root.Get("user_info")
+	if !userNode.IsObject() {
+		userNode = root
+	}
+	return userInfoUserBudgetWindow(userNode)
+}
+
+// userInfoUserBudgetWindow 从 /user/info 的 user_info 节点解析用户级预算窗口。
+// 形如 max_budget=100, budget_duration="24h", spend=0.39, budget_reset_at=...
+// 无 max_budget 或 budget_duration 时返回 nil。
+func userInfoUserBudgetWindow(userNode gjson.Result) *UserInfoBudgetWindow {
+	limit := parseUserInfoF64(userNode.Get("max_budget"))
+	if limit <= 0 {
+		return nil
+	}
+	duration := strings.TrimSpace(userNode.Get("budget_duration").String())
+	if duration == "" {
+		return nil
+	}
+	spend := parseUserInfoF64(userNode.Get("spend"))
+	if spend < 0 {
+		spend = 0
+	}
+	remain := math.Round((limit-spend)*100) / 100
+	if remain < 0 {
+		remain = 0
+	}
+	usedPercent := math.Round(spend/limit*1000) / 10
+	w := &UserInfoBudgetWindow{
+		Duration:    duration,
+		Limit:       limit,
+		Remaining:   remain,
+		UsedPercent: usedPercent,
+		WindowSpend: spend,
+		UsedKnown:   true,
+	}
+	if resetRaw := strings.TrimSpace(userNode.Get("budget_reset_at").String()); resetRaw != "" {
+		if t, err := parseUserInfoTime(resetRaw); err == nil {
+			w.ResetAt = t.UTC().Format(time.RFC3339)
+		}
+	}
+	return w
 }
 
 func (s *UpstreamUserInfoQuotaService) loadAccount(ctx context.Context, accountID int64) (*Account, error) {
