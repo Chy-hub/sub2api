@@ -2060,6 +2060,9 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 				rows = append(rows, service.GroupAccountCapacityRow{
 					GroupID:             groupID,
 					AccountID:           acc.ID,
+					Platform:            acc.Platform,
+					Type:                acc.Type,
+					USTCScope:           service.USTCKeyScope(acc),
 					Concurrency:         acc.Concurrency,
 					Extra:               copyJSONMap(acc.Extra),
 					SessionWindowStart:  acc.SessionWindowStart,
@@ -2075,8 +2078,11 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 		SELECT
 			ag.group_id,
 			a.id AS account_id,
+			a.platform,
+			a.type,
 			a.concurrency,
 			COALESCE(a.extra, '{}'::jsonb)::text AS extra,
+			COALESCE(a.credentials, '{}'::jsonb)::text AS credentials,
 			a.session_window_start,
 			a.session_window_end,
 			COALESCE(a.session_window_status, '') AS session_window_status
@@ -2100,12 +2106,15 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 	out := make([]service.GroupAccountCapacityRow, 0)
 	for rows.Next() {
 		var row service.GroupAccountCapacityRow
-		var extraRaw string
+		var extraRaw, credentialsRaw string
 		if err := rows.Scan(
 			&row.GroupID,
 			&row.AccountID,
+			&row.Platform,
+			&row.Type,
 			&row.Concurrency,
 			&extraRaw,
+			&credentialsRaw,
 			&row.SessionWindowStart,
 			&row.SessionWindowEnd,
 			&row.SessionWindowStatus,
@@ -2119,6 +2128,18 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			}
 			row.Extra = extra
 		}
+		var credentials map[string]any
+		if credentialsRaw != "" && credentialsRaw != "null" {
+			if err := json.Unmarshal([]byte(credentialsRaw), &credentials); err != nil {
+				return nil, err
+			}
+		}
+		row.USTCScope = service.USTCKeyScope(&service.Account{
+			Platform:    row.Platform,
+			Type:        row.Type,
+			Credentials: credentials,
+			Extra:       row.Extra,
+		})
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {

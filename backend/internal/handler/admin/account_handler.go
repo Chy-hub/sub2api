@@ -210,9 +210,10 @@ type AccountWithConcurrency struct {
 	SchedulerScore     *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
 	SchedulerScores    []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
 	// 以下字段仅对 Anthropic OAuth/SetupToken 账号有效，且仅在启用相应功能时返回
-	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
-	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
-	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
+	CurrentWindowCost *float64              `json:"current_window_cost,omitempty"` // 当前窗口费用
+	ActiveSessions    *int                  `json:"active_sessions,omitempty"`     // 当前活跃会话数
+	CurrentRPM        *int                  `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
+	USTCCapacity      *service.USTCCapacity `json:"ustc_capacity,omitempty"`
 }
 
 // AccountListItemWithConcurrency is the compact account-list envelope used
@@ -226,6 +227,7 @@ type AccountListItemWithConcurrency struct {
 	CurrentWindowCost  *float64                     `json:"current_window_cost,omitempty"`
 	ActiveSessions     *int                         `json:"active_sessions,omitempty"`
 	CurrentRPM         *int                         `json:"current_rpm,omitempty"`
+	USTCCapacity       *service.USTCCapacity        `json:"ustc_capacity,omitempty"`
 }
 
 type simpleModeGroupReference struct {
@@ -380,6 +382,7 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	if account == nil {
 		return item
 	}
+	item.USTCCapacity = service.USTCAccountCapacity(ctx, h.rpmCache, account)
 
 	if h.concurrencyService != nil {
 		if counts, err := h.concurrencyService.GetAccountConcurrencyBatch(ctx, []int64{account.ID}); err == nil {
@@ -739,7 +742,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	// 识别需要查询窗口费用、会话数和 RPM 的账号：窗口费用/会话仅 Anthropic OAuth/SetupToken，
-	// RPM 对 Anthropic OAuth/SetupToken 与 OpenAI API Key 均生效（IsRPMEligible）。
+	// 手填 RPM 仅 Anthropic OAuth/SetupToken；USTC 自动容量另行读取。
 	windowCostAccountIDs := make([]int64, 0)
 	sessionLimitAccountIDs := make([]int64, 0)
 	rpmAccountIDs := make([]int64, 0)
@@ -821,6 +824,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 			CurrentConcurrency: concurrencyCounts[acc.ID],
 			SchedulerScore:     schedulerScores[acc.ID],
 			SchedulerScores:    schedulerGroupScores[acc.ID],
+			USTCCapacity:       service.USTCAccountCapacity(c.Request.Context(), h.rpmCache, acc),
 		}
 
 		// 添加窗口费用（仅当启用时）
@@ -861,6 +865,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 				CurrentWindowCost:  item.CurrentWindowCost,
 				ActiveSessions:     item.ActiveSessions,
 				CurrentRPM:         item.CurrentRPM,
+				USTCCapacity:       item.USTCCapacity,
 			}
 		}
 		etag := buildAccountsListETag(compact, total, page, pageSize, platform, accountType, status, search, true)

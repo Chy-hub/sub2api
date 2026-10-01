@@ -314,8 +314,11 @@ func ProvideUpstreamUserInfoQuotaService(
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	gateway *OpenAIGatewayService,
+	rpmCache RPMCache,
 ) *UpstreamUserInfoQuotaService {
 	quota := NewUpstreamUserInfoQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
+	gateway.SetRPMCache(rpmCache)
+	quota.onRefresh = gateway.notifyUSTCCapacity
 	gateway.SetUSTCQuotaRefresher(quota)
 	return quota
 }
