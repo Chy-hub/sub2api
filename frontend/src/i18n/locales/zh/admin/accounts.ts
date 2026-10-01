@@ -244,9 +244,10 @@ export default {
         ustc: {
           rpm: '上游 RPM',
           parallel: '上游并发',
+          parallelShort: '并发',
           available: '可用 {count}',
-          resetAt: '恢复 {time}',
-          detail: '上游 RPM {rpm}，并发 {parallel}，可用并发 {available}',
+          resetAt: '窗口重置：{time}',
+          detail: '上游 RPM {rpm}，并发 {parallel}，当前可用 {available}',
           state: {
             ready: '就绪',
             sync_wait: '等待同步',
@@ -254,6 +255,14 @@ export default {
             rpm_wait: '等待 RPM 恢复',
             parallel_wait: '等待并发释放',
             unknown: '状态未知'
+          },
+          stateShort: {
+            ready: '就绪',
+            sync_wait: '待恢复',
+            verify_one: '待验证',
+            rpm_wait: 'RPM 已满',
+            parallel_wait: '并发已满',
+            unknown: '待同步'
           }
         },
         rpm: {

@@ -13,7 +13,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 describe('AccountCapacityCell USTC capacity', () => {
-  it('shows upstream RPM, in-flight concurrency, available slots, and state', () => {
+  it('shows compact upstream badges and keeps availability, state, and reset details in the tooltip', () => {
     const account = {
       id: 1,
       platform: 'openai',
@@ -35,13 +35,14 @@ describe('AccountCapacityCell USTC capacity', () => {
     const capacity = wrapper.get('[data-testid="ustc-capacity"]')
 
     expect(wrapper.find('[data-testid="local-concurrency-capacity"]').exists()).toBe(false)
-    expect(capacity.text()).toContain('16/30')
-    expect(capacity.text()).toContain('2/3')
-    expect(capacity.text()).toContain('"count":"1"')
-    expect(capacity.text()).toContain('admin.accounts.capacity.ustc.state.ready')
-    expect(capacity.text()).toContain('admin.accounts.capacity.ustc.resetAt')
+    expect(capacity.text().replace(/\s/g, '')).toContain('16/30')
+    expect(capacity.text().replace(/\s/g, '')).toContain('2/3')
+    expect(wrapper.find('[data-testid="ustc-capacity-status"]').exists()).toBe(false)
     expect(capacity.attributes('title')).toContain('"rpm":"16/30"')
     expect(capacity.attributes('title')).toContain('"parallel":"2/3"')
+    expect(capacity.attributes('title')).toContain('"available":"1"')
+    expect(capacity.attributes('title')).toContain('admin.accounts.capacity.ustc.state.ready')
+    expect(capacity.attributes('title')).toContain('admin.accounts.capacity.ustc.resetAt')
     wrapper.unmount()
   })
 
@@ -72,10 +73,16 @@ describe('AccountCapacityCell USTC capacity', () => {
       type: 'apikey',
       credentials: { base_url: 'https://api.llm.ustc.edu.cn/v1' },
       concurrency: 1,
-      ustc_capacity: { rpm_limit: 20, parallel_limit: 20, used, in_flight, available: 0, state: 'ready' }
+      ustc_capacity: {
+        rpm_limit: 20, parallel_limit: 20, used, in_flight, available: 0,
+        reset_at: '2026-10-02T09:00:00Z', state: 'ready'
+      }
     } as any
     const wrapper = mount(AccountCapacityCell, { props: { account } })
-    expect(wrapper.get('[data-testid="ustc-capacity"]').text()).toContain(`admin.accounts.capacity.ustc.state.${state}`)
+    expect(wrapper.get('[data-testid="ustc-capacity-status"]').text()).toContain(`admin.accounts.capacity.ustc.stateShort.${state}`)
+    const reset = wrapper.find('[data-testid="ustc-capacity-reset"]')
+    expect(reset.exists()).toBe(state === 'rpm_wait')
+    if (reset.exists()) expect(reset.text()).toMatch(/^\d{2}:\d{2}:\d{2}$/)
     wrapper.unmount()
   })
 
@@ -101,7 +108,7 @@ describe('AccountCapacityCell USTC capacity', () => {
     const wrapper = mount(AccountCapacityCell, { props: { account } })
     const capacity = wrapper.get('[data-testid="ustc-capacity"]')
 
-    expect(capacity.text()).toContain(expected)
+    expect(capacity.text().replace(/\s/g, '')).toContain(expected)
     expect(capacity.text()).not.toContain('∞')
     wrapper.unmount()
   })
@@ -124,8 +131,8 @@ describe('AccountCapacityCell USTC capacity', () => {
     } as any
     const wrapper = mount(AccountCapacityCell, { props: { account } })
 
-    expect(wrapper.get('[data-testid="ustc-capacity"]').text()).toContain('7/∞')
-    expect(wrapper.get('[data-testid="ustc-capacity"]').text()).toContain('2/∞')
+    expect(wrapper.get('[data-testid="ustc-capacity"]').text().replace(/\s/g, '')).toContain('7/∞')
+    expect(wrapper.get('[data-testid="ustc-capacity"]').text().replace(/\s/g, '')).toContain('2/∞')
     wrapper.unmount()
   })
 })
