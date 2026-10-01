@@ -36,6 +36,7 @@ const (
 	userInfoQuotaSchedulingBackoff   = 5 * time.Second
 	userInfoQuotaSchedulingCacheIdle = 5 * time.Minute
 	userInfoQuotaSchedulingCacheMax  = 4096
+	userInfoQuotaSchedulingMaxProbes = 16
 )
 
 // UpstreamUserInfoQuotaService 探测已知 LiteLLM 网关的预算额度。
@@ -46,10 +47,13 @@ type UpstreamUserInfoQuotaService struct {
 	cfg          *config.Config
 	flight       singleflight.Group
 
-	refreshFlight singleflight.Group
-	refreshMu     sync.Mutex
-	refreshCache  map[int64]*userInfoQuotaRefreshCacheEntry
-	refreshLRU    *list.List
+	refreshFlight     singleflight.Group
+	refreshMu         sync.Mutex
+	refreshCache      map[int64]*userInfoQuotaRefreshCacheEntry
+	refreshLRU        *list.List
+	refreshPending    map[int64]bool
+	refreshProbeOnce  sync.Once
+	refreshProbeSlots chan struct{}
 }
 
 var _ USTCQuotaAdmissionRefresher = (*UpstreamUserInfoQuotaService)(nil)
@@ -170,7 +174,8 @@ func (s *UpstreamUserInfoQuotaService) RefreshForScheduling(ctx context.Context,
 
 // QuotaForAdmission returns immediately with the best available account copy.
 // Cold or stale snapshots start a per-account refresh in the shared singleflight
-// and report ready=false so admission can release its slot and retry selection.
+// and report ready=false unless the default pool permits eligible observations
+// during background refresh. Known unavailable quotas are never bypassed.
 func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, account *Account) (*Account, bool) {
 	if account == nil {
 		return nil, false
@@ -203,14 +208,41 @@ func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, ac
 		}
 		// A completed failed probe uses the existing fail-open policy for unknown
 		// usage during backoff. Known exhausted/invalid snapshots still fail the
-		// admission eligibility gate; only an in-flight refresh requires release.
+		// admission eligibility gate.
 		return accountCopy, true
 	}
 
 	// DoChan starts the callback asynchronously. The callback and the synchronous
 	// RefreshForScheduling path use the same key and share one upstream refresh.
-	s.startSchedulingRefresh(accountCopy, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt)
+	s.ensureSchedulingRefresh(accountCopy, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt)
+	if ctx != nil {
+		if background, _ := ctx.Value(ustcQuotaBackgroundAdmissionKey{}).(bool); background && userInfoQuotaSchedulingFailureReason(accountCopy, now) == "" {
+			return accountCopy, true
+		}
+	}
 	return accountCopy, false
+}
+
+// Polling waiters need one background subscriber per account, not a new
+// singleflight result channel on every poll while the upstream is slow.
+func (s *UpstreamUserInfoQuotaService) ensureSchedulingRefresh(account *Account, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) {
+	s.refreshMu.Lock()
+	if s.refreshPending == nil {
+		s.refreshPending = make(map[int64]bool)
+	}
+	if s.refreshPending[account.ID] || len(s.refreshPending) >= userInfoQuotaSchedulingCacheMax {
+		s.refreshMu.Unlock()
+		return
+	}
+	s.refreshPending[account.ID] = true
+	s.refreshMu.Unlock()
+	resultCh := s.startSchedulingRefresh(account, forceRefresh, forceAfter, hasForceAfter)
+	go func() {
+		<-resultCh
+		s.refreshMu.Lock()
+		delete(s.refreshPending, account.ID)
+		s.refreshMu.Unlock()
+	}()
 }
 
 func (s *UpstreamUserInfoQuotaService) startSchedulingRefresh(account *Account, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) <-chan singleflight.Result {
@@ -259,6 +291,11 @@ func (s *UpstreamUserInfoQuotaService) cachedSchedulingRefresh(accountID int64, 
 }
 
 func (s *UpstreamUserInfoQuotaService) refreshSchedulingSnapshot(account *Account) *userInfoQuotaRefreshFlightResult {
+	s.refreshProbeOnce.Do(func() {
+		s.refreshProbeSlots = make(chan struct{}, userInfoQuotaSchedulingMaxProbes)
+	})
+	s.refreshProbeSlots <- struct{}{}
+	defer func() { <-s.refreshProbeSlots }()
 	accountID := account.ID
 	now := time.Now().UTC()
 	s.refreshMu.Lock()
