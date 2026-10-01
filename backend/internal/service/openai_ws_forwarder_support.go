@@ -629,6 +629,13 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		}
 		account = latest
 	}
+	// Response bindings must observe the same current upstream quota as normal
+	// selection, before acquiring a concurrency slot. Keep transiently exhausted
+	// bindings so they can be reused after their window resets.
+	account = s.refreshUSTCQuotaForScheduling(ctx, account)
+	if userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
+		return 0, nil, "", nil
+	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil

@@ -1,8 +1,11 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // 上游 /key/info 额度探测的主机白名单与账号识别。
@@ -38,6 +41,100 @@ const (
 
 // UserInfoQuotaExtraKey 拼接 Extra 快照键。
 func UserInfoQuotaExtraKey(suffix string) string { return userInfoExtraPrefix + suffix }
+
+type deferUSTCQuotaEligibilityKey struct{}
+
+type USTCQuotaSchedulingRefresher interface {
+	RefreshForScheduling(context.Context, *Account) (*Account, error)
+}
+
+// USTCQuotaAdmissionRefresher reports whether the supplied account can enter
+// admission immediately with a fresh-enough quota snapshot. Implementations
+// may start a coalesced background refresh and return ready=false on a cold miss.
+type USTCQuotaAdmissionRefresher interface {
+	QuotaForAdmission(context.Context, *Account) (*Account, bool)
+}
+
+func (s *OpenAIGatewayService) SetUSTCQuotaRefresher(refresher USTCQuotaSchedulingRefresher) {
+	s.ustcQuotaRefresher = refresher
+}
+
+func (s *OpenAIGatewayService) refreshUSTCQuotaForScheduling(ctx context.Context, account *Account) *Account {
+	if !isDefaultUSTCAccount(account) || s.ustcQuotaRefresher == nil {
+		return account
+	}
+	refreshed, _ := s.ustcQuotaRefresher.RefreshForScheduling(ctx, account)
+	if refreshed != nil {
+		return refreshed
+	}
+	return account
+}
+
+// Budget observations are eligibility gates, not scheduling weights. A known
+// exhausted window blocks this key until its reset; unknown usage stays usable.
+func userInfoQuotaSchedulingFailureReason(account *Account, now time.Time) string {
+	if !isDefaultUSTCAccount(account) || len(account.Extra) == 0 {
+		return ""
+	}
+	if valid, ok := account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixValid)].(bool); ok && !valid {
+		return "upstream_userinfo_invalid"
+	}
+	if expires, ok := account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixExpires)].(string); ok && expires != "" {
+		if at, err := parseUserInfoTime(expires); err == nil && !at.After(now) {
+			return "upstream_userinfo_expired"
+		}
+	}
+	windows := userInfoQuotaWindowsForScheduling(account.Extra)
+	for _, window := range windows {
+		if !userInfoQuotaWindowExhausted(window) {
+			continue
+		}
+		if window.ResetAt != "" {
+			if reset, err := parseUserInfoTime(window.ResetAt); err == nil && !reset.After(now) {
+				continue
+			}
+		}
+		return "upstream_userinfo_window_exhausted"
+	}
+	return ""
+}
+
+func userInfoQuotaWindowsFromExtra(extra map[string]any) []UserInfoBudgetWindow {
+	raw := extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)]
+	if typed, ok := raw.([]UserInfoBudgetWindow); ok {
+		return typed
+	}
+	if raw == nil {
+		return nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var windows []UserInfoBudgetWindow
+	if err := json.Unmarshal(data, &windows); err != nil {
+		return nil
+	}
+	return windows
+}
+
+// Scheduling also accepts older snapshots containing only the scalar budget.
+func userInfoQuotaWindowsForScheduling(extra map[string]any) []UserInfoBudgetWindow {
+	if windows := userInfoQuotaWindowsFromExtra(extra); len(windows) > 0 {
+		return windows
+	}
+	budget, hasBudget := resolveAccountExtraNumber(extra, UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget))
+	spend, hasSpend := resolveAccountExtraNumber(extra, UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend))
+	if !hasBudget || !hasSpend {
+		return nil
+	}
+	resetAt, _ := extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixResetAt)].(string)
+	return []UserInfoBudgetWindow{{Limit: budget, WindowSpend: spend, UsedKnown: true, ResetAt: resetAt}}
+}
+
+func userInfoQuotaWindowExhausted(window UserInfoBudgetWindow) bool {
+	return window.UsedKnown && window.Limit > 0 && window.WindowSpend >= window.Limit
+}
 
 // IsUserInfoQuotaUpstream 报告 base_url 主机是否为已知的 /key/info 额度上游。
 func IsUserInfoQuotaUpstream(baseURL string) bool {
