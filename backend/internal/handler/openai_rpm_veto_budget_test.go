@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -167,6 +168,64 @@ func TestOpenAIRPMVetoExhaustedTerminatesStartedStreams(t *testing.T) {
 			require.Contains(t, w.Body.String(), tc.event)
 			require.Contains(t, w.Body.String(), "gateway_account_limit")
 			require.Equal(t, http.StatusOK, w.Code)
+		})
+	}
+}
+
+type exhaustedUSTCPoolRPMCache struct{ service.RPMCache }
+
+func (exhaustedUSTCPoolRPMCache) GetRPM(context.Context, int64) (int, error) { return 20, nil }
+func (exhaustedUSTCPoolRPMCache) GetRPMBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	counts := make(map[int64]int, len(ids))
+	for _, id := range ids {
+		counts[id] = 20
+	}
+	return counts, nil
+}
+
+func TestUSTCPoolCapacityTimeoutReturns429WithRetryAfterBeforeForwarding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name   string
+		path   string
+		body   string
+		handle func(*OpenAIGatewayHandler, *gin.Context)
+	}{
+		{"messages", "/v1/messages", `{"model":"deepseek-flash","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`, (*OpenAIGatewayHandler).Messages},
+		{"responses", "/v1/responses", `{"model":"deepseek-flash","input":"hello"}`, (*OpenAIGatewayHandler).Responses},
+		{"chat", "/v1/chat/completions", `{"model":"deepseek-flash","messages":[{"role":"user","content":"hello"}]}`, (*OpenAIGatewayHandler).ChatCompletions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{RunMode: config.RunModeSimple}
+			cfg.Gateway.Scheduling.FallbackWaitTimeout = 20 * time.Millisecond
+			cfg.Gateway.Scheduling.FallbackMaxWaiting = 1
+			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billing.Stop)
+			accounts := []service.Account{{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+				Status: service.StatusActive, Schedulable: true, Concurrency: 20,
+				Credentials: map[string]any{"base_url": "https://api.llm.ustc.edu.cn", "api_key": "test"},
+				Extra:       map[string]any{"base_rpm": 20},
+			}}
+			concurrency := service.NewConcurrencyService(&concurrencyCacheMock{})
+			gateway := service.NewOpenAIGatewayService(&openAIWSFailoverHandlerAccountRepoStub{accounts: accounts},
+				nil, nil, nil, nil, nil, nil, cfg, nil, concurrency, service.NewBillingService(cfg, nil), nil, billing, nil,
+				&service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+			gateway.SetRPMCache(exhaustedUSTCPoolRPMCache{})
+			h := NewOpenAIGatewayHandler(gateway, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			groupID := int64(9)
+			c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 10, GroupID: &groupID,
+				User:  &service.User{ID: 11, Status: service.StatusActive},
+				Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, AllowMessagesDispatch: true}})
+			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 11, Concurrency: 0})
+			tc.handle(h, c)
+			require.Equal(t, http.StatusTooManyRequests, w.Code, w.Body.String())
+			require.Equal(t, "gateway_account_limit", gjson.GetBytes(w.Body.Bytes(), "error.code").String())
+			require.NotEmpty(t, w.Header().Get("Retry-After"))
+			require.NotContains(t, w.Body.String(), "Service temporarily unavailable")
 		})
 	}
 }

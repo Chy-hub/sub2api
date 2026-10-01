@@ -1202,9 +1202,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if err != nil {
 				return nil, err
 			}
+			accounts = s.supplementDefaultUSTCPool(ctx, groupID, accounts)
 			prefetchedAccounts = [][]Account{accounts}
 			if defaultUSTCAccountBalancingEnabled(accounts) {
-				return s.selectBalancedDefaultUSTCAccount(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+				return s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
 			}
 		}
 	}
