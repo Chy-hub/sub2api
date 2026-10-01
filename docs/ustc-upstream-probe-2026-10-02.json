@@ -1,0 +1,472 @@
+{
+  "date_local": "2026-10-02",
+  "timezone": "Asia/Shanghai",
+  "endpoint": "https://api.llm.ustc.edu.cn",
+  "reported_litellm_version": "1.102.1",
+  "models_tested": [
+    "deepseek-flash",
+    "qwen-chat"
+  ],
+  "request_count": 64,
+  "inference_request_count": 59,
+  "metadata_request_count": 5,
+  "verified_limits": {
+    "rpm_limit": 20,
+    "max_parallel_requests": 20,
+    "tpm_limit": null
+  },
+  "scope": "One supplied API key; other pool keys were not available for live testing.",
+  "window_experiment": [
+    {
+      "label": "window_start",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:45:35.000449+00:00",
+      "start_s": 0.0,
+      "headers_s": 0.931,
+      "complete_s": 0.932,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:45:34 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "19",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "metadata_when_rpm_exhausted",
+      "path": "/key/info",
+      "model": null,
+      "started_utc": "2026-10-01T16:45:44.811213+00:00",
+      "start_s": 9.811,
+      "headers_s": 9.84,
+      "complete_s": 9.84,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:45:44 GMT"
+      },
+      "limit_config": {
+        "rpm_limit": 20,
+        "max_parallel_requests": 20,
+        "tpm_limit": null
+      }
+    },
+    {
+      "label": "metadata_when_rpm_exhausted",
+      "path": "/user/info",
+      "model": null,
+      "started_utc": "2026-10-01T16:45:44.841645+00:00",
+      "start_s": 9.841,
+      "headers_s": 11.083,
+      "complete_s": 11.084,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:45:44 GMT"
+      }
+    },
+    {
+      "label": "metadata_when_rpm_exhausted",
+      "path": "/v1/models",
+      "model": null,
+      "started_utc": "2026-10-01T16:45:46.085486+00:00",
+      "start_s": 11.085,
+      "headers_s": 11.268,
+      "complete_s": 11.268,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:45:45 GMT"
+      }
+    },
+    {
+      "label": "rpm_exhausted_before_minute_boundary",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:45:55.000815+00:00",
+      "start_s": 20.0,
+      "headers_s": 20.104,
+      "complete_s": 20.105,
+      "status": 429,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:45:54 GMT",
+        "retry-after": "60",
+        "rate_limit_type": "requests",
+        "reset_at": "2026-10-01 16:46:54 UTC"
+      },
+      "error_type": "throttling_error",
+      "error_code": "429"
+    },
+    {
+      "label": "qwen_after_minute_boundary",
+      "path": "/v1/chat/completions",
+      "model": "qwen-chat",
+      "started_utc": "2026-10-01T16:46:10.001041+00:00",
+      "start_s": 35.001,
+      "headers_s": 35.119,
+      "complete_s": 35.119,
+      "status": 429,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:46:09 GMT",
+        "retry-after": "60",
+        "rate_limit_type": "requests",
+        "reset_at": "2026-10-01 16:47:09 UTC"
+      },
+      "error_type": "throttling_error",
+      "error_code": "429"
+    },
+    {
+      "label": "late_rejection_does_not_extend_window",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:46:30.000995+00:00",
+      "start_s": 55.001,
+      "headers_s": 55.085,
+      "complete_s": 55.085,
+      "status": 429,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:46:29 GMT",
+        "retry-after": "60",
+        "rate_limit_type": "requests",
+        "reset_at": "2026-10-01 16:47:29 UTC"
+      },
+      "error_type": "throttling_error",
+      "error_code": "429"
+    },
+    {
+      "label": "new_window_first",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:46:37.000926+00:00",
+      "start_s": 62.0,
+      "headers_s": 62.353,
+      "complete_s": 62.354,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:46:36 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "19",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "new_window_second",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:46:37.355451+00:00",
+      "start_s": 62.355,
+      "headers_s": 62.582,
+      "complete_s": 62.582,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:46:37 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "18",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    }
+  ],
+  "window_fill": {
+    "successful_requests": 20,
+    "remaining_after_fill": 0,
+    "max_client_concurrency": 5
+  },
+  "boundary_experiment": [
+    {
+      "label": "window_start",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:58:35.000462+00:00",
+      "start_s": 0.0,
+      "headers_s": 0.742,
+      "complete_s": 0.742,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:58:33 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "19",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "boundary_58.5",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:33.501056+00:00",
+      "start_s": 58.501,
+      "headers_s": 58.582,
+      "complete_s": 58.582,
+      "status": 429,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:33 GMT",
+        "retry-after": "60",
+        "rate_limit_type": "requests",
+        "reset_at": "2026-10-01 17:00:33 UTC"
+      },
+      "error_type": "throttling_error",
+      "error_code": "429"
+    },
+    {
+      "label": "boundary_60.25",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:35.250982+00:00",
+      "start_s": 60.251,
+      "headers_s": 60.658,
+      "complete_s": 60.658,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:34 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "19",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "boundary_60.75",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:35.750512+00:00",
+      "start_s": 60.75,
+      "headers_s": 62.239,
+      "complete_s": 62.239,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:34 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "18",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "boundary_61.5",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:37.241080+00:00",
+      "start_s": 62.241,
+      "headers_s": 62.572,
+      "complete_s": 62.572,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:36 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "17",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "boundary_62.5",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:37.572719+00:00",
+      "start_s": 62.572,
+      "headers_s": 64.178,
+      "complete_s": 64.179,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:36 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "16",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "deepseek_stream_headers",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:39.179901+00:00",
+      "start_s": 64.179,
+      "headers_s": 64.298,
+      "complete_s": 64.472,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:38 GMT",
+        "x-litellm-version": "1.102.1"
+      },
+      "stream_done": true
+    },
+    {
+      "label": "baseline_before_bad_request",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:39.472749+00:00",
+      "start_s": 64.472,
+      "headers_s": 64.702,
+      "complete_s": 64.702,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:38 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "14",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "empty_messages_bad_request",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:39.703934+00:00",
+      "start_s": 64.703,
+      "headers_s": 64.838,
+      "complete_s": 64.839,
+      "status": 400,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:39 GMT"
+      },
+      "error_type": "invalid_request_error",
+      "error_code": "400"
+    },
+    {
+      "label": "valid_after_bad_request",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:59:39.839714+00:00",
+      "start_s": 64.839,
+      "headers_s": 65.205,
+      "complete_s": 65.205,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:59:39 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "12",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    }
+  ],
+  "lifecycle_experiment": [
+    {
+      "label": "short_request_during_stream",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:52:30.431663+00:00",
+      "start_s": 1.012,
+      "headers_s": 3.885,
+      "complete_s": 3.886,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:29 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "18",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "18",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "stream_first",
+      "path": "/v1/chat/completions",
+      "model": "qwen-chat",
+      "started_utc": "2026-10-01T16:52:29.422361+00:00",
+      "start_s": 0.002,
+      "headers_s": 1.012,
+      "complete_s": 8.035,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:28 GMT",
+        "x-litellm-version": "1.102.1"
+      },
+      "stream_done": true
+    },
+    {
+      "label": "short_request_after_stream",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:52:37.956737+00:00",
+      "start_s": 8.537,
+      "headers_s": 9.2,
+      "complete_s": 9.201,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:37 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "17",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    },
+    {
+      "label": "key_info_metadata",
+      "path": "/key/info",
+      "model": null,
+      "started_utc": "2026-10-01T16:52:38.621672+00:00",
+      "start_s": 9.202,
+      "headers_s": 9.236,
+      "complete_s": 9.237,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:38 GMT"
+      },
+      "limit_config": {
+        "rpm_limit": 20,
+        "max_parallel_requests": 20,
+        "tpm_limit": null
+      }
+    },
+    {
+      "label": "models_metadata",
+      "path": "/v1/models",
+      "model": null,
+      "started_utc": "2026-10-01T16:52:38.658232+00:00",
+      "start_s": 9.238,
+      "headers_s": 9.474,
+      "complete_s": 9.474,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:37 GMT"
+      }
+    },
+    {
+      "label": "invalid_model_request",
+      "path": "/v1/chat/completions",
+      "model": "sub2api-policy-probe-invalid-model",
+      "started_utc": "2026-10-01T16:52:38.895456+00:00",
+      "start_s": 9.476,
+      "headers_s": 9.525,
+      "complete_s": 9.525,
+      "status": 403,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:38 GMT"
+      },
+      "error_type": "key_model_access_denied",
+      "error_code": "403"
+    },
+    {
+      "label": "valid_request_after_invalid",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-flash",
+      "started_utc": "2026-10-01T16:52:38.945024+00:00",
+      "start_s": 9.525,
+      "headers_s": 9.737,
+      "complete_s": 9.737,
+      "status": 200,
+      "headers": {
+        "date": "Thu, 01 Oct 2026 16:52:38 GMT",
+        "x-litellm-version": "1.102.1",
+        "x-ratelimit-api_key-remaining-requests": "16",
+        "x-ratelimit-api_key-limit-requests": "20",
+        "x-ratelimit-api_key-remaining-max_parallel_requests": "19",
+        "x-ratelimit-api_key-limit-max_parallel_requests": "20"
+      }
+    }
+  ],
+  "assertions": "passed"
+}
