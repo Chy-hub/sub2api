@@ -103,29 +103,25 @@ func TestUSTCDefaultPreviousResponseUsesRPMAdmission(t *testing.T) {
 	require.Equal(t, 25, count)
 }
 
-func TestUSTCDefaultSchedulerPreservesStickyWaitSettings(t *testing.T) {
+func TestUSTCDefaultSchedulerWaitsAcrossPoolInsteadOfStickyAccount(t *testing.T) {
 	for _, waiting := range []int{0, 3} {
 		t.Run(fmt.Sprintf("waiting_%d", waiting), func(t *testing.T) {
 			svc, _ := ustcSchedulerFixture(1, true)
 			svc.cfg.Gateway.Scheduling.StickySessionWaitTimeout = 120 * time.Second
 			svc.cfg.Gateway.Scheduling.StickySessionMaxWaiting = 3
-			svc.cfg.Gateway.Scheduling.FallbackWaitTimeout = 30 * time.Second
+			svc.cfg.Gateway.Scheduling.FallbackWaitTimeout = 20 * time.Millisecond
 			svc.cfg.Gateway.Scheduling.FallbackMaxWaiting = 100
 			svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{
 				acquireResults: map[int64]bool{1: false}, waitCounts: map[int64]int{1: waiting}})
 			ctx := context.Background()
 			require.NoError(t, svc.cache.SetSessionAccountID(ctx, 0, "openai:session", 1, time.Hour))
+			started := time.Now()
 			selection, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "session", "deepseek-flash", nil)
-			require.NoError(t, err)
-			require.NotNil(t, selection.WaitPlan)
-			require.True(t, selection.stickySessionHit)
-			if waiting < 3 {
-				require.Equal(t, 120*time.Second, selection.WaitPlan.Timeout)
-				require.Equal(t, 3, selection.WaitPlan.MaxWaiting)
-			} else {
-				require.Equal(t, 30*time.Second, selection.WaitPlan.Timeout)
-				require.Equal(t, 100, selection.WaitPlan.MaxWaiting)
-			}
+			require.Nil(t, selection)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			_, capacity := USTCPoolRetryAfter(err)
+			require.True(t, capacity)
+			require.Less(t, time.Since(started), time.Second, "USTC wait must be bounded by the pool timeout, not a 120s sticky queue")
 		})
 	}
 }

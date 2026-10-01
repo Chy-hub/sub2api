@@ -400,6 +400,101 @@ func TestQuotaForAdmissionFreshInputAndNewerCacheAreReady(t *testing.T) {
 	require.Equal(t, 999.0, older.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend)])
 }
 
+func TestQuotaForAdmissionBoundsBackgroundProbesAndRepeatedPollSubscribers(t *testing.T) {
+	upstream := newBlockingUserInfoQuotaUpstream()
+	svc := NewUpstreamUserInfoQuotaService(userInfoQuotaConcurrentRepoStub{}, nil, upstream, nil)
+	defer func() {
+		select {
+		case <-upstream.releaseKeyInfo:
+		default:
+			close(upstream.releaseKeyInfo)
+		}
+	}()
+	for id := int64(1); id <= userInfoQuotaSchedulingMaxProbes+8; id++ {
+		account := userInfoQuotaTestAccount()
+		account.ID = id
+		_, ready := svc.QuotaForAdmission(context.Background(), account)
+		require.False(t, ready)
+	}
+	require.Eventually(t, func() bool {
+		return upstream.calls.Load() == userInfoQuotaSchedulingMaxProbes
+	}, time.Second, time.Millisecond)
+	account := userInfoQuotaTestAccount()
+	account.ID = 1
+	for range 200 {
+		_, ready := svc.QuotaForAdmission(context.Background(), account)
+		require.False(t, ready)
+	}
+	svc.refreshMu.Lock()
+	require.Len(t, svc.refreshPending, userInfoQuotaSchedulingMaxProbes+8, "polling must not add another background subscriber for a pending account")
+	svc.refreshMu.Unlock()
+	require.EqualValues(t, userInfoQuotaSchedulingMaxProbes, upstream.calls.Load(), "a cold pool must not create an unbounded upstream probe burst")
+	close(upstream.releaseKeyInfo)
+	require.Eventually(t, func() bool {
+		svc.refreshMu.Lock()
+		defer svc.refreshMu.Unlock()
+		return len(svc.refreshPending) == 0
+	}, 2*time.Second, time.Millisecond)
+}
+
+func TestQuotaForAdmissionBackgroundPolicyPreservesKnownQuotaGates(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+		ready bool
+	}{
+		{name: "unknown", ready: true},
+		{name: "stale_available", ready: true, extra: map[string]any{
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixUpdated): now.Add(-time.Minute).Format(time.RFC3339),
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget):  10.0,
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend):   4.0,
+		}},
+		{name: "reset_elapsed", ready: true, extra: map[string]any{
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget):  10.0,
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend):   10.0,
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixResetAt): now.Add(-time.Second).Format(time.RFC3339),
+		}},
+		{name: "exhausted", extra: map[string]any{
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget):  10.0,
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend):   10.0,
+			UserInfoQuotaExtraKey(UserInfoExtraSuffixResetAt): now.Add(time.Minute).Format(time.RFC3339),
+		}},
+		{name: "invalid", extra: map[string]any{UserInfoQuotaExtraKey(UserInfoExtraSuffixValid): false}},
+		{name: "expired", extra: map[string]any{UserInfoQuotaExtraKey(UserInfoExtraSuffixExpires): now.Add(-time.Minute).Format(time.RFC3339)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newBlockingUserInfoQuotaUpstream()
+			svc := NewUpstreamUserInfoQuotaService(userInfoQuotaConcurrentRepoStub{}, nil, upstream, nil)
+			defer func() {
+				close(upstream.releaseKeyInfo)
+				require.Eventually(t, func() bool {
+					svc.refreshMu.Lock()
+					defer svc.refreshMu.Unlock()
+					return len(svc.refreshPending) == 0
+				}, time.Second, time.Millisecond)
+			}()
+			account := userInfoQuotaTestAccount()
+			account.Platform, account.Extra = PlatformOpenAI, tc.extra
+			ctx := context.WithValue(context.Background(), ustcQuotaBackgroundAdmissionKey{}, true)
+			copy, ready := svc.QuotaForAdmission(ctx, account)
+			require.Equal(t, tc.ready, ready)
+			require.NotSame(t, account, copy)
+			select {
+			case <-upstream.keyInfoStarted:
+			case <-time.After(time.Second):
+				t.Fatal("background policy must still refresh quota data")
+			}
+		})
+	}
+}
+
+type userInfoQuotaConcurrentRepoStub struct{ AccountRepository }
+
+func (userInfoQuotaConcurrentRepoStub) UpdateExtra(context.Context, int64, map[string]any) error {
+	return nil
+}
+
 type blockingUserInfoQuotaUpstream struct {
 	calls            atomic.Int32
 	keyInfoStarted   chan struct{}

@@ -49,8 +49,9 @@ type USTCQuotaSchedulingRefresher interface {
 }
 
 // USTCQuotaAdmissionRefresher reports whether the supplied account can enter
-// admission immediately with a fresh-enough quota snapshot. Implementations
-// may start a coalesced background refresh and return ready=false on a cold miss.
+// admission immediately using its available quota observations. Implementations
+// may start a coalesced background refresh; the default pool can keep eligible
+// observations usable while other modes return ready=false on a cold miss.
 type USTCQuotaAdmissionRefresher interface {
 	QuotaForAdmission(context.Context, *Account) (*Account, bool)
 }
