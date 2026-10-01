@@ -1,11 +1,32 @@
 <template>
   <div class="flex flex-col gap-0.5">
     <!-- 并发槽位 -->
-    <CapacityBadge :color-class="concurrencyClass" :current="currentConcurrency" :max="account.concurrency">
+    <CapacityBadge
+      v-if="!showUstcCapacity"
+      data-testid="local-concurrency-capacity"
+      :color-class="concurrencyClass"
+      :current="currentConcurrency"
+      :max="account.concurrency"
+    >
       <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
       </svg>
     </CapacityBadge>
+
+    <!-- USTC 使用自动同步的上游 RPM 与并发状态。 -->
+    <div
+      v-if="showUstcCapacity"
+      data-testid="ustc-capacity"
+      class="flex flex-wrap items-center gap-x-1.5 text-[10px] leading-tight text-gray-600 dark:text-gray-300"
+      :title="ustcCapacityTooltip"
+    >
+      <span>{{ t('admin.accounts.capacity.ustc.rpm') }} {{ formatLimit(ustcCapacity?.used, ustcCapacity?.rpm_limit) }}</span>
+      <span aria-hidden="true" class="text-gray-300 dark:text-gray-600">·</span>
+      <span>{{ t('admin.accounts.capacity.ustc.parallel') }} {{ formatLimit(ustcCapacity?.in_flight, ustcCapacity?.parallel_limit) }}</span>
+      <span>{{ t('admin.accounts.capacity.ustc.available', { count: ustcAvailable }) }}</span>
+      <span :class="ustcStateClass">{{ ustcStateLabel }}</span>
+      <span v-if="ustcResetAt">{{ t('admin.accounts.capacity.ustc.resetAt', { time: ustcResetAt }) }}</span>
+    </div>
 
     <!-- 5h窗口费用限制 -->
     <CapacityBadge v-if="showWindowCost" :color-class="windowCostClass" :tooltip="windowCostTooltip" :current="'$' + formatCost(currentWindowCost)" :max="'$' + formatCost(account.window_cost_limit)">
@@ -41,12 +62,52 @@ import { useI18n } from 'vue-i18n'
 import type { Account } from '@/types'
 import CapacityBadge from '@/components/account/CapacityBadge.vue'
 import QuotaBadge from '@/components/account/QuotaBadge.vue'
+import { isUstcQuotaAccount } from '@/components/account/credentialsBuilder'
+import { formatDateTime } from '@/utils/format'
 
 const props = defineProps<{
   account: Account
 }>()
 
 const { t } = useI18n()
+
+const showUstcCapacity = computed(() => isUstcQuotaAccount(props.account))
+const ustcCapacity = computed(() => props.account.ustc_capacity)
+const ustcCapacityKnown = computed(() => !!ustcCapacity.value && ustcCapacity.value.state !== 'unknown')
+const formatLimit = (current: number | undefined, limit: number | null | undefined) => {
+  if (!ustcCapacity.value) return '—/—'
+  const currentValue = current ?? 0
+  if (!ustcCapacityKnown.value || limit === undefined) return `${currentValue}/—`
+  return limit === null ? `${currentValue}/∞` : `${currentValue}/${limit}`
+}
+const ustcAvailable = computed(() => {
+  if (!ustcCapacityKnown.value) return '—'
+  if (ustcCapacity.value?.state === 'ready' && ustcCapacity.value.rpm_limit === null && ustcCapacity.value.parallel_limit === null) return '∞'
+  return String(ustcCapacity.value?.available ?? 0)
+})
+const ustcResetAt = computed(() => {
+  const resetAt = ustcCapacity.value?.reset_at
+  return resetAt ? formatDateTime(resetAt) : ''
+})
+const ustcDisplayState = computed(() => {
+  const capacity = ustcCapacity.value
+  if (!capacity || capacity.state !== 'ready') return capacity?.state ?? 'unknown'
+  if (capacity.rpm_limit != null && capacity.used >= capacity.rpm_limit) return 'rpm_wait'
+  if (capacity.parallel_limit != null && capacity.in_flight >= capacity.parallel_limit) return 'parallel_wait'
+  return 'ready'
+})
+const ustcStateLabel = computed(() => t(`admin.accounts.capacity.ustc.state.${ustcDisplayState.value}`))
+const ustcStateClass = computed(() => {
+  const state = ustcDisplayState.value
+  if (state === 'ready') return 'text-emerald-600 dark:text-emerald-400'
+  if (state === 'unknown') return 'text-gray-500 dark:text-gray-400'
+  return 'text-amber-600 dark:text-amber-400'
+})
+const ustcCapacityTooltip = computed(() => t('admin.accounts.capacity.ustc.detail', {
+  rpm: formatLimit(ustcCapacity.value?.used, ustcCapacity.value?.rpm_limit),
+  parallel: formatLimit(ustcCapacity.value?.in_flight, ustcCapacity.value?.parallel_limit),
+  available: ustcAvailable.value
+}))
 
 // ====== 并发 ======
 const currentConcurrency = computed(() => props.account.current_concurrency || 0)
@@ -65,11 +126,8 @@ const isAnthropicOAuthOrSetupToken = computed(() =>
   (props.account.type === 'oauth' || props.account.type === 'setup-token')
 )
 
-// 账号级 RPM 限流对 Anthropic OAuth/SetupToken 与 OpenAI API Key 均生效
-const isRPMEligible = computed(() =>
-  isAnthropicOAuthOrSetupToken.value ||
-  (props.account.platform === 'openai' && props.account.type === 'apikey')
-)
+// 手动 RPM 只对 Anthropic OAuth/SetupToken 生效；USTC API Key 使用上游自动限额。
+const isRPMEligible = computed(() => isAnthropicOAuthOrSetupToken.value)
 
 const showWindowCost = computed(() =>
   isAnthropicOAuthOrSetupToken.value &&

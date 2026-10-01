@@ -1185,20 +1185,19 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 		if candidate.account == nil {
 			continue
 		}
-		if candidate.loadKnown && candidate.account.Concurrency > 0 &&
-			candidate.loadInfo.CurrentConcurrency >= candidate.account.Concurrency {
-			continue
-		}
 		candidateCtx := ctx
 		if isDefaultUSTCAccount(candidate.account) {
-			// This branch's quota probes must complete before acquiring a slot.
-			// Preserve advanced scoring and RPM accounting, then use only a
-			// nonblocking quota recheck while holding the selected slot.
-			candidate.account = s.service.refreshUSTCQuotaForScheduling(ctx, candidate.account)
-			if userInfoQuotaSchedulingFailureReason(candidate.account, time.Now()) != "" {
+			// Mixed experimental pools keep their scoring, while USTC derives
+			// concurrency from metadata and shares the final transport gate.
+			candidate.account = s.service.ustcAccountForAdmission(ctx, candidate.account)
+			if candidate.account == nil || userInfoQuotaSchedulingFailureReason(candidate.account, time.Now()) != "" {
 				continue
 			}
 			candidateCtx = context.WithValue(ctx, ustcQuotaAdmissionKey{}, true)
+		}
+		if candidate.loadKnown && candidate.account.Concurrency > 0 &&
+			candidate.loadInfo.CurrentConcurrency >= candidate.account.Concurrency {
+			continue
 		}
 
 		result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, candidate.account.ID, candidate.account.Concurrency, budget)
@@ -1420,8 +1419,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if len(accounts) == 0 {
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary(""))
 	}
-	// 预取候选账号的 RPM 计数，供后续 rpmSchedulable 从 ctx 共享读取，避免逐号查 Redis。
-	ctx = s.service.withRPMPrefetch(ctx, accounts)
 	// Local free-tier soft gate on the Grok scheduling path only (not admin probe).
 	accounts = s.filterGrokFreeQuotaAccounts(ctx, accounts)
 	if len(accounts) == 0 {
@@ -1851,12 +1848,6 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	// 排序/评分/粘性/熔断只在合格账号之间工作；named reason 进入 filter stats。
 	if vetoed, reason := openAIProfitControlVetoReason(ctx, account); vetoed {
 		return false, reason
-	}
-	// 账号级 RPM 限流：红区不可调度，黄区仅粘性会话可用。
-	if s != nil && s.service != nil {
-		if ok, reason := s.service.rpmSchedulable(ctx, account, isSticky); !ok {
-			return false, reason
-		}
 	}
 	return true, ""
 }
@@ -2319,9 +2310,6 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		}
 		return nil, false, nil
 	}
-	if isDefaultUSTCAccount(account) && (requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE) {
-		selection.defaultRPMManaged, selection.rpmSticky = true, true
-	}
 	if sessionHash != "" {
 		_ = s.bindOpenAIStickySessionDuringSelection(ctx, groupID, sessionHash, account.ID)
 	}
@@ -2365,6 +2353,41 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		guardianParentAccountID = s.resolveOpenAIGuardianParentAccountID(ctx, groupID)
 	}
 	scheduler := s.getOpenAIAccountScheduler(ctx)
+	if platform == PlatformOpenAI && (requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE) && requiredImageCapability == "" {
+		if selection, handled, err := s.selectUSTCPreviousResponse(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability); handled {
+			decision.Layer = openAIAccountScheduleLayerPreviousResponse
+			if selection != nil && selection.Account != nil {
+				decision.StickyPreviousHit = true
+				decision.SelectedAccountID = selection.Account.ID
+				decision.SelectedAccountType = selection.Account.Type
+			}
+			return selection, decision, err
+		}
+		// USTC-only groups use the same admission/fairness regardless of the
+		// optional OpenAI experimental scheduler. Mixed groups keep its policy.
+		if scheduler != nil && strings.TrimSpace(previousResponseID) == "" && guardianParentAccountID == 0 {
+			accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+			if err != nil {
+				return nil, decision, err
+			}
+			accounts = s.supplementDefaultUSTCPool(ctx, groupID, accounts)
+			onlyUSTC := len(accounts) > 0
+			for i := range accounts {
+				if !isDefaultUSTCAccount(&accounts[i]) {
+					onlyUSTC = false
+					break
+				}
+			}
+			if onlyUSTC {
+				selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx))
+				decision.Layer = openAIAccountScheduleLayerLoadBalance
+				if selection != nil {
+					applyLegacySelectionDecision(&decision, selection)
+				}
+				return selection, decision, err
+			}
+		}
+	}
 	if scheduler == nil {
 		decision.Layer = openAIAccountScheduleLayerLoadBalance
 		if selection, hit, err := s.selectLegacyAccountByPreviousResponse(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform); err != nil {

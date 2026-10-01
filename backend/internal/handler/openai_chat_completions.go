@@ -165,7 +165,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
-	rpmVetoCount := 0
+	ustcAdmissionVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -194,7 +194,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			true,
 			requestPlatform,
 		)
-		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleUSTCAdmissionSelectionFailure(c, err, lastFailoverErr, ustcAdmissionVetoCount, streamStarted, reqLog) {
 			return
 		}
 		if err != nil {
@@ -238,9 +238,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
-		if slotResult == openAISlotAcquireRPMVetoed {
-			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
-				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+		if slotResult == openAISlotAcquireUSTCVetoed {
+			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
+				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
 				return
 			}
 			continue

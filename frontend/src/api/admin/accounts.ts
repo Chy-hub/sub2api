@@ -417,6 +417,11 @@ export interface UserInfoQuotaResult {
   key_alias?: string
   /** 全部预算窗口，按 limit 升序（3h → 12h → 24h）。 */
   windows?: UserInfoBudgetWindow[]
+  /** 上游报告的 RPM、并发和 TPM 上限。 */
+  rpm_limit?: number | null
+  max_parallel_requests?: number | null
+  tpm_limit?: number | null
+  limits_known: boolean
   status_code?: number
   fetched_at: number
   persisted: boolean

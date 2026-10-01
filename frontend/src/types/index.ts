@@ -923,6 +923,16 @@ export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bed
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
+export interface USTCCapacity {
+  rpm_limit: number | null
+  parallel_limit: number | null
+  used: number
+  in_flight: number
+  available: number
+  reset_at?: string
+  state: 'ready' | 'sync_wait' | 'verify_one' | 'unknown'
+}
+
 // Claude Model type (returned by /v1/models and account models API)
 export interface ClaudeModel {
   id: string
@@ -1209,6 +1219,7 @@ export interface Account {
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
   opencode_go_usage?: OpenCodeGoUsageState
+  ustc_capacity?: USTCCapacity
   // Extra fields including Codex usage, OpenAI compact capability, and model-level rate limits.
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
@@ -1216,6 +1227,10 @@ export interface Account {
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
+    upstream_userinfo_rpm_limit?: number | null
+    upstream_userinfo_max_parallel_requests?: number | null
+    upstream_userinfo_tpm_limit?: number | null
+    upstream_userinfo_limits_known?: boolean
     codex_reset_credit_snapshot?: {
       available_count?: number
       credits?: { expires_at?: string }[]

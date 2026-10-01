@@ -55,6 +55,17 @@
       :resets-at="current?.budget_reset_at ?? null"
     />
 
+    <!-- 上游限额只读展示；金额预算继续由上方窗口显示。 -->
+    <div
+      v-if="showUpstreamLimits"
+      data-test="userinfo-upstream-limits"
+      class="flex flex-wrap items-center gap-x-2 text-[10px] leading-4 text-gray-600 dark:text-gray-300"
+    >
+      <span>{{ t('admin.accounts.userInfoQuota.rpmLimit') }} {{ formatUpstreamLimit(upstreamLimits.rpm, limitsKnown) }}</span>
+      <span>{{ t('admin.accounts.userInfoQuota.parallelLimit') }} {{ formatUpstreamLimit(upstreamLimits.parallel, limitsKnown) }}</span>
+      <span>{{ t('admin.accounts.userInfoQuota.tpmLimit') }} {{ formatUpstreamLimit(upstreamLimits.tpm, limitsKnown) }}</span>
+    </div>
+
     <!-- 探测按钮 -->
     <div class="flex flex-wrap items-center gap-1.5">
       <button
@@ -135,6 +146,17 @@ const snapshotResetAt = computed(() => {
   const v = props.account.extra?.upstream_userinfo_budget_reset_at
   return typeof v === 'string' ? v : ''
 })
+const snapshotLimitsKnown = computed(() => props.account.extra?.upstream_userinfo_limits_known === true)
+const snapshotUpstreamLimits = computed(() => {
+  const extra = props.account.extra
+  return {
+    rpm: typeof extra?.upstream_userinfo_rpm_limit === 'number' ? extra.upstream_userinfo_rpm_limit : null,
+    parallel: typeof extra?.upstream_userinfo_max_parallel_requests === 'number'
+      ? extra.upstream_userinfo_max_parallel_requests
+      : null,
+    tpm: typeof extra?.upstream_userinfo_tpm_limit === 'number' ? extra.upstream_userinfo_tpm_limit : null
+  }
+})
 // Extra 快照里的多档窗口（后端写 upstream_userinfo_windows）。
 const snapshotWindows = computed<UserInfoQuotaResult['windows']>(() => {
   const v = props.account.extra?.upstream_userinfo_windows
@@ -170,6 +192,10 @@ const current = computed(() => {
       expires_at: snapshotExpiresAt.value || undefined,
       budget_reset_at: snapshotResetAt.value || undefined,
       windows: snapshotWindows.value,
+      rpm_limit: snapshotUpstreamLimits.value.rpm,
+      max_parallel_requests: snapshotUpstreamLimits.value.parallel,
+      tpm_limit: snapshotUpstreamLimits.value.tpm,
+      limits_known: snapshotLimitsKnown.value,
       fetched_at: 0,
       persisted: true
     } satisfies UserInfoQuotaResult
@@ -179,6 +205,32 @@ const current = computed(() => {
 
 const hasData = computed(() => current.value != null)
 const isValid = computed(() => current.value?.valid !== false)
+const upstreamLimits = computed(() => {
+  if (data.value?.success) {
+    return {
+      rpm: data.value.rpm_limit ?? null,
+      parallel: data.value.max_parallel_requests ?? null,
+      tpm: data.value.tpm_limit ?? null
+    }
+  }
+  const quota = current.value
+  if (quota?.limits_known) {
+    return {
+      rpm: quota.rpm_limit ?? null,
+      parallel: quota.max_parallel_requests ?? null,
+      tpm: quota.tpm_limit ?? null
+    }
+  }
+  return snapshotUpstreamLimits.value
+})
+const limitsKnown = computed(() => data.value?.success ? data.value.limits_known === true : snapshotLimitsKnown.value)
+const showUpstreamLimits = computed(() =>
+  data.value?.success === true || typeof props.account.extra?.upstream_userinfo_limits_known === 'boolean'
+)
+const formatUpstreamLimit = (limit: number | null, known: boolean) => {
+  if (!known) return '—'
+  return limit == null ? '∞' : String(limit)
+}
 // 有上限预算才画进度条；无限额只显示文字。
 const hasBudget = computed(() => (current.value?.max_budget ?? 0) > 0)
 

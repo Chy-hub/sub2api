@@ -214,6 +214,19 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('does not expose manual RPM settings for OpenAI API-key accounts', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+
+    expect(wrapper.find('[data-testid="manual-rpm-controls"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="manual-concurrency-control"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="account-api-key-base-url"]').setValue('https://api.llm.ustc.edu.cn/v1')
+    expect(wrapper.find('[data-testid="manual-concurrency-control"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ustc-auto-concurrency-hint"]').text()).toContain('admin.accounts.ustcAutoConcurrency')
+    wrapper.unmount()
+  })
+
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-31T12:34:00'))

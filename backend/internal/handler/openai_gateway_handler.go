@@ -642,7 +642,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	switchCount := 0
 	firstOutputTimeoutSwitchCount := 0
 	profitVetoCount := 0
-	rpmVetoCount := 0
+	ustcAdmissionVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -687,7 +687,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			!imageIntent,
 			requestPlatform,
 		)
-		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleUSTCAdmissionSelectionFailure(c, err, lastFailoverErr, ustcAdmissionVetoCount, streamStarted, reqLog) {
 			return
 		}
 		if err != nil {
@@ -709,9 +709,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				cls = classifySelectionFailureError(err, cls)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-				}
-				if selectionRPMExceeded(err) {
-					c.Header("Retry-After", strconv.Itoa(60-int(time.Now().Unix()%60)))
 				}
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 				return
@@ -772,9 +769,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
-		if slotResult == openAISlotAcquireRPMVetoed {
-			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
-				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+		if slotResult == openAISlotAcquireUSTCVetoed {
+			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
+				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
 				return
 			}
 			continue
@@ -1010,12 +1007,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
-		// RPM 计数递增（Forward 成功后，soft-limit）
-		if !selection.RPMReserved() && account.IsRPMEligible() && account.GetBaseRPM() > 0 {
-			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
-				reqLog.Warn("openai.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			}
-		}
 		submitResponsesUsage(result)
 		reqLog.Debug("openai.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -1307,7 +1298,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
-	rpmVetoCount := 0
+	ustcAdmissionVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -1341,7 +1332,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			true,
 			requestPlatform,
 		)
-		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleUSTCAdmissionSelectionFailure(c, err, lastFailoverErr, ustcAdmissionVetoCount, streamStarted, reqLog) {
 			return
 		}
 		if err != nil {
@@ -1359,9 +1350,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					cls = classifySelectionFailureError(err, cls)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-					}
-					if selectionRPMExceeded(err) {
-						c.Header("Retry-After", strconv.Itoa(60-int(time.Now().Unix()%60)))
 					}
 					h.anthropicStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 					return
@@ -1390,9 +1378,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
-		if slotResult == openAISlotAcquireRPMVetoed {
-			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
-				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+		if slotResult == openAISlotAcquireUSTCVetoed {
+			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
+				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
 				return
 			}
 			continue
@@ -1584,12 +1572,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), true, nil)
 		}
 
-		// RPM 计数递增（Forward 成功后，soft-limit）
-		if !selection.RPMReserved() && account.IsRPMEligible() && account.GetBaseRPM() > 0 {
-			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
-				reqLog.Warn("openai_messages.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			}
-		}
 		submitMessagesUsage(result)
 		reqLog.Debug("openai_messages.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -2140,12 +2122,12 @@ const (
 	openAISlotAcquireProfitVetoed
 	// RPM or quota changed before admission; the slot/reservation is released.
 	// Callers record a bounded RPM veto before selecting another account.
-	openAISlotAcquireRPMVetoed
+	openAISlotAcquireUSTCVetoed
 )
 
 // Each veto may follow a full account-slot wait. Limit these retries separately
 // from upstream failover and profit checks so latency does not grow with pool size.
-const maxOpenAIRPMVetoAttempts = 3
+const maxUSTCAdmissionVetoAttempts = 3
 
 // openAIWSTurnPricing 持有 WebSocket 连接内「当前 turn」的计费定价时刻。
 // 由 BeforeTurn 在每个 turn 开始时冻结，AfterTurn 的用量提交读取它；turn 在
@@ -2189,13 +2171,13 @@ func recordOpenAIProfitVeto(failedAccountIDs map[int64]struct{}, accountID int64
 	return *vetoCount < maxProfitVetoAttempts
 }
 
-func recordOpenAIRPMVeto(failedAccountIDs map[int64]struct{}, accountID int64, vetoCount *int) bool {
+func recordOpenAIUSTCAdmissionVeto(failedAccountIDs map[int64]struct{}, accountID int64, vetoCount *int) bool {
 	failedAccountIDs[accountID] = struct{}{}
 	*vetoCount++
-	return *vetoCount < maxOpenAIRPMVetoAttempts
+	return *vetoCount < maxUSTCAdmissionVetoAttempts
 }
 
-func (h *OpenAIGatewayHandler) handleOpenAIRPMVetoExhausted(c *gin.Context, streamStarted bool, reqLog *zap.Logger, vetoCount int) {
+func (h *OpenAIGatewayHandler) handleUSTCAdmissionVetoExhausted(c *gin.Context, streamStarted bool, reqLog *zap.Logger, vetoCount int) {
 	reqLog.Warn("openai.rpm_veto_attempts_exhausted", zap.Int("rpm_veto_count", vetoCount))
 	markOpsRoutingCapacityLimited(c)
 	h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "gateway_account_limit",
@@ -2205,7 +2187,7 @@ func (h *OpenAIGatewayHandler) handleOpenAIRPMVetoExhausted(c *gin.Context, stre
 // A local admission veto may exhaust a small pool before the retry budget.
 // Preserve the rate-limit response instead of reporting an upstream failure
 // when no request was forwarded.
-func (h *OpenAIGatewayHandler) handleOpenAIRPMSelectionFailure(c *gin.Context, err error, lastFailoverErr *service.UpstreamFailoverError, vetoCount int, streamStarted bool, reqLog *zap.Logger) bool {
+func (h *OpenAIGatewayHandler) handleUSTCAdmissionSelectionFailure(c *gin.Context, err error, lastFailoverErr *service.UpstreamFailoverError, vetoCount int, streamStarted bool, reqLog *zap.Logger) bool {
 	if retryAfter, ok := service.USTCPoolRetryAfter(err); ok && !failoverClientGone(c) {
 		c.Header("Retry-After", strconv.Itoa(retryAfter))
 		reqLog.Warn("openai.ustc_pool_capacity_exhausted", zap.Error(err), zap.Int("retry_after", retryAfter))
@@ -2217,7 +2199,7 @@ func (h *OpenAIGatewayHandler) handleOpenAIRPMSelectionFailure(c *gin.Context, e
 	if vetoCount == 0 || lastFailoverErr != nil || failoverClientGone(c) || (err != nil && !errors.Is(err, service.ErrNoAvailableAccounts)) {
 		return false
 	}
-	h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, vetoCount)
+	h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, vetoCount)
 	return true
 }
 
@@ -2277,15 +2259,16 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	// 门只存在于调度栈的局部 ctx，必须经选号结果重放到本函数的 ctx 上。
 	ctx := service.ContextWithSelectionProfitGate(c.Request.Context(), selection)
 	account := selection.Account
-	admitRPM := func(release func()) bool {
-		if !h.gatewayService.PrepareDefaultAccountRPM(ctx, selection) {
+	admitUSTC := func(release func()) bool {
+		if !h.gatewayService.PrepareUSTCAdmission(ctx, selection) {
 			if release != nil {
 				release()
 			}
-			selection.ReleaseRPMReservation()
+			selection.ReleaseUSTCAdmission()
 			return false
 		}
-		selection.CommitRPMReservation()
+		ctx = service.ContextWithUSTCAdmission(ctx, selection)
+		c.Request = c.Request.WithContext(ctx)
 		return true
 	}
 	if selection.Acquired {
@@ -2299,8 +2282,8 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		}
 		account = latest
 		selection.Account = latest
-		if !admitRPM(selection.ReleaseFunc) {
-			return nil, openAISlotAcquireRPMVetoed
+		if !admitUSTC(selection.ReleaseFunc) {
+			return nil, openAISlotAcquireUSTCVetoed
 		}
 		// 调度器已抢槽路径无门时由选号内部完成 eager 绑定；门下选号内部
 		// 推迟绑定，这里在终检通过后补准入后绑定。
@@ -2309,7 +2292,12 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 				reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 		}
-		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), openAISlotAcquireOK
+		return wrapReleaseOnDone(ctx, func() {
+			selection.ReleaseUSTCAdmission()
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+		}), openAISlotAcquireOK
 	}
 	if selection.WaitPlan == nil {
 		markOpsRoutingCapacityLimited(c)
@@ -2341,13 +2329,18 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		}
 		account = latest
 		selection.Account = latest
-		if !admitRPM(fastReleaseFunc) {
-			return nil, openAISlotAcquireRPMVetoed
+		if !admitUSTC(fastReleaseFunc) {
+			return nil, openAISlotAcquireUSTCVetoed
 		}
 		if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
-		return wrapReleaseOnDone(ctx, fastReleaseFunc), openAISlotAcquireOK
+		return wrapReleaseOnDone(ctx, func() {
+			selection.ReleaseUSTCAdmission()
+			if fastReleaseFunc != nil {
+				fastReleaseFunc()
+			}
+		}), openAISlotAcquireOK
 	}
 
 	canWait, waitErr := h.concurrencyHelper.IncrementAccountWaitCount(ctx, account.ID, selection.WaitPlan.MaxWaiting)
@@ -2400,13 +2393,18 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	}
 	account = latest
 	selection.Account = latest
-	if !admitRPM(accountReleaseFunc) {
-		return nil, openAISlotAcquireRPMVetoed
+	if !admitUSTC(accountReleaseFunc) {
+		return nil, openAISlotAcquireUSTCVetoed
 	}
 	if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
-	return wrapReleaseOnDone(ctx, accountReleaseFunc), openAISlotAcquireOK
+	return wrapReleaseOnDone(ctx, func() {
+		selection.ReleaseUSTCAdmission()
+		if accountReleaseFunc != nil {
+			accountReleaseFunc()
+		}
+	}), openAISlotAcquireOK
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
@@ -2903,7 +2901,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// Account selection starts a fresh upstream attempt. Clear any model
 		// captured by the previous failover account before credential lookup.
 		setOpsSelectedAccount(c, account.ID, account.Platform)
-		currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
+		currentAccountRelease = wrapReleaseOnDone(ctx, func() {
+			selection.ReleaseUSTCAdmission()
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+		})
 		if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.websocket_bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
@@ -3081,7 +3084,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "account is busy, please retry later", nil)
 				}
 				currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
-				currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
+				currentAccountRelease = wrapReleaseOnDone(ctx, func() {
+					selection.ReleaseUSTCAdmission()
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+				})
 				return checkSimpleModeTurnBilling()
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {

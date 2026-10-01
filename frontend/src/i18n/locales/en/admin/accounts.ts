@@ -174,6 +174,9 @@ export default {
         probeTooltip: 'Query the upstream /key/info endpoint for budget balance',
         invalid: 'Invalid',
         usageUnknown: 'Upstream does not provide usage for this window; usage percent withheld',
+        rpmLimit: 'RPM',
+        parallelLimit: 'Concurrency',
+        tpmLimit: 'TPM',
       },
       opencodeGo: {
         accountMode: {
@@ -400,6 +403,21 @@ export default {
           full: 'Active sessions full, new sessions must wait (idle timeout: {idle} min)',
           normal: 'Active sessions normal (idle timeout: {idle} min)'
         },
+        ustc: {
+          rpm: 'Upstream RPM',
+          parallel: 'Upstream concurrency',
+          available: '{count} available',
+          resetAt: 'Resets {time}',
+          detail: 'Upstream RPM {rpm}, concurrency {parallel}, {available} available slots',
+          state: {
+            ready: 'Ready',
+            sync_wait: 'Waiting to sync',
+            verify_one: 'Verifying one request',
+            rpm_wait: 'Waiting for RPM reset',
+            parallel_wait: 'Waiting for parallel capacity',
+            unknown: 'Unknown state'
+          }
+        },
         rpm: {
           full: 'RPM limit reached',
           warning: 'RPM approaching limit',
@@ -417,6 +435,7 @@ export default {
           normal: 'Quota normal'
         },
       },
+      ustcAutoConcurrency: 'USTC concurrency limits are read from the upstream and do not need manual configuration.',
       tempUnschedulable: {
         title: 'Temp Unschedulable',
         statusTitle: 'Temp Unschedulable Status',

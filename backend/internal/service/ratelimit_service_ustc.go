@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	ustcTransient429Cooldown  = 3 * time.Second
+	ustcTransient429Cooldown  = time.Minute
 	ustcBudgetRecheckCooldown = 30 * time.Second
 )
 
@@ -29,11 +29,7 @@ func (s *RateLimitService) handleUSTC429(ctx context.Context, account *Account, 
 	now := time.Now()
 	var resetAt time.Time
 	reason := "ustc_429_transient"
-	retryDelay := retryAfter(headers, now)
-	if retryDelay > 0 {
-		resetAt = now.Add(retryDelay)
-		reason = "ustc_429_retry_after"
-	} else if isUSTCBudgetExhaustion429(responseBody) {
+	if isUSTCBudgetExhaustion429(responseBody) {
 		// A known reset is a precise reason to revisit the quota snapshot, not a
 		// cooldown to persist for its full (possibly multi-hour) duration. Recheck
 		// at the nearest exhausted-window reset or in 30 seconds, whichever comes
@@ -43,9 +39,20 @@ func (s *RateLimitService) handleUSTC429(ctx context.Context, account *Account, 
 			resetAt = nextReset
 		}
 		reason = "ustc_429_budget_recheck"
+		if delay := retryAfter(headers, now); delay > 0 {
+			resetAt = now.Add(delay)
+		}
 	} else {
-		// Generic RPM/concurrency 429s must not inherit old quota or Codex resets.
-		resetAt = now.Add(ustcTransient429Cooldown)
+		resetAt = now.Add(ustc429Delay(headers, now))
+		reason = "ustc_429_sync_wait"
+		if s.ustcCapacityCache != nil {
+			if err := s.ustcCapacityCache.USTCCooldown(ctx, USTCKeyScope(account), time.Until(resetAt)); err != nil {
+				slog.Warn("ustc_shared_cooldown_failed", "account_id", account.ID, "error", err)
+			}
+		}
+	}
+	if s.ustcCapacityNotify != nil {
+		s.ustcCapacityNotify()
 	}
 
 	s.notifyAccountSchedulingBlocked(account, resetAt, reason)
