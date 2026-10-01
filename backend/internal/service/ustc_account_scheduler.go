@@ -2,80 +2,14 @@ package service
 
 import (
 	"context"
-	"log/slog"
-	"math/rand"
 	"sort"
-	"sync"
 	"time"
 )
 
-// Native WebSocket admission owns turn-level accounting separately from the
-// HTTP handlers that commit these RPM reservations.
 type skipDefaultUSTCBalancingKey struct{}
-
-// Selected USTC accounts may be rechecked while a slot is held. In that phase
-// only the immediate admission reader may refresh quota observations.
 type ustcQuotaAdmissionKey struct{}
-
-// The default pool keeps eligible accounts usable while their quota data is
-// refreshed. Other scheduling modes retain their existing admission policy.
 type ustcQuotaBackgroundAdmissionKey struct{}
 
-// A reservation is refunded only when admission fails before forwarding.
-type openAIAccountRPMReservation struct {
-	mu        sync.Mutex
-	committed bool
-	released  bool
-	cancel    func()
-	onCommit  func()
-}
-
-func (r *openAIAccountRPMReservation) commit() {
-	r.mu.Lock()
-	if r.released || r.committed {
-		r.mu.Unlock()
-		return
-	}
-	r.committed = true
-	onCommit := r.onCommit
-	r.mu.Unlock()
-	if onCommit != nil {
-		onCommit()
-	}
-}
-
-func (r *openAIAccountRPMReservation) release() {
-	r.mu.Lock()
-	if r.released || r.committed {
-		r.mu.Unlock()
-		return
-	}
-	r.released = true
-	cancel := r.cancel
-	r.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-}
-
-// RPMReserved distinguishes admission-time accounting from legacy success accounting.
-func (r *AccountSelectionResult) RPMReserved() bool {
-	return r != nil && r.rpmReservation != nil
-}
-
-func (r *AccountSelectionResult) ReleaseRPMReservation() {
-	if r != nil && r.rpmReservation != nil {
-		r.rpmReservation.release()
-	}
-}
-
-func (r *AccountSelectionResult) CommitRPMReservation() {
-	if r != nil && r.rpmReservation != nil {
-		r.rpmReservation.commit()
-	}
-}
-
-// This personal routing policy applies only to the known USTC upstream.
 func defaultUSTCAccountBalancingEnabled(accounts []Account) bool {
 	for i := range accounts {
 		if isDefaultUSTCAccount(&accounts[i]) {
@@ -84,11 +18,9 @@ func defaultUSTCAccountBalancingEnabled(accounts []Account) bool {
 	}
 	return false
 }
-
 func isDefaultUSTCAccount(account *Account) bool {
 	return account != nil && account.IsOpenAI() && account.Type == AccountTypeAPIKey && account.SupportsUserInfoQuota()
 }
-
 func (s *OpenAIGatewayService) refreshUSTCQuotaDuringCandidateCheck(ctx context.Context, account *Account) *Account {
 	if deferred, _ := ctx.Value(deferUSTCQuotaEligibilityKey{}).(bool); deferred {
 		return account
@@ -105,105 +37,26 @@ func (s *OpenAIGatewayService) refreshUSTCQuotaDuringCandidateCheck(ctx context.
 	return s.refreshUSTCQuotaForScheduling(ctx, account)
 }
 
-func (s *OpenAIGatewayService) reserveDefaultAccountRPM(ctx context.Context, account *Account, sticky bool) (*openAIAccountRPMReservation, bool) {
-	if s.rpmCache == nil {
-		return nil, true
-	}
-	limit := account.GetBaseRPM()
-	if sticky && limit > 0 {
-		if account.GetRPMStrategy() == "sticky_exempt" {
-			limit = 0
-		} else {
-			limit += account.GetRPMStickyBuffer()
-		}
-	}
-	if cache, ok := s.rpmCache.(RPMReservationCache); ok {
-		allowed, cancel, err := cache.ReserveRPM(ctx, account.ID, limit)
-		if err != nil {
-			slog.Warn("openai_default_rpm_reservation_failed", "account_id", account.ID, "error", err)
-			return nil, true // retain the existing Redis fail-open policy
-		}
-		if !allowed {
-			return nil, false
-		}
-		return &openAIAccountRPMReservation{cancel: cancel}, true
-	}
-	// Compatibility for implementations without reservations (e.g. older plugins).
-	count, err := s.rpmCache.GetRPM(ctx, account.ID)
-	if err != nil {
-		return nil, true
-	}
-	if limit > 0 && count >= limit {
-		return nil, false
-	}
-	// Older caches cannot atomically reserve or refund. Delay their accounting
-	// until forwarding admission, so discarded selections consume no RPM.
-	return &openAIAccountRPMReservation{onCommit: func() {
-		commitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if _, err := s.rpmCache.IncrementRPM(commitCtx, account.ID); err != nil {
-			slog.Warn("openai_default_rpm_commit_failed", "account_id", account.ID, "error", err)
-		}
-	}}, true
-}
-
-// PrepareDefaultAccountRPM also covers slots acquired after waiting: the RPM
-// window is checked at admission rather than reserved throughout a long queue.
-func (s *OpenAIGatewayService) PrepareDefaultAccountRPM(ctx context.Context, selection *AccountSelectionResult) bool {
-	if selection == nil || selection.Account == nil || (!selection.defaultRPMManaged && !isDefaultUSTCAccount(selection.Account)) {
-		return true
-	}
-	if refresher, ok := s.ustcQuotaRefresher.(USTCQuotaAdmissionRefresher); ok && isDefaultUSTCAccount(selection.Account) {
-		if selection.defaultRPMManaged {
-			ctx = context.WithValue(ctx, ustcQuotaBackgroundAdmissionKey{}, true)
-		}
-		account, ready := refresher.QuotaForAdmission(ctx, selection.Account)
-		if account != nil {
-			selection.Account = account
-		}
-		if !ready {
-			// Release this slot while the shared refresh proceeds in background.
-			return false
-		}
-	} else {
-		selection.Account = s.refreshUSTCQuotaForScheduling(ctx, selection.Account)
-	}
-	if userInfoQuotaSchedulingFailureReason(selection.Account, time.Now()) != "" {
-		return false
-	}
-	if !selection.defaultRPMManaged {
-		return true
-	}
-	if selection.RPMReserved() {
-		return true
-	}
-	reservation, allowed := s.reserveDefaultAccountRPM(ctx, selection.Account, selection.rpmSticky)
-	selection.rpmReservation = reservation
-	return allowed
-}
-
 func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 	ctx context.Context, groupID *int64, accounts []Account, sessionHash, requestedModel string,
 	excludedIDs map[int64]struct{}, requireCompact bool, capability OpenAIEndpointCapability, preferLowRate bool,
 ) (*AccountSelectionResult, error) {
-	stickyID := int64(0)
-	if sessionHash != "" && s.cache != nil {
-		stickyID, _ = s.getStickySessionAccountID(ctx, groupID, sessionHash)
-	}
 	stats := openAISelectionFilterStats{pool: len(accounts)}
 	var retryAt time.Time
-	recoverAt := func(at time.Time) {
-		if !at.IsZero() && (retryAt.IsZero() || at.Before(retryAt)) {
+	mutable := false
+	recoverAt := func(at time.Time, canChange bool) {
+		if at.IsZero() {
+			at = time.Now().Add(time.Second)
+		}
+		if retryAt.IsZero() || at.Before(retryAt) {
 			retryAt = at
 		}
+		mutable = mutable || canChange
 	}
-	initialCtx := ctx
-	if s.ustcQuotaRefresher != nil {
-		// Refresh only the selected candidates, including stale exhausted ones.
-		initialCtx = context.WithValue(ctx, deferUSTCQuotaEligibilityKey{}, true)
-	}
+	initialCtx := context.WithValue(ctx, deferUSTCQuotaEligibilityKey{}, true)
 	var candidates []*Account
-	var ids []int64
+	capacities := make(map[int64]USTCCapacity)
+	cache, configured := s.rpmCache.(USTCCapacityCache)
 	for i := range accounts {
 		account := &accounts[i]
 		if _, excluded := excludedIDs[account.ID]; excluded {
@@ -212,14 +65,15 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		}
 		if reason := openAICompatibleAccountEligibilityFailureReason(initialCtx, account, PlatformOpenAI, requestedModel, false, capability); reason != "" {
 			stats.exclude(reason)
-			if reason == "not_schedulable" && isDefaultUSTCAccount(account) && account.IsActive() && account.Schedulable && account.IsModelSupported(requestedModel) && account.SupportsOpenAIEndpointCapability(capability) {
-				recoverAt(ustcAccountCoolingUntil(account, time.Now()))
-			}
-			if isDefaultUSTCAccount(account) && account.IsModelSupported(requestedModel) && account.SupportsOpenAIEndpointCapability(capability) {
+			if isDefaultUSTCAccount(account) && account.IsActive() && account.Schedulable && account.IsModelSupported(requestedModel) && account.SupportsOpenAIEndpointCapability(capability) {
+				if reason == "not_schedulable" {
+					recoverAt(ustcAccountCoolingUntil(account, time.Now()), false)
+				}
 				if reason == "model_rate_limited" {
-					recoverAt(time.Now().Add(ustcPoolPollInterval))
-				} else if reason == "upstream_userinfo_window_exhausted" {
-					recoverAt(ustcQuotaNextCheck(account, time.Now()))
+					recoverAt(time.Now().Add(time.Second), true)
+				}
+				if reason == "upstream_userinfo_window_exhausted" {
+					recoverAt(ustcQuotaNextCheck(account, time.Now()), true)
 				}
 			}
 			continue
@@ -228,15 +82,45 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			stats.exclude("runtime_blocked")
 			continue
 		}
-		candidates = append(candidates, account)
 		if isDefaultUSTCAccount(account) {
-			ids = append(ids, account.ID)
+			account = s.ustcAccountForAdmission(ctx, account)
+			if account == nil {
+				stats.exclude("limits_unknown")
+				recoverAt(time.Now().Add(time.Second), true)
+				continue
+			}
+			if reason := userInfoQuotaSchedulingFailureReason(account, time.Now()); reason != "" {
+				stats.exclude(reason)
+				if reason == "upstream_userinfo_window_exhausted" {
+					recoverAt(ustcQuotaNextCheck(account, time.Now()), true)
+				}
+				continue
+			}
+			limits, _ := USTCAccountLimits(account)
+			if !configured {
+				stats.exclude("capacity_unavailable")
+				recoverAt(time.Now().Add(time.Second), true)
+				continue
+			}
+			capacity, err := readUSTCCapacity(ctx, cache, USTCKeyScope(account), limits)
+			if err != nil {
+				stats.exclude("capacity_unavailable")
+				recoverAt(time.Now().Add(time.Second), true)
+				continue
+			}
+			capacities[account.ID] = capacity
+			rpmLimit := limits.RPM
+			if capacity.RPMLimit != nil {
+				rpmLimit = *capacity.RPMLimit
+			}
+			if capacity.State == "sync_wait" || capacity.State == "unknown" || (capacity.State == "verify_one" && capacity.Available <= 0) || (rpmLimit > 0 && capacity.Used+capacity.Pending >= rpmLimit) || (limits.Parallel > 0 && capacity.InFlight >= limits.Parallel) {
+				stats.exclude("ustc_capacity")
+				recoverAt(capacity.ResetAt, ustcCapacityCanRecoverEarly(capacity))
+				continue
+			}
 		}
+		candidates = append(candidates, account)
 	}
-	counts, loads := s.defaultUSTCPoolPoll(ctx, ids, candidates)
-	// Random ties are deliberate: LastUsedAt and cached load are shared snapshots,
-	// so deterministic ties make concurrent requests flock to the same account.
-	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(candidates, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -251,14 +135,14 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
 		}
-		loadA, loadB := defaultUSTCLoadRate(loads, a.ID), defaultUSTCLoadRate(loads, b.ID)
-		if loadA != loadB {
-			return loadA < loadB
-		}
 		return s.isBetterAccount(a, b)
 	})
-	// Keep other upstreams in their legacy positions. Within each cost/priority
-	// cohort, only USTC accounts trade places according to their current RPM.
+	// Preserve non-USTC ordering. Balance USTC only within the same priority/cost.
+	state := s.defaultUSTCPoolState()
+	state.mu.Lock()
+	offset := state.cursor
+	state.cursor++
+	state.mu.Unlock()
 	for start := 0; start < len(candidates); {
 		end := start + 1
 		for end < len(candidates) && candidates[end].Priority == candidates[start].Priority && rateOrder.compare(candidates[start], candidates[end]) == 0 {
@@ -272,20 +156,28 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 				ustc = append(ustc, candidates[i])
 			}
 		}
-		rand.Shuffle(len(ustc), func(i, j int) { ustc[i], ustc[j] = ustc[j], ustc[i] })
-		sort.SliceStable(ustc, func(i, j int) bool {
-			a, b := ustc[i], ustc[j]
-			if counts[a.ID] != counts[b.ID] {
-				return counts[a.ID] < counts[b.ID]
+		if len(ustc) > 0 {
+			sort.SliceStable(ustc, func(i, j int) bool { return ustc[i].ID < ustc[j].ID })
+			shift := int(offset % uint64(len(ustc)))
+			ustc = append(ustc[shift:], ustc[:shift]...)
+			sort.SliceStable(ustc, func(i, j int) bool {
+				a, b := capacities[ustc[i].ID], capacities[ustc[j].ID]
+				x, y := ustcCapacityRatio(a), ustcCapacityRatio(b)
+				if x != y {
+					return x < y
+				}
+				return a.InFlight < b.InFlight
+			})
+			for i, position := range positions {
+				candidates[position] = ustc[i]
 			}
-			return defaultUSTCLoadRate(loads, a.ID) < defaultUSTCLoadRate(loads, b.ID)
-		})
-		for i, position := range positions {
-			candidates[position] = ustc[i]
 		}
 		start = end
 	}
-	// A non-USTC sticky binding retains its original preference.
+	stickyID := int64(0)
+	if sessionHash != "" && s.cache != nil {
+		stickyID, _ = s.getStickySessionAccountID(ctx, groupID, sessionHash)
+	}
 	for i, account := range candidates {
 		if account.ID == stickyID && !isDefaultUSTCAccount(account) {
 			copy(candidates[1:i+1], candidates[:i])
@@ -294,158 +186,117 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		}
 	}
 	var waiting *Account
-	var waitingSticky bool
 	stickySpillover := false
 	compactBlocked := false
-	// Green accounts always precede the sticky buffer, irrespective of priority.
-	for _, stickyPass := range []bool{false, true} {
-		for _, account := range candidates {
-			managed := isDefaultUSTCAccount(account)
-			if stickyPass && (!managed || stickyID <= 0 || account.ID != stickyID) {
-				continue
-			}
-			current := counts[account.ID]
-			if managed && account.GetBaseRPM() > 0 && (account.CheckRPMSchedulability(current) == WindowCostNotSchedulable ||
-				(!stickyPass && current >= account.GetBaseRPM())) {
-				stats.exclude("rpm_exceeded")
-				now := time.Now()
-				recoverAt(now.Truncate(time.Minute).Add(time.Minute))
-				continue
-			}
-			candidateCtx := ctx
+	for _, account := range candidates {
+		managed := isDefaultUSTCAccount(account)
+		candidateCtx := ctx
+		if managed {
+			candidateCtx = context.WithValue(ctx, ustcQuotaAdmissionKey{}, true)
+			candidateCtx = context.WithValue(candidateCtx, ustcQuotaBackgroundAdmissionKey{}, true)
+		}
+		fresh := s.resolveFreshSchedulableOpenAIAccount(candidateCtx, account, PlatformOpenAI, requestedModel, false, capability)
+		if fresh != nil {
+			fresh = s.recheckSelectedOpenAIAccountFromDB(candidateCtx, fresh, groupID, PlatformOpenAI, requestedModel, requireCompact, capability)
+		}
+		if fresh == nil {
+			stats.exclude("candidate_changed")
 			if managed {
-				if reader, ok := s.ustcQuotaRefresher.(USTCQuotaAdmissionRefresher); ok {
-					candidateCtx = context.WithValue(ctx, ustcQuotaBackgroundAdmissionKey{}, true)
-					refreshed, ready := reader.QuotaForAdmission(candidateCtx, account)
-					if !ready {
-						stats.exclude("quota_refresh_pending")
-						recoverAt(time.Now().Add(ustcPoolPollInterval))
-						continue
-					}
-					account = refreshed
-					candidateCtx = context.WithValue(candidateCtx, ustcQuotaAdmissionKey{}, true)
-				} else {
-					account = s.refreshUSTCQuotaForScheduling(ctx, account)
-				}
-				if reason := userInfoQuotaSchedulingFailureReason(account, time.Now()); reason != "" {
-					stats.exclude(reason)
-					if reason == "upstream_userinfo_window_exhausted" {
-						recoverAt(ustcQuotaNextCheck(account, time.Now()))
-					}
-					continue
-				}
+				recoverAt(time.Now().Add(time.Second), true)
 			}
-			fresh := s.resolveFreshSchedulableOpenAIAccount(candidateCtx, account, PlatformOpenAI, requestedModel, false, capability)
-			if fresh != nil {
-				fresh = s.recheckSelectedOpenAIAccountFromDB(candidateCtx, fresh, groupID, PlatformOpenAI, requestedModel, requireCompact, capability)
+			continue
+		}
+		if requireCompact && openAICompactSupportTier(fresh) == 0 {
+			compactBlocked = true
+			continue
+		}
+		if s.needsUpstreamChannelRestrictionCheck(ctx, groupID) && s.isUpstreamModelRestrictedByChannel(ctx, derefGroupID(groupID), fresh, requestedModel, requireCompact) {
+			continue
+		}
+		maxConcurrency := fresh.Concurrency
+		if managed {
+			if limits, known := USTCAccountLimits(fresh); known {
+				maxConcurrency = limits.Parallel
+				fresh = copyAccountForUserInfoQuotaRefresh(fresh)
+				fresh.Concurrency = maxConcurrency
 			}
-			if fresh == nil {
-				stats.exclude("candidate_changed")
-				if managed {
-					// Cooling may have been written after the membership read. Give
-					// the pool a chance to recover instead of an unexplained 503.
-					recoverAt(time.Now().Add(ustcPoolPollInterval))
-				}
-				continue
-			}
-			if requireCompact && openAICompactSupportTier(fresh) == 0 {
-				compactBlocked = true
-				continue
-			}
-			if s.needsUpstreamChannelRestrictionCheck(ctx, groupID) && s.isUpstreamModelRestrictedByChannel(ctx, derefGroupID(groupID), fresh, requestedModel, requireCompact) {
-				continue
-			}
-			var acquired *AcquireResult
-			var err error
-			_, waitingPoll := ctx.Value(ustcPoolPollKey{}).(string)
-			if load := loads[fresh.ID]; managed && waitingPoll && load != nil && fresh.Concurrency > 0 && load.CurrentConcurrency >= fresh.Concurrency {
-				acquired = &AcquireResult{}
+		}
+		acquired, err := s.tryAcquireAccountSlot(ctx, fresh.ID, maxConcurrency)
+		if err != nil || acquired == nil || !acquired.Acquired {
+			if managed {
+				recoverAt(time.Now().Add(time.Second), true)
 			} else {
-				acquired, err = s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
-			}
-			if err != nil || acquired == nil || !acquired.Acquired {
-				if fresh.ID == stickyID && !isDefaultUSTCAccount(fresh) && s.concurrencyService != nil {
+				if fresh.ID == stickyID && s.concurrencyService != nil {
 					cfg := s.schedulingConfig()
 					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, fresh.ID)
 					if waitingCount < cfg.StickySessionMaxWaiting {
-						selection, err := s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
-							AccountID: fresh.ID, MaxConcurrency: fresh.Concurrency,
-							Timeout: cfg.StickySessionWaitTimeout, MaxWaiting: cfg.StickySessionMaxWaiting,
-						})
+						selection, err := s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{AccountID: fresh.ID, MaxConcurrency: fresh.Concurrency, Timeout: cfg.StickySessionWaitTimeout, MaxWaiting: cfg.StickySessionMaxWaiting})
 						return markStickySessionHit(selection, true), err
 					}
 					stickySpillover = true
 				}
 				if waiting == nil {
-					waiting, waitingSticky = fresh, stickyPass
+					waiting = fresh
 				}
-				continue
 			}
-			var reservation *openAIAccountRPMReservation
-			allowed := true
-			managed = isDefaultUSTCAccount(fresh)
-			if managed {
-				reservation, allowed = s.reserveDefaultAccountRPM(ctx, fresh, stickyPass)
-			}
-			if !allowed {
-				stats.exclude("rpm_exceeded")
-				now := time.Now()
-				recoverAt(now.Truncate(time.Minute).Add(time.Minute))
+			continue
+		}
+		var reservation *ustcAdmission
+		if managed {
+			var capacity USTCCapacity
+			reservation, capacity, err = s.reserveUSTC(ctx, fresh)
+			if err != nil || reservation == nil {
 				if acquired.ReleaseFunc != nil {
 					acquired.ReleaseFunc()
 				}
+				recoverAt(capacity.ResetAt, ustcCapacityCanRecoverEarly(capacity) || err != nil)
 				continue
 			}
-			selection, err := s.newAcquiredSelectionResult(ctx, fresh, acquired.ReleaseFunc)
-			if err != nil {
-				if reservation != nil {
-					reservation.release()
-				}
-				return nil, err
-			}
-			selection.defaultRPMManaged, selection.rpmSticky, selection.rpmReservation = managed, stickyPass, reservation
-			releaseSlot := selection.ReleaseFunc
-			selection.ReleaseFunc = func() {
-				selection.ReleaseRPMReservation()
-				if releaseSlot != nil {
-					releaseSlot()
-				}
-			}
-			if sessionHash != "" && !stickySpillover && !gatewayProfitControlGateActive(ctx) {
-				_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
-			}
-			return markStickySessionHit(selection, stickyPass || (!managed && fresh.ID == stickyID)), nil
 		}
+		selection, err := s.newAcquiredSelectionResult(ctx, fresh, acquired.ReleaseFunc)
+		if err != nil {
+			if reservation != nil {
+				reservation.release()
+			}
+			return nil, err
+		}
+		selection.ustcAdmission = reservation
+		releaseSlot := selection.ReleaseFunc
+		selection.ReleaseFunc = func() {
+			selection.ReleaseUSTCAdmission()
+			if releaseSlot != nil {
+				releaseSlot()
+			}
+		}
+		if sessionHash != "" && !stickySpillover && !gatewayProfitControlGateActive(ctx) {
+			_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
+		}
+		return markStickySessionHit(selection, !managed && fresh.ID == stickyID), nil
 	}
 	if waiting != nil {
 		cfg := s.schedulingConfig()
-		plan := &AccountWaitPlan{
-			AccountID: waiting.ID, MaxConcurrency: waiting.Concurrency,
-			Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting,
-		}
-		stickyHit := stickyID > 0 && waiting.ID == stickyID
-		if stickyHit && s.concurrencyService != nil {
-			waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, waiting.ID)
-			if waitingCount < cfg.StickySessionMaxWaiting {
-				plan.Timeout, plan.MaxWaiting = cfg.StickySessionWaitTimeout, cfg.StickySessionMaxWaiting
-			}
-		}
-		selection, err := s.newSelectionResult(ctx, waiting, false, nil, plan)
-		if err == nil {
-			selection.defaultRPMManaged, selection.rpmSticky = isDefaultUSTCAccount(waiting), waitingSticky
-		}
-		return markStickySessionHit(selection, stickyHit), err
+		return s.newSelectionResult(ctx, waiting, false, nil, &AccountWaitPlan{AccountID: waiting.ID, MaxConcurrency: waiting.Concurrency, Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting})
 	}
 	err := noAvailableOpenAISelectionError(requestedModel, compactBlocked, stats.summary(""))
 	if !retryAt.IsZero() && !compactBlocked {
-		return nil, &ustcPoolCapacityError{cause: err, retryAfter: time.Until(retryAt)}
+		return nil, &ustcPoolCapacityError{cause: err, retryAfter: maxUSTCDuration(time.Millisecond, time.Until(retryAt)), mutable: mutable}
 	}
 	return nil, err
 }
-
-func defaultUSTCLoadRate(loads map[int64]*AccountLoadInfo, id int64) int {
-	if load := loads[id]; load != nil {
-		return load.LoadRate
+func ustcCapacityRatio(capacity USTCCapacity) float64 {
+	if capacity.RPMLimit != nil && *capacity.RPMLimit > 0 {
+		return float64(capacity.Used+capacity.Pending) / float64(*capacity.RPMLimit)
 	}
 	return 0
+}
+
+func ustcCapacityCanRecoverEarly(capacity USTCCapacity) bool {
+	if capacity.State == "sync_wait" {
+		return false
+	}
+	if capacity.RPMLimit != nil && *capacity.RPMLimit > 0 && capacity.Used >= *capacity.RPMLimit {
+		// Closing an already sent stream releases concurrency, never its RPM.
+		return false
+	}
+	return capacity.Pending > 0 || capacity.InFlight > 0 || capacity.State == "unknown"
 }

@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -21,13 +19,13 @@ import (
 // - Value: 当前分钟内的请求计数
 // - TTL: 120 秒（覆盖当前分钟 + 一定冗余）
 //
-// 通过 rdb.Time() 获取服务端时间，避免多实例时钟不同步。普通递增使用
-// TxPipeline；限额预留与撤销使用单 key Lua 脚本，兼容 Redis Cluster。
+// 使用 TxPipeline（MULTI/EXEC）执行 INCR + EXPIRE，保证原子性且兼容 Redis Cluster。
+// 通过 rdb.Time() 获取服务端时间，避免多实例时钟不同步。
 //
 // 设计决策：
 //   - TxPipeline vs Pipeline：Pipeline 仅合并发送但不保证原子，TxPipeline 使用 MULTI/EXEC 事务保证原子执行。
-//   - rdb.Time() 单独调用：脚本执行前需确定当前分钟的 key，因此 TIME 必须单独调用。
-//   - 预留脚本只操作该分钟的一个 key，不会触发 Redis Cluster CROSSSLOT。
+//   - rdb.Time() 单独调用：Pipeline/TxPipeline 中无法引用前一命令的结果，因此 TIME 必须单独调用（2 RTT）。
+//     Lua 脚本可以做到 1 RTT，但在 Redis Cluster 中动态拼接 key 存在 CROSSSLOT 风险，选择安全性优先。
 const (
 	// RPM 计数器键前缀
 	// 格式: rpm:{accountID}:{minuteTimestamp}
@@ -35,28 +33,7 @@ const (
 
 	// RPM 计数器 TTL（120 秒，覆盖当前分钟窗口 + 冗余）
 	rpmKeyTTL = 120 * time.Second
-
-	rpmReservationCancelTimeout = 2 * time.Second
 )
-
-var reserveRPMWithLimitScript = redis.NewScript(`
-local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-local limit = tonumber(ARGV[1])
-if limit > 0 and current >= limit then
-  return 0
-end
-redis.call('INCR', KEYS[1])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
-return 1
-`)
-
-var cancelRPMReservationScript = redis.NewScript(`
-local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-if current <= 0 then
-  return 0
-end
-return redis.call('DECR', KEYS[1])
-`)
 
 // RPMCacheImpl RPM 计数器缓存 Redis 实现
 type RPMCacheImpl struct {
@@ -67,8 +44,6 @@ type RPMCacheImpl struct {
 func NewRPMCache(rdb *redis.Client) service.RPMCache {
 	return &RPMCacheImpl{rdb: rdb}
 }
-
-var _ service.RPMReservationCache = (*RPMCacheImpl)(nil)
 
 // currentMinuteKey 获取当前分钟的完整 Redis key
 // 使用 rdb.Time() 获取 Redis 服务端时间，避免多实例时钟偏差
@@ -111,35 +86,6 @@ func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, accountID int64) (int, 
 	}
 
 	return int(incrCmd.Val()), nil
-}
-
-// ReserveRPM increments the current minute's counter only when it is below a
-// positive limit. A nonpositive limit records the request without limiting it.
-func (c *RPMCacheImpl) ReserveRPM(ctx context.Context, accountID int64, limit int) (bool, func(), error) {
-	key, err := c.currentMinuteKey(ctx, accountID)
-	if err != nil {
-		return false, nil, fmt.Errorf("rpm reserve: %w", err)
-	}
-
-	allowed, err := reserveRPMWithLimitScript.Run(ctx, c.rdb, []string{key}, limit, int(rpmKeyTTL/time.Second)).Int()
-	if err != nil {
-		return false, nil, fmt.Errorf("rpm reserve: %w", err)
-	}
-	if allowed == 0 {
-		return false, nil, nil
-	}
-
-	var cancelOnce sync.Once
-	cancel := func() {
-		cancelOnce.Do(func() {
-			cancelCtx, cancelContext := context.WithTimeout(context.Background(), rpmReservationCancelTimeout)
-			defer cancelContext()
-			if err := cancelRPMReservationScript.Run(cancelCtx, c.rdb, []string{key}).Err(); err != nil {
-				slog.Warn("openai_rpm_reservation_cancel_failed", "account_id", accountID, "error", err)
-			}
-		})
-	}
-	return true, cancel, nil
 }
 
 // GetRPM 获取当前分钟的 RPM 计数

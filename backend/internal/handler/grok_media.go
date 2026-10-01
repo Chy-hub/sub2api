@@ -207,7 +207,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	// 也防止已计费的在途视频任务因绑定账号被门排除而查询返回伪 404。
 	requestCtx := service.WithOpenAIProfitControlSuppressed(c.Request.Context())
 	profitVetoCount := 0
-	rpmVetoCount := 0
+	ustcAdmissionVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -266,7 +266,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			selection.ReleaseFunc = wrapReleaseOnDone(requestCtx, selection.ReleaseFunc)
 			accountReleaseFunc = selection.ReleaseFunc
 		}
-		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleUSTCAdmissionSelectionFailure(c, err, lastFailoverErr, ustcAdmissionVetoCount, streamStarted, reqLog) {
 			return
 		}
 		if err != nil {
@@ -371,9 +371,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		}
 		var slotResult openAISlotAcquireResult
 		accountReleaseFunc, slotResult = h.acquireResponsesAccountSlot(c, apiKey.GroupID, admissionSessionHash, selection, false, &streamStarted, reqLog)
-		if slotResult == openAISlotAcquireRPMVetoed {
-			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
-				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+		if slotResult == openAISlotAcquireUSTCVetoed {
+			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
+				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
 				return
 			}
 			continue
@@ -398,9 +398,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer releaseAccount()
 			if endpoint.IsSeedance() {
-				return h.gatewayService.ForwardSeedance(requestCtx, c, account, endpoint, requestID, body)
+				return h.gatewayService.ForwardSeedance(service.ContextWithUSTCAdmission(requestCtx, selection), c, account, endpoint, requestID, body)
 			}
-			return h.gatewayService.ForwardGrokMedia(requestCtx, c, account, endpoint, requestID, body, contentType)
+			return h.gatewayService.ForwardGrokMedia(service.ContextWithUSTCAdmission(requestCtx, selection), c, account, endpoint, requestID, body, contentType)
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()

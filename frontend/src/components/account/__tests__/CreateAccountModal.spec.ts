@@ -219,7 +219,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
-  it('can create a passthrough account with model filtering enabled', async () => {
+it('can create a passthrough account with model filtering enabled', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
@@ -235,6 +235,19 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(payload.extra.openai_passthrough).toBe(true)
     expect(payload.extra.openai_passthrough_model_filter).toBe(true)
     expect(payload.credentials.model_mapping).toEqual({ 'qwen3.8-max': 'qwen3.8-max' })
+    wrapper.unmount()
+  })
+
+  it('does not expose manual RPM settings for OpenAI API-key accounts', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+
+    expect(wrapper.find('[data-testid="manual-rpm-controls"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="manual-concurrency-control"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="account-api-key-base-url"]').setValue('https://api.llm.ustc.edu.cn/v1')
+    expect(wrapper.find('[data-testid="manual-concurrency-control"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ustc-auto-concurrency-hint"]').text()).toContain('admin.accounts.ustcAutoConcurrency')
     wrapper.unmount()
   })
 
