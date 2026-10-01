@@ -17,15 +17,39 @@
     <div
       v-if="showUstcCapacity"
       data-testid="ustc-capacity"
-      class="flex flex-wrap items-center gap-x-1.5 text-[10px] leading-tight text-gray-600 dark:text-gray-300"
+      class="flex flex-col items-start gap-0.5"
       :title="ustcCapacityTooltip"
     >
-      <span>{{ t('admin.accounts.capacity.ustc.rpm') }} {{ formatLimit(ustcCapacity?.used, ustcCapacity?.rpm_limit) }}</span>
-      <span aria-hidden="true" class="text-gray-300 dark:text-gray-600">·</span>
-      <span>{{ t('admin.accounts.capacity.ustc.parallel') }} {{ formatLimit(ustcCapacity?.in_flight, ustcCapacity?.parallel_limit) }}</span>
-      <span>{{ t('admin.accounts.capacity.ustc.available', { count: ustcAvailable }) }}</span>
-      <span :class="ustcStateClass">{{ ustcStateLabel }}</span>
-      <span v-if="ustcResetAt">{{ t('admin.accounts.capacity.ustc.resetAt', { time: ustcResetAt }) }}</span>
+      <CapacityBadge
+        data-testid="ustc-concurrency-capacity"
+        class="whitespace-nowrap"
+        :color-class="ustcConcurrencyClass"
+        :tooltip="ustcCapacityTooltip"
+        :current="formatUstcCurrent(ustcCapacity?.in_flight)"
+        :max="formatUstcLimit(ustcCapacity?.parallel_limit)"
+      >
+        <span class="min-w-6">{{ t('admin.accounts.capacity.ustc.parallelShort') }}</span>
+      </CapacityBadge>
+      <CapacityBadge
+        data-testid="ustc-rpm-capacity"
+        class="whitespace-nowrap"
+        :color-class="ustcRPMClass"
+        :tooltip="ustcCapacityTooltip"
+        :current="formatUstcCurrent(ustcCapacity?.used)"
+        :max="formatUstcLimit(ustcCapacity?.rpm_limit)"
+      >
+        <span class="min-w-6">RPM</span>
+      </CapacityBadge>
+      <div
+        v-if="ustcDisplayState !== 'ready'"
+        data-testid="ustc-capacity-status"
+        class="flex items-center gap-1 whitespace-nowrap text-[10px] leading-tight"
+        :class="ustcStateClass"
+      >
+        <span aria-hidden="true" class="h-1 w-1 shrink-0 rounded-full bg-current" />
+        <span>{{ t(`admin.accounts.capacity.ustc.stateShort.${ustcDisplayState}`) }}</span>
+        <span v-if="ustcRecoveryTime" data-testid="ustc-capacity-reset" class="font-mono tabular-nums">{{ ustcRecoveryTime }}</span>
+      </div>
     </div>
 
     <!-- 5h窗口费用限制 -->
@@ -63,7 +87,7 @@ import type { Account } from '@/types'
 import CapacityBadge from '@/components/account/CapacityBadge.vue'
 import QuotaBadge from '@/components/account/QuotaBadge.vue'
 import { isUstcQuotaAccount } from '@/components/account/credentialsBuilder'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, formatTime } from '@/utils/format'
 
 const props = defineProps<{
   account: Account
@@ -74,12 +98,13 @@ const { t } = useI18n()
 const showUstcCapacity = computed(() => isUstcQuotaAccount(props.account))
 const ustcCapacity = computed(() => props.account.ustc_capacity)
 const ustcCapacityKnown = computed(() => !!ustcCapacity.value && ustcCapacity.value.state !== 'unknown')
-const formatLimit = (current: number | undefined, limit: number | null | undefined) => {
-  if (!ustcCapacity.value) return '—/—'
-  const currentValue = current ?? 0
-  if (!ustcCapacityKnown.value || limit === undefined) return `${currentValue}/—`
-  return limit === null ? `${currentValue}/∞` : `${currentValue}/${limit}`
+const formatUstcCurrent = (current: number | undefined) => ustcCapacity.value ? current ?? 0 : '—'
+const formatUstcLimit = (limit: number | null | undefined) => {
+  if (!ustcCapacityKnown.value || limit === undefined) return '—'
+  return limit === null ? '∞' : limit
 }
+const formatLimit = (current: number | undefined, limit: number | null | undefined) =>
+  `${formatUstcCurrent(current)}/${formatUstcLimit(limit)}`
 const ustcAvailable = computed(() => {
   if (!ustcCapacityKnown.value) return '—'
   if (ustcCapacity.value?.state === 'ready' && ustcCapacity.value.rpm_limit === null && ustcCapacity.value.parallel_limit === null) return '∞'
@@ -96,6 +121,11 @@ const ustcDisplayState = computed(() => {
   if (capacity.parallel_limit != null && capacity.in_flight >= capacity.parallel_limit) return 'parallel_wait'
   return 'ready'
 })
+const ustcRecoveryTime = computed(() => {
+  const state = ustcDisplayState.value
+  if (state !== 'rpm_wait' && state !== 'sync_wait') return ''
+  return formatTime(ustcCapacity.value?.reset_at)
+})
 const ustcStateLabel = computed(() => t(`admin.accounts.capacity.ustc.state.${ustcDisplayState.value}`))
 const ustcStateClass = computed(() => {
   const state = ustcDisplayState.value
@@ -103,11 +133,36 @@ const ustcStateClass = computed(() => {
   if (state === 'unknown') return 'text-gray-500 dark:text-gray-400'
   return 'text-amber-600 dark:text-amber-400'
 })
-const ustcCapacityTooltip = computed(() => t('admin.accounts.capacity.ustc.detail', {
-  rpm: formatLimit(ustcCapacity.value?.used, ustcCapacity.value?.rpm_limit),
-  parallel: formatLimit(ustcCapacity.value?.in_flight, ustcCapacity.value?.parallel_limit),
-  available: ustcAvailable.value
-}))
+const ustcCapacityTooltip = computed(() => [
+  t('admin.accounts.capacity.ustc.detail', {
+    rpm: formatLimit(ustcCapacity.value?.used, ustcCapacity.value?.rpm_limit),
+    parallel: formatLimit(ustcCapacity.value?.in_flight, ustcCapacity.value?.parallel_limit),
+    available: ustcAvailable.value
+  }),
+  ustcStateLabel.value,
+  ustcResetAt.value ? t('admin.accounts.capacity.ustc.resetAt', { time: ustcResetAt.value }) : ''
+].filter(Boolean).join('\n'))
+
+const ustcConcurrencyClass = computed(() => {
+  if (!ustcCapacityKnown.value) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  const current = ustcCapacity.value?.in_flight ?? 0
+  const limit = ustcCapacity.value?.parallel_limit
+  if (limit != null && current >= limit) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+  if (current > 0) return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+})
+
+const ustcRPMClass = computed(() => {
+  if (!ustcCapacityKnown.value) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  const current = ustcCapacity.value?.used ?? 0
+  const limit = ustcCapacity.value?.rpm_limit
+  if (limit != null && current >= limit) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+  if (ustcDisplayState.value === 'sync_wait' || ustcDisplayState.value === 'verify_one') {
+    return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+  }
+  if (limit != null && current >= limit * 0.8) return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+  return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+})
 
 // ====== 并发 ======
 const currentConcurrency = computed(() => props.account.current_concurrency || 0)

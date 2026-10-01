@@ -406,8 +406,9 @@ export default {
         ustc: {
           rpm: 'Upstream RPM',
           parallel: 'Upstream concurrency',
+          parallelShort: 'Conc.',
           available: '{count} available',
-          resetAt: 'Resets {time}',
+          resetAt: 'Window resets: {time}',
           detail: 'Upstream RPM {rpm}, concurrency {parallel}, {available} available slots',
           state: {
             ready: 'Ready',
@@ -416,6 +417,14 @@ export default {
             rpm_wait: 'Waiting for RPM reset',
             parallel_wait: 'Waiting for parallel capacity',
             unknown: 'Unknown state'
+          },
+          stateShort: {
+            ready: 'Ready',
+            sync_wait: 'Recovering',
+            verify_one: 'Unverified',
+            rpm_wait: 'RPM full',
+            parallel_wait: 'Concurrency full',
+            unknown: 'Not synced'
           }
         },
         rpm: {
