@@ -405,6 +405,11 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	if account.Platform != platform || !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}
+	if deferred, _ := ctx.Value(deferUSTCQuotaEligibilityKey{}).(bool); !deferred {
+		if reason := userInfoQuotaSchedulingFailureReason(account, time.Now()); reason != "" {
+			return reason
+		}
+	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 		if account.IsSchedulable() {
 			return "model_rate_limited"
@@ -903,7 +908,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 // selectAccountForModelWithExclusionsStickyHit 与 selectAccountForModelWithExclusions 相同，
 // 另返回账号是否来自粘性会话命中。
-func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsStickyHit(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, bool, error) {
+func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsStickyHit(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool, prefetchedAccounts ...[]Account) (*Account, bool, error) {
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
@@ -920,9 +925,15 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsStickyHit(ctx 
 
 	// 2. 获取可调度的 OpenAI 账号
 	// Get schedulable OpenAI accounts
-	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
-	if err != nil {
-		return nil, false, fmt.Errorf("query accounts failed: %w", err)
+	var accounts []Account
+	if len(prefetchedAccounts) > 0 {
+		accounts = prefetchedAccounts[0]
+	} else {
+		var err error
+		accounts, err = s.listSchedulableAccounts(ctx, groupID, platform)
+		if err != nil {
+			return nil, false, fmt.Errorf("query accounts failed: %w", err)
+		}
 	}
 
 	// 3. 按优先级 + LRU 选择最佳账号
@@ -953,7 +964,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsStickyHit(ctx 
 //
 // tryStickySessionHit attempts to get account from sticky session.
 // Returns account if hit and usable; clears session and returns nil if account is unavailable.
-func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID *int64, platform string, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability) *Account {
+func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID *int64, platform string, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, prefetchedAccounts ...*Account) *Account {
 	if sessionHash == "" {
 		return nil
 	}
@@ -972,9 +983,15 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		return nil
 	}
 
-	account, err := s.getSchedulableAccount(ctx, accountID)
-	if err != nil {
-		return nil
+	var account *Account
+	if len(prefetchedAccounts) > 0 && prefetchedAccounts[0] != nil && prefetchedAccounts[0].ID == accountID {
+		account = prefetchedAccounts[0]
+	} else {
+		var err error
+		account, err = s.getSchedulableAccount(ctx, accountID)
+		if err != nil {
+			return nil
+		}
 	}
 
 	// 检查账号是否需要清理粘性会话
@@ -1041,12 +1058,17 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 
-		fresh := s.resolveFreshSchedulableOpenAIAccountBeforeProfit(ctx, acc, platform, requestedModel, false, requiredCapability)
+		candidateCtx := ctx
+		if isDefaultUSTCAccount(acc) && s.ustcQuotaRefresher != nil {
+			// Rank current metadata first; probe only forwarding candidates.
+			candidateCtx = context.WithValue(ctx, deferUSTCQuotaEligibilityKey{}, true)
+		}
+		fresh := s.resolveFreshSchedulableOpenAIAccountBeforeProfit(candidateCtx, acc, platform, requestedModel, false, requiredCapability)
 		if fresh == nil {
 			filterStats.exclude("ineligible")
 			continue
 		}
-		fresh = s.recheckSelectedOpenAIAccountFromDBBeforeProfit(ctx, fresh, groupID, platform, requestedModel, false, requiredCapability)
+		fresh = s.recheckSelectedOpenAIAccountFromDBBeforeProfit(candidateCtx, fresh, groupID, platform, requestedModel, false, requiredCapability)
 		if fresh == nil {
 			filterStats.exclude("ineligible")
 			continue
@@ -1090,7 +1112,17 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		}
 		return s.isBetterAccount(a, b)
 	})
-	return eligible[0], compactBlocked, filterStats
+	for _, candidate := range eligible {
+		if isDefaultUSTCAccount(candidate) {
+			candidate = s.refreshUSTCQuotaForScheduling(ctx, candidate)
+			if reason := openAICompatibleAccountEligibilityFailureReason(ctx, candidate, platform, requestedModel, requireCompact, requiredCapability); reason != "" {
+				filterStats.exclude(reason)
+				continue
+			}
+		}
+		return candidate, compactBlocked, filterStats
+	}
+	return nil, compactBlocked, filterStats
 }
 
 // isBetterAccount 判断 candidate 是否比 current 更优。
@@ -1154,8 +1186,35 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			stickyAccountID = accountID
 		}
 	}
+	var accounts []Account
+	var prefetchedAccounts [][]Account
+	var fastSticky *Account
+	skipUSTCPolicy, _ := ctx.Value(skipDefaultUSTCBalancingKey{}).(bool)
+	if platform == PlatformOpenAI && !skipUSTCPolicy {
+		// Preserve the healthy non-USTC sticky fast path without a pool query.
+		if (s.concurrencyService == nil || !cfg.LoadBatchEnabled) && stickyAccountID > 0 {
+			if bound, err := s.getSchedulableAccount(ctx, stickyAccountID); err == nil && bound != nil && !isDefaultUSTCAccount(bound) {
+				fastSticky = s.tryStickySessionHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, bound)
+			}
+		}
+		if fastSticky == nil {
+			var err error
+			accounts, err = s.listSchedulableAccounts(ctx, groupID, platform)
+			if err != nil {
+				return nil, err
+			}
+			prefetchedAccounts = [][]Account{accounts}
+			if defaultUSTCAccountBalancingEnabled(accounts) {
+				return s.selectBalancedDefaultUSTCAccount(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+			}
+		}
+	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, stickyHit, err := s.selectAccountForModelWithExclusionsStickyHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate)
+		account, stickyHit := fastSticky, fastSticky != nil
+		var err error
+		if account == nil {
+			account, stickyHit, err = s.selectAccountForModelWithExclusionsStickyHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate, prefetchedAccounts...)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1185,9 +1244,12 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return markStickySessionHit(selection, stickyHit), selectErr
 	}
 
-	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
-	if err != nil {
-		return nil, err
+	if len(prefetchedAccounts) == 0 {
+		var err error
+		accounts, err = s.listSchedulableAccounts(ctx, groupID, platform)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(accounts) == 0 {
 		return nil, noAvailableOpenAISelectionError(requestedModel, false, openAISelectionFilterStats{}.summary(""))
@@ -1562,6 +1624,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccountBeforeProfit(
 		}
 		fresh = current
 	}
+	fresh = s.refreshUSTCQuotaDuringCandidateCheck(ctx, fresh)
 
 	if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, fresh, platform, requestedModel, requireCompact, requiredCapability) {
 		return nil
@@ -1612,6 +1675,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		account = s.refreshUSTCQuotaDuringCandidateCheck(ctx, account)
 		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
 			return nil
 		}
@@ -1634,6 +1698,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 	if err != nil || latest == nil {
 		return nil
 	}
+	latest = s.refreshUSTCQuotaDuringCandidateCheck(ctx, latest)
 	if !s.openAIAccountMatchesSchedulingGroup(latest, groupID) {
 		return nil
 	}
@@ -1731,6 +1796,15 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 	}
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected openai account %d not found during hydration", account.ID)
+	}
+	if account.SupportsUserInfoQuota() {
+		selectedAt, selectedKnown := userInfoQuotaExtraUpdatedAt(account.Extra)
+		hydratedAt, hydratedKnown := userInfoQuotaExtraUpdatedAt(hydrated.Extra)
+		// Another instance may have refreshed the full account after selection.
+		// Keep its snapshot unless the selected snapshot is provably newer.
+		if !hydratedKnown || (selectedKnown && selectedAt.After(hydratedAt)) {
+			hydrated = overlayUserInfoQuotaSnapshot(copyAccountForUserInfoQuotaRefresh(hydrated), account.Extra)
+		}
 	}
 	return hydrated, nil
 }

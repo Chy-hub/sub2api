@@ -37,6 +37,20 @@ func TestSchedulerMetadataAccountKeepsOpenAISubscriptionIdentity(t *testing.T) {
 	require.Empty(t, metadata.GetCredential("access_token"))
 }
 
+func TestSchedulerMetadataAccountKeepsUSTCRoutingAndQuota(t *testing.T) {
+	account := service.Account{ID: 25, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.llm.ustc.edu.cn/v1", "api_key": "test-key"},
+		Extra: map[string]any{"base_rpm": 20, "upstream_userinfo_updated_at": "2026-10-01T05:10:00Z",
+			"upstream_userinfo_windows": []service.UserInfoBudgetWindow{{Limit: 10, WindowSpend: 10, UsedKnown: true}},
+		},
+	}
+	metadata := buildSchedulerMetadataAccount(account)
+	require.True(t, metadata.SupportsUserInfoQuota())
+	require.Equal(t, 20, metadata.GetBaseRPM())
+	require.Equal(t, account.Extra["upstream_userinfo_updated_at"], metadata.Extra["upstream_userinfo_updated_at"])
+	require.Equal(t, account.Extra["upstream_userinfo_windows"], metadata.Extra["upstream_userinfo_windows"])
+}
+
 func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 	lastError := strings.Repeat("upstream diagnostic ", 512)
 	probe := map[string]any{

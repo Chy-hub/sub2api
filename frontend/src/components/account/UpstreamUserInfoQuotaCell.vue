@@ -96,6 +96,7 @@ import { adminAPI } from '@/api/admin'
 import type { UserInfoQuotaResult } from '@/api/admin/accounts'
 import type { Account } from '@/types'
 import { userInfoQuotaCellVisible } from './credentialsBuilder'
+import { buildUserInfoQuotaRefreshKey } from '@/utils/accountUsageRefresh'
 import UsageProgressBar from './UsageProgressBar.vue'
 
 const props = defineProps<{
@@ -302,6 +303,17 @@ const handleProbe = async () => {
     loading.value = false
   }
 }
+
+watch(
+  () => buildUserInfoQuotaRefreshKey(props.account),
+  () => {
+    const updatedAt = Date.parse(String(props.account.extra?.upstream_userinfo_updated_at ?? ''))
+    if (data.value && updatedAt >= data.value.fetched_at * 1000) {
+      data.value = null
+      error.value = null
+    }
+  }
+)
 
 watch(
   () => props.account.id,

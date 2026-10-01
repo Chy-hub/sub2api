@@ -956,7 +956,7 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	}
 	// Candidate-list admission evaluates the account override before hydrating
 	// the full account. Dropping it silently falls back to the platform threshold.
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold"}
+	keys := []string{"model_mapping", "compact_model_mapping", "base_url", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold"}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -1003,6 +1003,13 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"base_rpm",
 		"rpm_strategy",
 		"rpm_sticky_buffer",
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixValid),
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixUpdated),
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixExpires),
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixBudget),
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixSpend),
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixResetAt),
+		service.UserInfoQuotaExtraKey(service.UserInfoExtraSuffixWindows),
 		"max_sessions",
 		"session_idle_timeout_minutes",
 		"openai_oauth_responses_websockets_v2_enabled",

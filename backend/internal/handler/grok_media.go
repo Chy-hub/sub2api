@@ -207,6 +207,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	// 也防止已计费的在途视频任务因绑定账号被门排除而查询返回伪 404。
 	requestCtx := service.WithOpenAIProfitControlSuppressed(c.Request.Context())
 	profitVetoCount := 0
+	rpmVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -264,6 +265,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		if selection != nil && selection.Acquired {
 			selection.ReleaseFunc = wrapReleaseOnDone(requestCtx, selection.ReleaseFunc)
 			accountReleaseFunc = selection.ReleaseFunc
+		}
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+			return
 		}
 		if err != nil {
 			if failoverClientGone(c) {
@@ -367,6 +371,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		}
 		var slotResult openAISlotAcquireResult
 		accountReleaseFunc, slotResult = h.acquireResponsesAccountSlot(c, apiKey.GroupID, admissionSessionHash, selection, false, &streamStarted, reqLog)
+		if slotResult == openAISlotAcquireRPMVetoed {
+			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
+				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+				return
+			}
+			continue
+		}
 		if slotResult == openAISlotAcquireProfitVetoed {
 			// 媒体路径已显式豁免利润门（suppress 标记），此分支仅防御性兜底，
 			// 同样受否决上限约束。
@@ -379,6 +390,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		if slotResult != openAISlotAcquireOK {
 			return
 		}
+		account = selection.Account
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
