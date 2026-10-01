@@ -456,6 +456,8 @@ type OpenAIGatewayService struct {
 	rateLimitService      *RateLimitService
 	rpmCache              RPMCache // 账号级 RPM 计数（OpenAI API Key 与 Anthropic OAuth/SetupToken 共用）
 	ustcQuotaRefresher    USTCQuotaSchedulingRefresher
+	ustcPoolOnce          sync.Once
+	ustcPool              *ustcAccountPoolState
 	billingCacheService   *BillingCacheService
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream

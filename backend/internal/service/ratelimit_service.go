@@ -1182,6 +1182,15 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		}
 		return
 	}
+	// USTC is an OpenAI-compatible API-key account, but its 429s describe a
+	// fixed-RPM service rather than Codex's 5h/7d windows. Handle it before the
+	// generic OpenAI header parser so transient overload does not inherit a long
+	// Codex reset. Known USTC budget resets and explicit Retry-After are handled
+	// by the provider-specific path.
+	if isDefaultUSTCAccount(account) {
+		s.handleUSTC429(ctx, account, headers, responseBody)
+		return
+	}
 	// 真实 Ollama Cloud 用量账号（credentials base_url 指向 ollama.com）的 429 由
 	// ollama.com 的用量窗口驱动。其响应头不得被当作 OpenAI codex / Anthropic /
 	// CN 限流来解析，故在国产供应商分支之前单独处理：先设置永不缩短的临时冷却，

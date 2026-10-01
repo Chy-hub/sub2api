@@ -2206,6 +2206,14 @@ func (h *OpenAIGatewayHandler) handleOpenAIRPMVetoExhausted(c *gin.Context, stre
 // Preserve the rate-limit response instead of reporting an upstream failure
 // when no request was forwarded.
 func (h *OpenAIGatewayHandler) handleOpenAIRPMSelectionFailure(c *gin.Context, err error, lastFailoverErr *service.UpstreamFailoverError, vetoCount int, streamStarted bool, reqLog *zap.Logger) bool {
+	if retryAfter, ok := service.USTCPoolRetryAfter(err); ok && !failoverClientGone(c) {
+		c.Header("Retry-After", strconv.Itoa(retryAfter))
+		reqLog.Warn("openai.ustc_pool_capacity_exhausted", zap.Error(err), zap.Int("retry_after", retryAfter))
+		markOpsRoutingCapacityLimited(c)
+		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "gateway_account_limit",
+			"Account pool capacity is temporarily exhausted, please retry later", streamStarted, false)
+		return true
+	}
 	if vetoCount == 0 || lastFailoverErr != nil || failoverClientGone(c) || (err != nil && !errors.Is(err, service.ErrNoAvailableAccounts)) {
 		return false
 	}
