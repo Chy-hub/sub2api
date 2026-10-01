@@ -1189,6 +1189,17 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			candidate.loadInfo.CurrentConcurrency >= candidate.account.Concurrency {
 			continue
 		}
+		candidateCtx := ctx
+		if isDefaultUSTCAccount(candidate.account) {
+			// This branch's quota probes must complete before acquiring a slot.
+			// Preserve advanced scoring and RPM accounting, then use only a
+			// nonblocking quota recheck while holding the selected slot.
+			candidate.account = s.service.refreshUSTCQuotaForScheduling(ctx, candidate.account)
+			if userInfoQuotaSchedulingFailureReason(candidate.account, time.Now()) != "" {
+				continue
+			}
+			candidateCtx = context.WithValue(ctx, ustcQuotaAdmissionKey{}, true)
+		}
 
 		result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, candidate.account.ID, candidate.account.Concurrency, budget)
 		if !attempted {
@@ -1201,7 +1212,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			continue
 		}
 
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.Platform, req.RequestedModel, false, req.RequiredCapability)
+		fresh := s.service.resolveFreshSchedulableOpenAIAccount(candidateCtx, candidate.account, req.Platform, req.RequestedModel, false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			release(result)
 			continue
@@ -1210,7 +1221,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			release(result)
 			break
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, false, req.RequiredCapability)
+		fresh = s.service.recheckSelectedOpenAIAccountFromDB(candidateCtx, fresh, req.GroupID, req.Platform, req.RequestedModel, false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			release(result)
 			continue
@@ -1783,6 +1794,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
+	// The selected-candidate DB recheck refreshes USTC quota before admission.
+	if s == nil || s.service == nil || s.service.ustcQuotaRefresher == nil {
+		if reason := userInfoQuotaSchedulingFailureReason(account, time.Now()); reason != "" {
+			return false, reason
+		}
+	}
 	if source, ok := CompositeRouteSourceFromContext(ctx); ok && source == CompositeRouteSourceAccount {
 		if publicModel, modelOK := RequestedPublicModelFromContext(ctx); modelOK && !explicitModelMappingClaims(*account, publicModel) {
 			return false, "account_model_not_owned"
@@ -2302,6 +2319,9 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		}
 		return nil, false, nil
 	}
+	if isDefaultUSTCAccount(account) && (requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE) {
+		selection.defaultRPMManaged, selection.rpmSticky = true, true
+	}
 	if sessionHash != "" {
 		_ = s.bindOpenAIStickySessionDuringSelection(ctx, groupID, sessionHash, account.ID)
 	}
@@ -2323,6 +2343,9 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	if requiredTransport != OpenAIUpstreamTransportAny && requiredTransport != OpenAIUpstreamTransportHTTPSSE {
+		ctx = context.WithValue(ctx, skipDefaultUSTCBalancingKey{}, true)
+	}
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	ctx = s.withOpenAIGroupPrivacyRequirement(ctx, groupID)
 	// 分组利润控制：唯一文本调度入口的防御性装门。handler 文本

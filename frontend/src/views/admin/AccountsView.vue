@@ -531,7 +531,8 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { fetchAllAccountIds } from '@/utils/accountSelection'
-import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey, buildUserInfoQuotaRefreshKey } from '@/utils/accountUsageRefresh'
+import { userInfoQuotaCellVisible } from '@/components/account/credentialsBuilder'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -700,6 +701,7 @@ const autoRefreshEnabled = ref(false)
 const autoRefreshIntervalSeconds = ref<(typeof autoRefreshIntervals)[number]>(30)
 const autoRefreshCountdown = ref(0)
 const autoRefreshETag = ref<string | null>(null)
+const ustcQuotaRefreshETag = ref<string | null>(null)
 const autoRefreshFetching = ref(false)
 const AUTO_REFRESH_SILENT_WINDOW_MS = 15000
 const autoRefreshSilentUntil = ref(0)
@@ -1152,6 +1154,7 @@ useSwipeSelect(accountTableRef, {
 
 const resetAutoRefreshCache = () => {
   autoRefreshETag.value = null
+  ustcQuotaRefreshETag.value = null
   upstreamBillingRateETag.value = null
 }
 
@@ -1400,9 +1403,16 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.overload_until !== next.overload_until ||
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next) ||
+    buildUserInfoQuotaRefreshKey(current) !== buildUserInfoQuotaRefreshKey(next) ||
     buildGrokUsageRefreshKey(current) !== buildGrokUsageRefreshKey(next)
   )
 }
+
+const isUstcQuotaSnapshotAccount = (account: Pick<Account, 'platform' | 'type' | 'credentials'>) => (
+  account.platform === 'openai' &&
+  account.type === 'apikey' &&
+  userInfoQuotaCellVisible(account)
+)
 
 const syncAccountRefs = (nextAccount: Account) => {
   if (edAcc.value?.id === nextAccount.id) edAcc.value = nextAccount
@@ -1442,7 +1452,31 @@ const mergeAccountsIncrementally = (nextRows: Account[]) => {
   }
 }
 
-const refreshAccountsIncrementally = async () => {
+const mergeUstcQuotaAccountsIncrementally = (nextRows: Account[]) => {
+  const nextByID = new Map(
+    nextRows
+      .filter(isUstcQuotaSnapshotAccount)
+      .map(row => [row.id, row])
+  )
+  let changed = false
+  const mergedRows = accounts.value.map((currentRow) => {
+    if (!isUstcQuotaSnapshotAccount(currentRow)) return currentRow
+    const nextRow = nextByID.get(currentRow.id)
+    if (!nextRow || !shouldReplaceAutoRefreshRow(currentRow, nextRow)) return currentRow
+    changed = true
+    syncAccountRefs(nextRow)
+    return nextRow
+  })
+  if (changed) {
+    accounts.value = mergedRows
+  }
+}
+
+type IncrementalRefreshOptions = {
+  quotaSnapshotsOnly?: boolean
+}
+
+const refreshAccountsIncrementally = async (options: IncrementalRefreshOptions = {}) => {
   if (autoRefreshFetching.value) return
   syncAccountListDerivedParams()
   autoRefreshFetching.value = true
@@ -1461,21 +1495,32 @@ const refreshAccountsIncrementally = async () => {
         sort_order?: AccountSortOrder
 
       },
-      { etag: autoRefreshETag.value }
+      { etag: options.quotaSnapshotsOnly ? ustcQuotaRefreshETag.value : autoRefreshETag.value }
     )
 
     if (result.etag) {
-      autoRefreshETag.value = result.etag
+      if (options.quotaSnapshotsOnly) {
+        ustcQuotaRefreshETag.value = result.etag
+      } else {
+        autoRefreshETag.value = result.etag
+      }
     }
     if (!result.notModified && result.data) {
-      pagination.total = result.data.total || 0
-      pagination.pages = result.data.pages || 0
-      mergeAccountsIncrementally(result.data.items || [])
-      hasPendingListSync.value = false
+      const rows = result.data.items || []
+      if (options.quotaSnapshotsOnly) {
+        mergeUstcQuotaAccountsIncrementally(rows)
+      } else {
+        pagination.total = result.data.total || 0
+        pagination.pages = result.data.pages || 0
+        mergeAccountsIncrementally(rows)
+        hasPendingListSync.value = false
+      }
     }
-    upstreamBillingNow.value = Date.now()
+    if (!options.quotaSnapshotsOnly) {
+      upstreamBillingNow.value = Date.now()
+      await refreshTodayStatsBatch()
+    }
 
-    await refreshTodayStatsBatch()
   } catch (error) {
     console.error('Auto refresh failed:', error)
   } finally {
@@ -1579,6 +1624,16 @@ const { pause: pauseAutoRefresh, resume: resumeAutoRefresh } = useIntervalFn(
   1000,
   { immediate: false }
 )
+
+// Scheduling persists USTC quota snapshots. Poll the saved rows even when the
+// general auto refresh is disabled; this never invokes the upstream quota probe.
+useIntervalFn(async () => {
+  if (autoRefreshEnabled.value || !accounts.value.some(isUstcQuotaSnapshotAccount)) return
+  if (document.hidden || loading.value || autoRefreshFetching.value) return
+  if (isAnyModalOpen.value || menu.show || showAccountToolsDropdown.value || showAutoRefreshDropdown.value) return
+  if (inAutoRefreshSilentWindow()) return
+  await refreshAccountsIncrementally({ quotaSnapshotsOnly: true })
+}, 30_000)
 
 const GROK_QUOTA_SIGNAL_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const GROK_QUOTA_SIGNAL_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000

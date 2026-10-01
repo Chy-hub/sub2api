@@ -3056,8 +3056,8 @@ func (a *Account) GetRPMStrategy() string {
 }
 
 // GetRPMStickyBuffer 获取 RPM 粘性缓冲数量
-// Cache-driven: buffer = concurrency + maxSessions（覆盖幽灵窗口 + 稳态会话需求）
-// floor = baseRPM / 5（向后兼容 maxSessions=0 且 concurrency=0 场景）
+// USTC API-key accounts default to 20% of base RPM (minimum 1), matching the UI.
+// Other accounts retain the cache-driven concurrency + maxSessions buffer.
 func (a *Account) GetRPMStickyBuffer() int {
 	if a.Extra == nil {
 		return 0
@@ -3074,6 +3074,13 @@ func (a *Account) GetRPMStickyBuffer() int {
 	base := a.GetBaseRPM()
 	if base <= 0 {
 		return 0
+	}
+	// OpenAI API-key accounts use the buffer advertised by their RPM form.
+	if isDefaultUSTCAccount(a) {
+		if buffer := base / 5; buffer > 0 {
+			return buffer
+		}
+		return 1
 	}
 
 	// Cache-driven buffer = concurrency + maxSessions

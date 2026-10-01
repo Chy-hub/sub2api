@@ -228,7 +228,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	grokOAuthHandler := admin.NewGrokOAuthHandler(grokOAuthService, adminService, grokQuotaService, tokenRefreshService)
 	cnProviderQuotaService := service.ProvideCNProviderQuotaService(accountRepository, proxyRepository, httpUpstream, configConfig)
 	cnProviderBalanceService := service.ProvideCNProviderBalanceService(accountRepository, proxyRepository, httpUpstream, configConfig)
-	upstreamUserInfoQuotaService := service.ProvideUpstreamUserInfoQuotaService(accountRepository, proxyRepository, httpUpstream, configConfig)
+	upstreamUserInfoQuotaService := service.ProvideUpstreamUserInfoQuotaService(accountRepository, proxyRepository, httpUpstream, configConfig, openAIGatewayService)
 	cnProviderHandler := admin.NewCNProviderHandler(cnProviderQuotaService, cnProviderBalanceService)
 	proxyHandler := admin.NewProxyHandler(adminService)
 	adminRedeemHandler := admin.NewRedeemHandler(adminService, redeemService)
