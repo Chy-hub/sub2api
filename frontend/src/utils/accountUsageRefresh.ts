@@ -69,3 +69,9 @@ export const buildGrokUsageRefreshKey = (account: Pick<Account, 'platform' | 'ex
     serializeSnapshotRefreshValue(legacyQuotaFallback)
   ].join('|')
 }
+
+export const buildUserInfoQuotaRefreshKey = (account: Pick<Account, 'extra'>): string => {
+  return serializeSnapshotRefreshValue(Object.fromEntries(
+    Object.entries(account.extra ?? {}).filter(([key]) => key.startsWith('upstream_userinfo_'))
+  ))
+}

@@ -313,8 +313,11 @@ func ProvideUpstreamUserInfoQuotaService(
 	proxyRepo ProxyRepository,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
+	gateway *OpenAIGatewayService,
 ) *UpstreamUserInfoQuotaService {
-	return NewUpstreamUserInfoQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
+	quota := NewUpstreamUserInfoQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
+	gateway.SetUSTCQuotaRefresher(quota)
+	return quota
 }
 
 // ProvideCNProviderBalanceService 构造国产供应商余额探测服务。
