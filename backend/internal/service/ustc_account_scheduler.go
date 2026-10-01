@@ -17,6 +17,10 @@ type skipDefaultUSTCBalancingKey struct{}
 // only the immediate admission reader may refresh quota observations.
 type ustcQuotaAdmissionKey struct{}
 
+// The default pool keeps eligible accounts usable while their quota data is
+// refreshed. Other scheduling modes retain their existing admission policy.
+type ustcQuotaBackgroundAdmissionKey struct{}
+
 // A reservation is refunded only when admission fails before forwarding.
 type openAIAccountRPMReservation struct {
 	mu        sync.Mutex
@@ -150,6 +154,9 @@ func (s *OpenAIGatewayService) PrepareDefaultAccountRPM(ctx context.Context, sel
 		return true
 	}
 	if refresher, ok := s.ustcQuotaRefresher.(USTCQuotaAdmissionRefresher); ok && isDefaultUSTCAccount(selection.Account) {
+		if selection.defaultRPMManaged {
+			ctx = context.WithValue(ctx, ustcQuotaBackgroundAdmissionKey{}, true)
+		}
 		account, ready := refresher.QuotaForAdmission(ctx, selection.Account)
 		if account != nil {
 			selection.Account = account
@@ -184,6 +191,12 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		stickyID, _ = s.getStickySessionAccountID(ctx, groupID, sessionHash)
 	}
 	stats := openAISelectionFilterStats{pool: len(accounts)}
+	var retryAt time.Time
+	recoverAt := func(at time.Time) {
+		if !at.IsZero() && (retryAt.IsZero() || at.Before(retryAt)) {
+			retryAt = at
+		}
+	}
 	initialCtx := ctx
 	if s.ustcQuotaRefresher != nil {
 		// Refresh only the selected candidates, including stale exhausted ones.
@@ -199,6 +212,16 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		}
 		if reason := openAICompatibleAccountEligibilityFailureReason(initialCtx, account, PlatformOpenAI, requestedModel, false, capability); reason != "" {
 			stats.exclude(reason)
+			if reason == "not_schedulable" && isDefaultUSTCAccount(account) && account.IsActive() && account.Schedulable && account.IsModelSupported(requestedModel) && account.SupportsOpenAIEndpointCapability(capability) {
+				recoverAt(ustcAccountCoolingUntil(account, time.Now()))
+			}
+			if isDefaultUSTCAccount(account) && account.IsModelSupported(requestedModel) && account.SupportsOpenAIEndpointCapability(capability) {
+				if reason == "model_rate_limited" {
+					recoverAt(time.Now().Add(ustcPoolPollInterval))
+				} else if reason == "upstream_userinfo_window_exhausted" {
+					recoverAt(ustcQuotaNextCheck(account, time.Now()))
+				}
+			}
 			continue
 		}
 		if s.isOpenAIAccountRequestRuntimeBlocked(account, requestedModel) {
@@ -210,18 +233,7 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			ids = append(ids, account.ID)
 		}
 	}
-	counts := map[int64]int{}
-	if s.rpmCache != nil && len(ids) > 0 {
-		if batch, err := s.rpmCache.GetRPMBatch(ctx, ids); err == nil {
-			counts = batch
-		}
-	}
-	loads := map[int64]*AccountLoadInfo{}
-	if s.concurrencyService != nil && s.schedulingConfig().LoadBatchEnabled {
-		if batch, err := s.concurrencyService.GetAccountsLoadBatch(ctx, buildOpenAIAccountLoadRequest(candidates)); err == nil {
-			loads = batch
-		}
-	}
+	counts, loads := s.defaultUSTCPoolPoll(ctx, ids, candidates)
 	// Random ties are deliberate: LastUsedAt and cached load are shared snapshots,
 	// so deterministic ties make concurrent requests flock to the same account.
 	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
@@ -296,13 +308,44 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			if managed && account.GetBaseRPM() > 0 && (account.CheckRPMSchedulability(current) == WindowCostNotSchedulable ||
 				(!stickyPass && current >= account.GetBaseRPM())) {
 				stats.exclude("rpm_exceeded")
+				now := time.Now()
+				recoverAt(now.Truncate(time.Minute).Add(time.Minute))
 				continue
 			}
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, account, PlatformOpenAI, requestedModel, false, capability)
+			candidateCtx := ctx
+			if managed {
+				if reader, ok := s.ustcQuotaRefresher.(USTCQuotaAdmissionRefresher); ok {
+					candidateCtx = context.WithValue(ctx, ustcQuotaBackgroundAdmissionKey{}, true)
+					refreshed, ready := reader.QuotaForAdmission(candidateCtx, account)
+					if !ready {
+						stats.exclude("quota_refresh_pending")
+						recoverAt(time.Now().Add(ustcPoolPollInterval))
+						continue
+					}
+					account = refreshed
+					candidateCtx = context.WithValue(candidateCtx, ustcQuotaAdmissionKey{}, true)
+				} else {
+					account = s.refreshUSTCQuotaForScheduling(ctx, account)
+				}
+				if reason := userInfoQuotaSchedulingFailureReason(account, time.Now()); reason != "" {
+					stats.exclude(reason)
+					if reason == "upstream_userinfo_window_exhausted" {
+						recoverAt(ustcQuotaNextCheck(account, time.Now()))
+					}
+					continue
+				}
+			}
+			fresh := s.resolveFreshSchedulableOpenAIAccount(candidateCtx, account, PlatformOpenAI, requestedModel, false, capability)
 			if fresh != nil {
-				fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, groupID, PlatformOpenAI, requestedModel, requireCompact, capability)
+				fresh = s.recheckSelectedOpenAIAccountFromDB(candidateCtx, fresh, groupID, PlatformOpenAI, requestedModel, requireCompact, capability)
 			}
 			if fresh == nil {
+				stats.exclude("candidate_changed")
+				if managed {
+					// Cooling may have been written after the membership read. Give
+					// the pool a chance to recover instead of an unexplained 503.
+					recoverAt(time.Now().Add(ustcPoolPollInterval))
+				}
 				continue
 			}
 			if requireCompact && openAICompactSupportTier(fresh) == 0 {
@@ -312,7 +355,14 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			if s.needsUpstreamChannelRestrictionCheck(ctx, groupID) && s.isUpstreamModelRestrictedByChannel(ctx, derefGroupID(groupID), fresh, requestedModel, requireCompact) {
 				continue
 			}
-			acquired, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+			var acquired *AcquireResult
+			var err error
+			_, waitingPoll := ctx.Value(ustcPoolPollKey{}).(string)
+			if load := loads[fresh.ID]; managed && waitingPoll && load != nil && fresh.Concurrency > 0 && load.CurrentConcurrency >= fresh.Concurrency {
+				acquired = &AcquireResult{}
+			} else {
+				acquired, err = s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+			}
 			if err != nil || acquired == nil || !acquired.Acquired {
 				if fresh.ID == stickyID && !isDefaultUSTCAccount(fresh) && s.concurrencyService != nil {
 					cfg := s.schedulingConfig()
@@ -338,6 +388,9 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 				reservation, allowed = s.reserveDefaultAccountRPM(ctx, fresh, stickyPass)
 			}
 			if !allowed {
+				stats.exclude("rpm_exceeded")
+				now := time.Now()
+				recoverAt(now.Truncate(time.Minute).Add(time.Minute))
 				if acquired.ReleaseFunc != nil {
 					acquired.ReleaseFunc()
 				}
@@ -383,7 +436,11 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		}
 		return markStickySessionHit(selection, stickyHit), err
 	}
-	return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked, stats.summary(""))
+	err := noAvailableOpenAISelectionError(requestedModel, compactBlocked, stats.summary(""))
+	if !retryAt.IsZero() && !compactBlocked {
+		return nil, &ustcPoolCapacityError{cause: err, retryAfter: time.Until(retryAt)}
+	}
+	return nil, err
 }
 
 func defaultUSTCLoadRate(loads map[int64]*AccountLoadInfo, id int64) int {
