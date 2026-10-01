@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey } from '../accountUsageRefresh'
+import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey, buildUserInfoQuotaRefreshKey } from '../accountUsageRefresh'
 
 describe('buildOpenAIUsageRefreshKey', () => {
   it('会在 codex 快照变化时生成不同 key', () => {
@@ -157,5 +157,16 @@ describe('buildGrokUsageRefreshKey', () => {
       platform: 'openai',
       extra: { grok_usage_snapshot: { subscription_tier: 'SuperGrok' } }
     } as any)).toBe('')
+  })
+})
+
+describe('buildUserInfoQuotaRefreshKey', () => {
+  it('tracks quota windows independently of the account update timestamp', () => {
+    const base = { extra: { upstream_userinfo_windows: [{ limit: 10, window_spend: 2 }] } }
+    const next = { extra: { upstream_userinfo_windows: [{ limit: 10, window_spend: 3 }] } }
+    expect(buildUserInfoQuotaRefreshKey(base)).not.toBe(buildUserInfoQuotaRefreshKey(next))
+    expect(buildUserInfoQuotaRefreshKey(base)).toBe(buildUserInfoQuotaRefreshKey({
+      extra: { upstream_userinfo_windows: [{ window_spend: 2, limit: 10 }], unrelated: true }
+    }))
   })
 })

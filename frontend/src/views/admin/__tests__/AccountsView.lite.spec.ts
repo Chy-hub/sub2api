@@ -234,6 +234,95 @@ describe('admin AccountsView lite account list', () => {
       expect.objectContaining({ lite: '1' }),
       expect.objectContaining({ etag: null })
     )
+    expect(getBatchTodayStats).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('syncs persisted USTC quota snapshots when general auto refresh is disabled', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const ustcRow = {
+      ...listRow, type: 'apikey',
+      credentials: { base_url: 'https://api.llm.ustc.edu.cn' },
+      extra: { upstream_userinfo_remaining: 8 }
+    }
+    listAccounts.mockResolvedValue({ items: [ustcRow], total: 1, pages: 1 })
+    const updatedRow = { ...ustcRow, extra: { upstream_userinfo_remaining: 7 } }
+    listWithEtag.mockResolvedValue({ notModified: false, etag: 'quota-new', data: { items: [updatedRow], total: 1, pages: 1 } })
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    expect(listWithEtag).toHaveBeenCalledTimes(1)
+    expect(getBatchTodayStats).toHaveBeenCalledTimes(1)
+    expect(wrapper.getComponent(DataTableStub).props('data')[0].extra.upstream_userinfo_remaining).toBe(7)
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(listWithEtag).toHaveBeenCalledTimes(1)
+  })
+
+  it('pauses USTC snapshot sync while the page is hidden', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    listAccounts.mockResolvedValue({ items: [{ ...listRow, type: 'apikey', credentials: { base_url: 'https://api.llm.ustc.edu.cn' } }], total: 1, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(listWithEtag).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps quota-only ETags separate when general auto refresh is enabled later', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const ustcRow = { ...listRow, type: 'apikey', credentials: { base_url: 'https://api.llm.ustc.edu.cn' } }
+    const otherRow = { ...listRow, id: 43, name: 'old name' }
+    listAccounts.mockResolvedValue({ items: [ustcRow, otherRow], total: 2, pages: 1 })
+    const updatedRows = [
+      { ...ustcRow, extra: { upstream_userinfo_remaining: 7 } },
+      { ...otherRow, name: 'new name', updated_at: '2026-10-01T09:00:00Z' }
+    ]
+    listWithEtag.mockImplementation((_page, _size, _params, options) => Promise.resolve(
+      options.etag === 'same-snapshot'
+        ? { notModified: true, etag: 'same-snapshot' }
+        : { notModified: false, etag: 'same-snapshot', data: { items: updatedRows, total: 2, pages: 1 } }
+    ))
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+    expect(wrapper.getComponent(DataTableStub).props('data')[1].name).toBe('old name')
+
+    await wrapper.get('button[title="admin.accounts.autoRefresh"]').trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.enableAutoRefresh')!.trigger('click')
+    await wrapper.get('button[title="admin.accounts.autoRefresh"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(31_000)
+    await flushPromises()
+
+    expect(listWithEtag).toHaveBeenCalledTimes(2)
+    expect(listWithEtag).toHaveBeenLastCalledWith(1, 20, expect.any(Object), { etag: null })
+    expect(wrapper.getComponent(DataTableStub).props('data')[1].name).toBe('new name')
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['upstream', 'openai'],
+    ['apikey', 'anthropic']
+  ])('does not poll USTC snapshots for %s accounts on %s', async (type, platform) => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    listAccounts.mockResolvedValue({
+      items: [{ ...listRow, type, platform, credentials: { base_url: 'https://api.llm.ustc.edu.cn' } }],
+      total: 1,
+      pages: 1
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    expect(listWithEtag).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

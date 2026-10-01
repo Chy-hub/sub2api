@@ -643,6 +643,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	switchCount := 0
 	firstOutputTimeoutSwitchCount := 0
 	profitVetoCount := 0
+	rpmVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -687,6 +688,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			!imageIntent,
 			requestPlatform,
 		)
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+			return
+		}
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai.account_select_aborted_client_disconnected", zap.Error(err))
@@ -769,6 +773,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		if slotResult == openAISlotAcquireRPMVetoed {
+			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
+				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+				return
+			}
+			continue
+		}
 		if slotResult == openAISlotAcquireProfitVetoed {
 			// 利润终检否决：排除该账号重新选号，全池耗尽由下一轮选号报错；
 			// 否决次数达上限则直接终止，避免排队抢槽后才终检的延迟放大。
@@ -781,6 +792,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if slotResult != openAISlotAcquireOK {
 			return
 		}
+		account = selection.Account
 
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
@@ -1000,7 +1012,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		// RPM 计数递增（Forward 成功后，soft-limit）
-		if account.IsRPMEligible() && account.GetBaseRPM() > 0 {
+		if !selection.RPMReserved() && account.IsRPMEligible() && account.GetBaseRPM() > 0 {
 			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
 				reqLog.Warn("openai.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
@@ -1296,6 +1308,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
+	rpmVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -1329,6 +1342,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			true,
 			requestPlatform,
 		)
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+			return
+		}
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai_messages.account_select_aborted_client_disconnected", zap.Error(err))
@@ -1375,6 +1391,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		if slotResult == openAISlotAcquireRPMVetoed {
+			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
+				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+				return
+			}
+			continue
+		}
 		if slotResult == openAISlotAcquireProfitVetoed {
 			// 利润终检否决：排除该账号重新选号，全池耗尽由下一轮选号报错；
 			// 否决次数达上限则直接终止，避免排队抢槽后才终检的延迟放大。
@@ -1387,6 +1410,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if slotResult != openAISlotAcquireOK {
 			return
 		}
+		account = selection.Account
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -1562,7 +1586,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 
 		// RPM 计数递增（Forward 成功后，soft-limit）
-		if account.IsRPMEligible() && account.GetBaseRPM() > 0 {
+		if !selection.RPMReserved() && account.IsRPMEligible() && account.GetBaseRPM() > 0 {
 			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
 				reqLog.Warn("openai_messages.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
@@ -2104,7 +2128,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 	return wrapReleaseOnDone(ctx, userReleaseFunc), true
 }
 
-// openAISlotAcquireResult 是账号槽位获取的三态结果。
+// openAISlotAcquireResult reports slot admission success, an emitted error, or a veto.
 type openAISlotAcquireResult int
 
 const (
@@ -2115,7 +2139,14 @@ const (
 	// 未写任何响应；调用方应经 recordOpenAIProfitVeto 把该账号加入本请求排除集
 	// 后重新选号，全池耗尽由下一轮选号返回标准 no available accounts。
 	openAISlotAcquireProfitVetoed
+	// RPM or quota changed before admission; the slot/reservation is released.
+	// Callers record a bounded RPM veto before selecting another account.
+	openAISlotAcquireRPMVetoed
 )
+
+// Each veto may follow a full account-slot wait. Limit these retries separately
+// from upstream failover and profit checks so latency does not grow with pool size.
+const maxOpenAIRPMVetoAttempts = 3
 
 // openAIWSTurnPricing 持有 WebSocket 连接内「当前 turn」的计费定价时刻。
 // 由 BeforeTurn 在每个 turn 开始时冻结，AfterTurn 的用量提交读取它；turn 在
@@ -2254,6 +2285,30 @@ func recordOpenAIProfitVeto(failedAccountIDs map[int64]struct{}, accountID int64
 	return *vetoCount < maxProfitVetoAttempts
 }
 
+func recordOpenAIRPMVeto(failedAccountIDs map[int64]struct{}, accountID int64, vetoCount *int) bool {
+	failedAccountIDs[accountID] = struct{}{}
+	*vetoCount++
+	return *vetoCount < maxOpenAIRPMVetoAttempts
+}
+
+func (h *OpenAIGatewayHandler) handleOpenAIRPMVetoExhausted(c *gin.Context, streamStarted bool, reqLog *zap.Logger, vetoCount int) {
+	reqLog.Warn("openai.rpm_veto_attempts_exhausted", zap.Int("rpm_veto_count", vetoCount))
+	markOpsRoutingCapacityLimited(c)
+	h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "gateway_account_limit",
+		"Account request rate or quota limit reached, please retry later", streamStarted, false)
+}
+
+// A local admission veto may exhaust a small pool before the retry budget.
+// Preserve the rate-limit response instead of reporting an upstream failure
+// when no request was forwarded.
+func (h *OpenAIGatewayHandler) handleOpenAIRPMSelectionFailure(c *gin.Context, err error, lastFailoverErr *service.UpstreamFailoverError, vetoCount int, streamStarted bool, reqLog *zap.Logger) bool {
+	if vetoCount == 0 || lastFailoverErr != nil || failoverClientGone(c) || (err != nil && !errors.Is(err, service.ErrNoAvailableAccounts)) {
+		return false
+	}
+	h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, vetoCount)
+	return true
+}
+
 // handleOpenAIProfitVetoExhausted 在利润否决预算耗尽时写出错误响应。
 // 与 acquireResponsesAccountSlot 内部的 no-available-accounts 失败分支同形，
 // 保证同一调用方在两条路径上拿到一致的响应格式。
@@ -2310,6 +2365,17 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	// 门只存在于调度栈的局部 ctx，必须经选号结果重放到本函数的 ctx 上。
 	ctx := service.ContextWithSelectionProfitGate(c.Request.Context(), selection)
 	account := selection.Account
+	admitRPM := func(release func()) bool {
+		if !h.gatewayService.PrepareDefaultAccountRPM(ctx, selection) {
+			if release != nil {
+				release()
+			}
+			selection.ReleaseRPMReservation()
+			return false
+		}
+		selection.CommitRPMReservation()
+		return true
+	}
 	if selection.Acquired {
 		latest, vetoed, reason := h.gatewayService.ProfitControlVetoLatest(ctx, account)
 		if vetoed {
@@ -2321,6 +2387,9 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		}
 		account = latest
 		selection.Account = latest
+		if !admitRPM(selection.ReleaseFunc) {
+			return nil, openAISlotAcquireRPMVetoed
+		}
 		// 调度器已抢槽路径无门时由选号内部完成 eager 绑定；门下选号内部
 		// 推迟绑定，这里在终检通过后补准入后绑定。
 		if selection.ProfitGateActive() {
@@ -2360,6 +2429,9 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		}
 		account = latest
 		selection.Account = latest
+		if !admitRPM(fastReleaseFunc) {
+			return nil, openAISlotAcquireRPMVetoed
+		}
 		if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
@@ -2416,6 +2488,9 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	}
 	account = latest
 	selection.Account = latest
+	if !admitRPM(accountReleaseFunc) {
+		return nil, openAISlotAcquireRPMVetoed
+	}
 	if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
