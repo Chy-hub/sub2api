@@ -1679,10 +1679,14 @@
       />
 
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <div>
+        <div v-if="!isUstcAccount" data-testid="manual-concurrency-control">
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
           <input v-model.number="form.concurrency" type="number" min="1" class="input"
             @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
+        </div>
+        <div v-else data-testid="ustc-auto-concurrency-hint">
+          <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
+          <p class="input-hint">{{ t('admin.accounts.ustcAutoConcurrency') }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
@@ -2617,9 +2621,10 @@
         <p class="input-hint">{{ t('admin.accounts.autoResetCredit.thresholdHint') }}</p>
       </div>
 
-      <!-- 配额控制 (Anthropic OAuth/SetupToken: 亲和 + 窗口费用 + 会话 + RPM 等；OpenAI API Key 仅 RPM) -->
+      <!-- 手动配额控制仅用于 Anthropic OAuth/SetupToken；USTC 限额在额度视图只读显示。 -->
       <div
         v-if="isRPMEligible"
+        data-testid="manual-rpm-controls"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="mb-3">
@@ -3183,6 +3188,7 @@ import {
   readPlanType,
   resolveOpenCodeAccountMode,
   isCustomGrokBaseUrl,
+  isUstcQuotaAccount,
   isHeaderOverrideCapable,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
@@ -3704,14 +3710,12 @@ const windowCostStickyReserve = ref<number | null>(null)
 const sessionLimitEnabled = ref(false)
 const maxSessions = ref<number | null>(null)
 const sessionIdleTimeout = ref<number | null>(null)
-// 账号级 RPM 对 Anthropic OAuth/SetupToken 与 OpenAI API Key 均生效；其余配额子块仅 Anthropic OAuth/SetupToken 可见
+// 手动账号级 RPM 仅对 Anthropic OAuth/SetupToken 生效；USTC OpenAI API Key 自动读取上游额度。
 const isAnthropicOAuthOrSetupToken = computed(() =>
   props.account?.platform === 'anthropic' && (props.account?.type === 'oauth' || props.account?.type === 'setup-token')
 )
-const isRPMEligible = computed(() =>
-  isAnthropicOAuthOrSetupToken.value ||
-  (props.account?.platform === 'openai' && props.account?.type === 'apikey')
-)
+const isUstcAccount = computed(() => props.account != null && isUstcQuotaAccount(props.account))
+const isRPMEligible = computed(() => isAnthropicOAuthOrSetupToken.value)
 const rpmLimitEnabled = ref(false)
 const baseRpm = ref<number | null>(null)
 const rpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
@@ -4934,8 +4938,8 @@ function loadQuotaControlSettings(account: Account) {
   customBaseUrlEnabled.value = false
   customBaseUrl.value = ''
 
-  // RPM 限流配置对 Anthropic OAuth/SetupToken 与 OpenAI API Key 均生效，须在 Anthropic 早退之前加载。
-  if (account.base_rpm != null && account.base_rpm > 0) {
+  // 只回填仍支持手动 RPM 的 Anthropic OAuth/SetupToken 账号。
+  if (account.platform === 'anthropic' && (account.type === 'oauth' || account.type === 'setup-token') && account.base_rpm != null && account.base_rpm > 0) {
     rpmLimitEnabled.value = true
     baseRpm.value = account.base_rpm
     rpmStrategy.value = (account.rpm_strategy as 'tiered' | 'sticky_exempt') || 'tiered'
@@ -5886,7 +5890,7 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    // 账号级 RPM 限流配置（Anthropic OAuth/SetupToken 与 OpenAI API Key 通用，独立于上述平台分支）
+    // 账号级手动 RPM 仅用于 Anthropic OAuth/SetupToken；USTC OpenAI API Key 使用上游自动值。
     if (isRPMEligible.value) {
       const currentExtra = (updatePayload.extra as Record<string, unknown>) ||
         (props.account.extra as Record<string, unknown>) || {}

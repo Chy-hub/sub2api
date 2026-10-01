@@ -1421,7 +1421,7 @@ func prefetchRPMCounts(ctx context.Context, cache RPMCache, accounts []Account) 
 }
 
 // isAccountSchedulableForRPM 检查账号是否可根据 RPM 进行调度
-// 适用于 IsRPMEligible 的账号（Anthropic OAuth/SetupToken 与 OpenAI API Key）
+// 适用于 Anthropic OAuth/SetupToken；USTC 使用独立的 Key 窗口。
 func (s *GatewayService) isAccountSchedulableForRPM(ctx context.Context, account *Account, isSticky bool) bool {
 	if !account.IsRPMEligible() {
 		return true

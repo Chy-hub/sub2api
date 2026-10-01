@@ -333,7 +333,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		}
 	}
 
-	// 提取账号级 RPM 限流配置（Anthropic OAuth/SetupToken 与 OpenAI API Key 有效）
+	// 手填 RPM 仅供 Anthropic OAuth/SetupToken；USTC 另返回自动容量快照。
 	if a.IsRPMEligible() {
 		if rpm := a.GetBaseRPM(); rpm > 0 {
 			out.BaseRPM = &rpm

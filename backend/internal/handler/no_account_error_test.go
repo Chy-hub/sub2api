@@ -89,15 +89,6 @@ func TestClassifySelectionFailureError_RPMExceeded(t *testing.T) {
 	require.Equal(t, "rate_limit_error", got.ErrType)
 }
 
-// selectionRPMExceeded 仅在选号因 rpm_exceeded 耗尽时为真，用于在 429 响应上追加 Retry-After。
-func TestSelectionRPMExceeded(t *testing.T) {
-	require.True(t, selectionRPMExceeded(fmt.Errorf("pool=2, filtered: rpm_exceeded=2")))
-	require.True(t, selectionRPMExceeded(fmt.Errorf("RPM_EXCEEDED=1")))
-	require.False(t, selectionRPMExceeded(fmt.Errorf("pool=2, filtered: model_not_supported=2")))
-	require.False(t, selectionRPMExceeded(nil))
-	require.False(t, selectionRPMExceeded(fmt.Errorf("model_rate_limited=3")))
-}
-
 func TestClassifyNoAccountError_NilAPIKey_Falls503(t *testing.T) {
 	c := newTestGinContextWithRequest()
 	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}

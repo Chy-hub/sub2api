@@ -35,7 +35,7 @@ func (f *admissionVetoQuotaRefresher) RefreshForScheduling(_ context.Context, ac
 	defer f.mu.Unlock()
 	cloned := *account
 	valid := !f.held[account.ID]
-	cloned.Extra = map[string]any{"base_rpm": 20, "upstream_userinfo_valid": valid}
+	cloned.Extra = map[string]any{"upstream_userinfo_limits_known": true, "upstream_userinfo_rpm_limit": 20, "upstream_userinfo_max_parallel_requests": 20, "upstream_userinfo_valid": valid}
 	if !valid {
 		f.vetoed[account.ID] = struct{}{}
 	}
@@ -47,21 +47,29 @@ type admissionVetoConcurrencyCache struct {
 	refresher *admissionVetoQuotaRefresher
 }
 
-type admissionVetoRPMCache struct {
+type admissionCapacityCache struct {
 	service.RPMCache
-	refresher *admissionVetoQuotaRefresher
+	service.USTCCapacityCache
+	exhausted bool
 }
 
-func (c *admissionVetoRPMCache) GetRPM(context.Context, int64) (int, error) { return 0, nil }
-func (c *admissionVetoRPMCache) GetRPMBatch(context.Context, []int64) (map[int64]int, error) {
-	return map[int64]int{}, nil
+func (c *admissionCapacityCache) USTCRead(context.Context, string, service.USTCLimits) (service.USTCCapacity, error) {
+	limit := 20
+	capacity := service.USTCCapacity{State: "ready", RPMLimit: &limit, ParallelLimit: &limit, Available: 20, ResetAt: time.Now().Add(time.Minute)}
+	if c.exhausted {
+		capacity.Used = 20
+		capacity.Available = 0
+	}
+	return capacity, nil
 }
-func (c *admissionVetoRPMCache) ReserveRPM(_ context.Context, id int64, _ int) (bool, func(), error) {
-	c.refresher.mu.Lock()
-	defer c.refresher.mu.Unlock()
-	c.refresher.vetoed[id] = struct{}{}
-	return false, nil, nil
+func (c *admissionCapacityCache) USTCReserve(ctx context.Context, scope string, limits service.USTCLimits) (*service.USTCTicket, service.USTCCapacity, error) {
+	value, err := c.USTCRead(ctx, scope, limits)
+	if c.exhausted {
+		return nil, value, err
+	}
+	return &service.USTCTicket{Scope: scope, ID: "test-ticket", Epoch: 1}, value, nil
 }
+func (*admissionCapacityCache) USTCRelease(context.Context, *service.USTCTicket) error { return nil }
 
 func (c *admissionVetoConcurrencyCache) AcquireAccountSlot(_ context.Context, id int64, _ int, _ string) (bool, error) {
 	c.refresher.mu.Lock()
@@ -78,7 +86,7 @@ func (c *admissionVetoConcurrencyCache) ReleaseAccountSlot(_ context.Context, id
 	return nil
 }
 
-func TestOpenAIHTTPRPMVetoHandlesBudgetAndPoolExhaustion(t *testing.T) {
+func TestOpenAIHTTPUSTCAdmissionVetoHandlesBudgetAndPoolExhaustion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
 		name   string
@@ -94,7 +102,7 @@ func TestOpenAIHTTPRPMVetoHandlesBudgetAndPoolExhaustion(t *testing.T) {
 		{"alpha_search", "/openai/v1/alpha/search", `{"model":"deepseek-flash","query":"hello"}`, (*OpenAIGatewayHandler).AlphaSearch},
 		{"seedance", "/v1/seedance/tasks", `{"model":"doubao-seedance-2-0","content":[{"type":"text","text":"hello"}]}`, (*OpenAIGatewayHandler).SeedanceTasks},
 	} {
-		for _, admission := range []string{"quota_after_acquire", "rpm_after_wait"} {
+		for _, admission := range []string{"quota_after_acquire"} {
 			for _, poolSize := range []int{1, 30} {
 				t.Run(fmt.Sprintf("%s/%s/pool_%d", tc.name, admission, poolSize), func(t *testing.T) {
 					accounts := make([]service.Account, poolSize)
@@ -102,31 +110,24 @@ func TestOpenAIHTTPRPMVetoHandlesBudgetAndPoolExhaustion(t *testing.T) {
 						accounts[i] = service.Account{ID: int64(i + 1), Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
 							Status: service.StatusActive, Schedulable: true, Concurrency: 1,
 							Credentials: map[string]any{"base_url": "https://api.llm.ustc.edu.cn", "api_key": "test"},
-							Extra:       map[string]any{"base_rpm": 20},
+							Extra:       map[string]any{"upstream_userinfo_limits_known": true, "upstream_userinfo_rpm_limit": 20, "upstream_userinfo_max_parallel_requests": 20},
 						}
 						if tc.name == "seedance" {
 							accounts[i].Credentials["openai_capabilities"] = []string{"seedance"}
 						}
 					}
 					cfg := &config.Config{RunMode: config.RunModeSimple}
+					cfg.Gateway.Scheduling.FallbackMaxWaiting = 100
 					billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 					t.Cleanup(billing.Stop)
 					refresher := &admissionVetoQuotaRefresher{held: make(map[int64]bool), vetoed: make(map[int64]struct{})}
 					concurrency := service.NewConcurrencyService(&admissionVetoConcurrencyCache{refresher: refresher})
 					selectionConcurrency := concurrency
-					if admission == "rpm_after_wait" {
-						// Selection sees busy slots and returns a WaitPlan. The handler's
-						// fast acquisition succeeds, but RPM is full by that admission point.
-						selectionConcurrency = service.NewConcurrencyService(&concurrencyCacheMock{})
-					}
 					gateway := service.NewOpenAIGatewayService(&openAIWSFailoverHandlerAccountRepoStub{accounts: accounts},
 						nil, nil, nil, nil, nil, nil, cfg, nil, selectionConcurrency, service.NewBillingService(cfg, nil), nil, billing, nil,
 						&service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
-					if admission == "rpm_after_wait" {
-						gateway.SetRPMCache(&admissionVetoRPMCache{refresher: refresher})
-					} else {
-						gateway.SetUSTCQuotaRefresher(refresher)
-					}
+					gateway.SetRPMCache(&admissionCapacityCache{})
+					gateway.SetUSTCQuotaRefresher(refresher)
 					h := NewOpenAIGatewayHandler(gateway, concurrency, billing,
 						service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 					w := httptest.NewRecorder()
@@ -141,11 +142,11 @@ func TestOpenAIHTTPRPMVetoHandlesBudgetAndPoolExhaustion(t *testing.T) {
 					tc.handle(h, c)
 					require.Equal(t, http.StatusTooManyRequests, w.Code, w.Body.String())
 					require.Equal(t, "gateway_account_limit", gjson.GetBytes(w.Body.Bytes(), "error.code").String())
-					wantVetoes := min(poolSize, maxOpenAIRPMVetoAttempts)
+					wantVetoes := min(poolSize, maxUSTCAdmissionVetoAttempts)
 					require.Len(t, refresher.vetoed, wantVetoes)
 					require.Equal(t, wantVetoes, refresher.released, "every rejected slot must be released")
 					require.Empty(t, refresher.held)
-					if poolSize > maxOpenAIRPMVetoAttempts {
+					if poolSize > maxUSTCAdmissionVetoAttempts {
 						require.Less(t, len(refresher.vetoed), len(accounts))
 					}
 				})
@@ -154,7 +155,7 @@ func TestOpenAIHTTPRPMVetoHandlesBudgetAndPoolExhaustion(t *testing.T) {
 	}
 }
 
-func TestOpenAIRPMVetoExhaustedTerminatesStartedStreams(t *testing.T) {
+func TestOpenAIUSTCAdmissionVetoExhaustedTerminatesStartedStreams(t *testing.T) {
 	for _, tc := range []struct{ path, event string }{
 		{"/v1/responses", "event: response.failed"},
 		{"/v1/messages", "event: error"},
@@ -164,23 +165,12 @@ func TestOpenAIRPMVetoExhaustedTerminatesStartedStreams(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, tc.path, nil)
 			c.Writer.WriteHeaderNow()
-			(&OpenAIGatewayHandler{}).handleOpenAIRPMVetoExhausted(c, true, zap.NewNop(), maxOpenAIRPMVetoAttempts)
+			(&OpenAIGatewayHandler{}).handleUSTCAdmissionVetoExhausted(c, true, zap.NewNop(), maxUSTCAdmissionVetoAttempts)
 			require.Contains(t, w.Body.String(), tc.event)
 			require.Contains(t, w.Body.String(), "gateway_account_limit")
 			require.Equal(t, http.StatusOK, w.Code)
 		})
 	}
-}
-
-type exhaustedUSTCPoolRPMCache struct{ service.RPMCache }
-
-func (exhaustedUSTCPoolRPMCache) GetRPM(context.Context, int64) (int, error) { return 20, nil }
-func (exhaustedUSTCPoolRPMCache) GetRPMBatch(_ context.Context, ids []int64) (map[int64]int, error) {
-	counts := make(map[int64]int, len(ids))
-	for _, id := range ids {
-		counts[id] = 20
-	}
-	return counts, nil
 }
 
 func TestUSTCPoolCapacityTimeoutReturns429WithRetryAfterBeforeForwarding(t *testing.T) {
@@ -197,6 +187,7 @@ func TestUSTCPoolCapacityTimeoutReturns429WithRetryAfterBeforeForwarding(t *test
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{RunMode: config.RunModeSimple}
+			cfg.Gateway.Scheduling.FallbackMaxWaiting = 100
 			cfg.Gateway.Scheduling.FallbackWaitTimeout = 20 * time.Millisecond
 			cfg.Gateway.Scheduling.FallbackMaxWaiting = 1
 			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
@@ -204,13 +195,13 @@ func TestUSTCPoolCapacityTimeoutReturns429WithRetryAfterBeforeForwarding(t *test
 			accounts := []service.Account{{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
 				Status: service.StatusActive, Schedulable: true, Concurrency: 20,
 				Credentials: map[string]any{"base_url": "https://api.llm.ustc.edu.cn", "api_key": "test"},
-				Extra:       map[string]any{"base_rpm": 20},
+				Extra:       map[string]any{"upstream_userinfo_limits_known": true, "upstream_userinfo_rpm_limit": 20, "upstream_userinfo_max_parallel_requests": 20},
 			}}
 			concurrency := service.NewConcurrencyService(&concurrencyCacheMock{})
 			gateway := service.NewOpenAIGatewayService(&openAIWSFailoverHandlerAccountRepoStub{accounts: accounts},
 				nil, nil, nil, nil, nil, nil, cfg, nil, concurrency, service.NewBillingService(cfg, nil), nil, billing, nil,
 				&service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
-			gateway.SetRPMCache(exhaustedUSTCPoolRPMCache{})
+			gateway.SetRPMCache(&admissionCapacityCache{exhausted: true})
 			h := NewOpenAIGatewayHandler(gateway, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)

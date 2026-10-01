@@ -140,6 +140,8 @@ docs/*
 !docs/BATCH_IMAGE_MVP.md
 !docs/COMPOSITE_GROUPS.md
 !docs/USTC_SCHEDULING.md
+!docs/USTC_UPSTREAM_DESIGN.md
+!docs/ustc-upstream-probe-2026-10-02.json
 !docs/PLUGIN_DEVELOPMENT.md
 !docs/channel-monitor-v2-safe-defaults.md
 !docs/codex-credits.md

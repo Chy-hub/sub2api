@@ -2333,15 +2333,10 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
-// IsRPMEligible 判断账号是否参与账号级 RPM 限流调度。
-// 账号级 RPM 的计数器、三态判断与配置存储均平台无关，本方法只用于放宽
-// 调度期/递增期的资格闸门：Anthropic OAuth/SetupToken 与 OpenAI API Key 均参与。
-// WindowCost、Session、UMQ、TLS 等 Anthropic 专属功能仍由 IsAnthropicOAuthOrSetupToken 守卫。
+// IsRPMEligible retains Anthropic's existing manually configured RPM policy.
+// USTC has a separate upstream-derived Key window; other OpenAI keys use neither.
 func (a *Account) IsRPMEligible() bool {
-	if a.IsAnthropicOAuthOrSetupToken() {
-		return true
-	}
-	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+	return a.IsAnthropicOAuthOrSetupToken()
 }
 
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
@@ -3075,14 +3070,6 @@ func (a *Account) GetRPMStickyBuffer() int {
 	if base <= 0 {
 		return 0
 	}
-	// OpenAI API-key accounts use the buffer advertised by their RPM form.
-	if isDefaultUSTCAccount(a) {
-		if buffer := base / 5; buffer > 0 {
-			return buffer
-		}
-		return 1
-	}
-
 	// Cache-driven buffer = concurrency + maxSessions
 	conc := a.Concurrency
 	if conc < 0 {

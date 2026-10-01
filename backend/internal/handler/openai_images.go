@@ -161,7 +161,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
-	rpmVetoCount := 0
+	ustcAdmissionVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -180,7 +180,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			failedAccountIDs,
 			parsed.RequiredCapabilityForModel(channelMapping.MappedModel),
 		)
-		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleUSTCAdmissionSelectionFailure(c, err, lastFailoverErr, ustcAdmissionVetoCount, streamStarted, reqLog) {
 			return
 		}
 		if err != nil {
@@ -239,9 +239,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, parsed.Stream, &streamStarted, reqLog)
-		if slotResult == openAISlotAcquireRPMVetoed {
-			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
-				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+		if slotResult == openAISlotAcquireUSTCVetoed {
+			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
+				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
 				return
 			}
 			continue
@@ -272,7 +272,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardImages(requestCtx, c, account, body, parsed, channelMapping.MappedModel)
+			return h.gatewayService.ForwardImages(service.ContextWithUSTCAdmission(requestCtx, selection), c, account, body, parsed, channelMapping.MappedModel)
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)

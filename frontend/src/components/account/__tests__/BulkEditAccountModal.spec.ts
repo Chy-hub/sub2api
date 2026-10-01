@@ -98,6 +98,16 @@ describe('BulkEditAccountModal', () => {
     } as any)
   })
 
+  it('keeps manual RPM bulk editing limited to Anthropic OAuth/setup-token accounts', () => {
+    const openAIWrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
+    expect(openAIWrapper.find('#bulk-edit-rpm-limit-enabled').exists()).toBe(false)
+    openAIWrapper.unmount()
+
+    const anthropicWrapper = mountModal({ selectedPlatforms: ['anthropic'], selectedTypes: ['oauth'] })
+    expect(anthropicWrapper.find('#bulk-edit-rpm-limit-enabled').exists()).toBe(true)
+    anthropicWrapper.unmount()
+  })
+
   it('批量修改倍率时提示自动同步账号需要先关闭同步', async () => {
     const wrapper = mountModal()
 
