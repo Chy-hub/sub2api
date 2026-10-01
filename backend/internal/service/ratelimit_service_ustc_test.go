@@ -70,7 +70,7 @@ func runUSTC429(t *testing.T, account *Account, headers http.Header, body string
 	return repo, blocker, before, after
 }
 
-func TestHandle429_USTCTransientRPMUsesShortCooldownAndSkipsCodexWindows(t *testing.T) {
+func TestHandle429_USTCRPMUsesConservativeWindowAndSkipsCodexWindows(t *testing.T) {
 	settingsRepo := newMockSettingRepo()
 	encoded, err := json.Marshal(RateLimit429CooldownSettings{Enabled: true, CooldownSeconds: 7200})
 	require.NoError(t, err)
@@ -130,16 +130,16 @@ func TestHandle429_USTCOrdinary429DoesNotShortenPriorRetryAfter(t *testing.T) {
 	account := ustc429Account(nil)
 
 	svc.HandleUpstreamError(context.Background(), account, http.StatusTooManyRequests,
-		http.Header{"Retry-After": []string{"47"}}, []byte(`{"error":{"message":"too many requests"}}`))
+		http.Header{"Retry-After": []string{"147"}}, []byte(`{"error":{"message":"too many requests"}}`))
 	require.Len(t, repo.resets, 1)
 	retryAfterReset := repo.resets[0]
-	require.True(t, retryAfterReset.After(time.Now().Add(40*time.Second)))
+	require.True(t, retryAfterReset.After(time.Now().Add(140*time.Second)))
 
 	svc.HandleUpstreamError(context.Background(), account, http.StatusTooManyRequests,
 		http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"requests per minute exceeded"}}`))
 
 	require.Equal(t, 2, repo.setRateLimitedIfLaterCalls, "both responses use the optional never-shrinking write")
-	require.Len(t, repo.resets, 1, "the later ordinary 3-second cooldown must not overwrite the longer Retry-After")
+	require.Len(t, repo.resets, 1, "the later ordinary 60-second cooldown must not overwrite the longer Retry-After")
 	require.Equal(t, retryAfterReset, repo.resets[0])
 	require.True(t, repo.resets[0].After(time.Now()))
 }

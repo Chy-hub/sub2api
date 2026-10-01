@@ -630,6 +630,15 @@ export function userInfoQuotaCellVisible(account: {
   }
 }
 
+/** USTC OpenAI API-key account detection, shared by quota and capacity views. */
+export function isUstcQuotaAccount(account: {
+  platform?: string
+  type?: string
+  credentials?: Record<string, unknown>
+}): boolean {
+  return account.platform === 'openai' && userInfoQuotaCellVisible(account)
+}
+
 /**
  * 将请求头覆写写入 credentials。
  * create 模式：关闭时不写入任何字段；edit 模式：关闭时删除字段（全量替换语义）。

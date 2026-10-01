@@ -124,7 +124,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	searchID := strings.TrimSpace(gjson.GetBytes(body, "id").String())
 	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, nil, searchID)
 	profitVetoCount := 0
-	rpmVetoCount := 0
+	ustcAdmissionVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -152,7 +152,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			false,
 			service.PlatformOpenAI,
 		)
-		if (err != nil || selection == nil || selection.Account == nil) && h.handleOpenAIRPMSelectionFailure(c, err, lastFailoverErr, rpmVetoCount, streamStarted, reqLog) {
+		if (err != nil || selection == nil || selection.Account == nil) && h.handleUSTCAdmissionSelectionFailure(c, err, lastFailoverErr, ustcAdmissionVetoCount, streamStarted, reqLog) {
 			return
 		}
 		if err != nil || selection == nil || selection.Account == nil {
@@ -179,9 +179,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 		accountRelease, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
-		if slotResult == openAISlotAcquireRPMVetoed {
-			if !recordOpenAIRPMVeto(failedAccountIDs, account.ID, &rpmVetoCount) {
-				h.handleOpenAIRPMVetoExhausted(c, streamStarted, reqLog, rpmVetoCount)
+		if slotResult == openAISlotAcquireUSTCVetoed {
+			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
+				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
 				return
 			}
 			continue

@@ -42,6 +42,30 @@ func TestSeedanceNativeForwarding(t *testing.T) {
 	}
 }
 
+func TestUSTCSeedanceForwardingCommitsSharedAdmission(t *testing.T) {
+	svc, cache := ustcSchedulerFixture(1, false)
+	account := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts[0]
+	account.Credentials["openai_capabilities"] = []string{"seedance"}
+	reservation, _, err := svc.reserveUSTC(context.Background(), &account)
+	require.NoError(t, err)
+	require.NotNil(t, reservation)
+	defer reservation.release()
+	selection := &AccountSelectionResult{Account: &account, ustcAdmission: reservation}
+	upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"id":"task-ustc"}`)}
+	svc.httpUpstream = upstream
+	c, _ := grokMediaContentTestContext(http.MethodPost, "/api/v3/contents/generations/tasks", nil)
+	ctx := ContextWithUSTCAdmission(context.Background(), selection)
+	result, err := svc.ForwardSeedance(ctx, c, &account, SeedanceEndpointCreate, "", []byte(`{"model":"video","content":[{"type":"text","text":"waves"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, "seedance:task-ustc", result.ResponseID)
+	require.Len(t, upstream.requests, 1)
+	capacity, err := cache.USTCRead(context.Background(), USTCKeyScope(&account), USTCLimits{20, 20})
+	require.NoError(t, err)
+	require.Equal(t, 1, capacity.Used, "the native media path must not leave an unsent reservation")
+	require.Zero(t, capacity.Pending)
+	require.Zero(t, capacity.InFlight)
+}
+
 func TestSeedanceStatusAndDelete(t *testing.T) {
 	for _, status := range []string{"queued", "running", "failed", "cancelled", "expired", "succeeded"} {
 		t.Run(status, func(t *testing.T) {

@@ -45,6 +45,7 @@ type UpstreamUserInfoQuotaService struct {
 	proxyRepo    ProxyRepository
 	httpUpstream HTTPUpstream
 	cfg          *config.Config
+	onRefresh    func()
 	flight       singleflight.Group
 
 	refreshFlight     singleflight.Group
@@ -189,7 +190,8 @@ func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, ac
 	}
 	now := time.Now().UTC()
 	incomingUpdatedAt, hasIncomingUpdatedAt := userInfoQuotaExtraUpdatedAt(account.Extra)
-	forceRefresh := userInfoQuotaResetElapsed(account.Extra, now)
+	_, limitsKnown := USTCAccountLimits(account)
+	forceRefresh := userInfoQuotaResetElapsed(account.Extra, now) || (isDefaultUSTCAccount(account) && !limitsKnown)
 	if userInfoQuotaExtraIsFresh(account.Extra, now) && !forceRefresh {
 		if s != nil {
 			if snapshot, ok := s.newerCachedSchedulingRefresh(account.ID, now, incomingUpdatedAt); ok {
@@ -242,6 +244,9 @@ func (s *UpstreamUserInfoQuotaService) ensureSchedulingRefresh(account *Account,
 		s.refreshMu.Lock()
 		delete(s.refreshPending, account.ID)
 		s.refreshMu.Unlock()
+		if s.onRefresh != nil {
+			s.onRefresh()
+		}
 	}()
 }
 
@@ -468,7 +473,7 @@ func userInfoQuotaSnapshotFromResult(result *UserInfoQuotaResult) map[string]any
 	if result.FetchedAt <= 0 {
 		updatedAt = time.Now().UTC()
 	}
-	return map[string]any{
+	snapshot := map[string]any{
 		UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget):   result.MaxBudget,
 		UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend):    result.Spend,
 		UserInfoQuotaExtraKey(UserInfoExtraSuffixRemain):   result.Remaining,
@@ -479,6 +484,20 @@ func userInfoQuotaSnapshotFromResult(result *UserInfoQuotaResult) map[string]any
 		UserInfoQuotaExtraKey(UserInfoExtraSuffixKeyAlias): result.KeyAlias,
 		UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows):  append([]UserInfoBudgetWindow(nil), result.Windows...),
 	}
+	// Keep the last valid limits if a successful budget response omits metadata.
+	if result.LimitsKnown {
+		pointerValue := func(value *int) any {
+			if value == nil {
+				return nil
+			}
+			return *value
+		}
+		snapshot[UserInfoQuotaExtraKey(UserInfoExtraSuffixRPM)] = pointerValue(result.RPMLimit)
+		snapshot[UserInfoQuotaExtraKey(UserInfoExtraSuffixParallel)] = pointerValue(result.MaxParallelRequests)
+		snapshot[UserInfoQuotaExtraKey(UserInfoExtraSuffixTPM)] = pointerValue(result.TPMLimit)
+		snapshot[UserInfoQuotaExtraKey(UserInfoExtraSuffixLimitsKnown)] = true
+	}
+	return snapshot
 }
 
 func overlayUserInfoQuotaSnapshot(account *Account, snapshot map[string]any) *Account {
@@ -652,6 +671,11 @@ func (s *UpstreamUserInfoQuotaService) queryQuotaForAccount(ctx context.Context,
 	}
 
 	result.Success = true
+	var rpmKnown, parallelKnown bool
+	result.RPMLimit, rpmKnown = parseUSTCLimit(keyNode.Get("rpm_limit"))
+	result.MaxParallelRequests, parallelKnown = parseUSTCLimit(keyNode.Get("max_parallel_requests"))
+	result.TPMLimit, _ = parseUSTCLimit(keyNode.Get("tpm_limit"))
+	result.LimitsKnown = rpmKnown && parallelKnown
 	result.MaxBudget = maxBudget
 	result.Spend = spend
 	result.Remaining = remaining
@@ -688,10 +712,26 @@ func userInfoKeyNode(root gjson.Result) gjson.Result {
 	}
 	if node.Get("spend").Exists() || node.Get("max_budget").Exists() ||
 		node.Get("key_alias").Exists() || node.Get("budget_duration").Exists() ||
-		node.Get("budget_limits").Exists() {
+		node.Get("budget_limits").Exists() || node.Get("rpm_limit").Exists() {
 		return node
 	}
 	return gjson.Result{}
+}
+
+// Explicit null means unlimited; absent or malformed data means unknown.
+func parseUSTCLimit(node gjson.Result) (*int, bool) {
+	if !node.Exists() {
+		return nil, false
+	}
+	if node.Type == gjson.Null {
+		return nil, true
+	}
+	value := parseUserInfoF64(node)
+	if value <= 0 || math.Trunc(value) != value || value > math.MaxInt32 {
+		return nil, false
+	}
+	limit := int(value)
+	return &limit, true
 }
 
 // parseUserInfoF64 解析 JSON 数值或字符串为 float64（兼容 "100" 与 100）。

@@ -239,6 +239,21 @@ export default {
           full: '活跃会话已满，新会话需等待（空闲超时：{idle}分钟）',
           normal: '活跃会话正常（空闲超时：{idle}分钟）'
         },
+        ustc: {
+          rpm: '上游 RPM',
+          parallel: '上游并发',
+          available: '可用 {count}',
+          resetAt: '恢复 {time}',
+          detail: '上游 RPM {rpm}，并发 {parallel}，可用并发 {available}',
+          state: {
+            ready: '就绪',
+            sync_wait: '等待同步',
+            verify_one: '单请求验证',
+            rpm_wait: '等待 RPM 恢复',
+            parallel_wait: '等待并发释放',
+            unknown: '状态未知'
+          }
+        },
         rpm: {
           full: '已达 RPM 上限',
           warning: 'RPM 接近上限',
@@ -256,6 +271,7 @@ export default {
           normal: '配额正常'
         },
       },
+      ustcAutoConcurrency: 'USTC 并发上限由上游自动获取，此处无需手动设置。',
       clearRateLimit: '清除速率限制',
       resetQuota: '重置配额',
       quotaLimit: '配额限制',
@@ -377,6 +393,9 @@ export default {
         probeTooltip: '请求上游 /key/info 额度端点，查询预算余额',
         invalid: '已失效',
         usageUnknown: '上游未提供本时段用量，暂不显示已用百分比',
+        rpmLimit: 'RPM',
+        parallelLimit: '并发',
+        tpmLimit: 'TPM',
       },
       opencodeGo: {
         accountMode: {
