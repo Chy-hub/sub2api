@@ -15,11 +15,3 @@ type RPMCache interface {
 	// GetRPMBatch 批量获取多个账号的 RPM 计数（使用 Pipeline）
 	GetRPMBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error)
 }
-
-// RPMReservationCache optionally supports an atomic, limit-aware RPM reservation.
-// The returned cancel function releases an allowed reservation when its request
-// was never admitted or sent. Once a request is sent, its reservation remains
-// counted even if the upstream request fails.
-type RPMReservationCache interface {
-	ReserveRPM(ctx context.Context, accountID int64, limit int) (allowed bool, cancel func(), err error)
-}

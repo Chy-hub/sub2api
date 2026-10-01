@@ -336,6 +336,23 @@ describe('EditAccountModal', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('does not expose manual RPM settings for USTC OpenAI API-key accounts', () => {
+    const account = buildAccount()
+    account.credentials.base_url = 'https://api.llm.ustc.edu.cn/v1'
+    account.extra = { base_rpm: 25, rpm_strategy: 'tiered', rpm_sticky_buffer: 5 }
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="manual-rpm-controls"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="manual-concurrency-control"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ustc-auto-concurrency-hint"]').text()).toContain('admin.accounts.ustcAutoConcurrency')
+    wrapper.unmount()
+
+    const regularWrapper = mountModal(buildAccount())
+    expect(regularWrapper.find('[data-testid="manual-concurrency-control"]').exists()).toBe(true)
+    expect(regularWrapper.find('[data-testid="ustc-auto-concurrency-hint"]').exists()).toBe(false)
+    regularWrapper.unmount()
+  })
+
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()
     account.credentials.model_mapping = { 'gpt-5.2': 'gpt-5.2', 'gpt-latest': 'deepseek-chat' }

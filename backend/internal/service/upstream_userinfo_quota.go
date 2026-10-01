@@ -27,16 +27,20 @@ var userInfoQuotaHosts = []string{
 // 统一放在 upstream_userinfo_ 命名空间下，便于调度侧识别为观测型中性键，
 // 避免每次探测都触发事务 + outbox + 平台桶重建。
 const (
-	userInfoExtraPrefix         = "upstream_userinfo_"
-	UserInfoExtraSuffixBudget   = "max_budget"
-	UserInfoExtraSuffixSpend    = "spend"
-	UserInfoExtraSuffixRemain   = "remaining"
-	UserInfoExtraSuffixExpires  = "expires_at"
-	UserInfoExtraSuffixValid    = "valid"
-	UserInfoExtraSuffixUpdated  = "updated_at"
-	UserInfoExtraSuffixResetAt  = "budget_reset_at"
-	UserInfoExtraSuffixKeyAlias = "key_alias"
-	UserInfoExtraSuffixWindows  = "windows"
+	userInfoExtraPrefix            = "upstream_userinfo_"
+	UserInfoExtraSuffixBudget      = "max_budget"
+	UserInfoExtraSuffixSpend       = "spend"
+	UserInfoExtraSuffixRemain      = "remaining"
+	UserInfoExtraSuffixExpires     = "expires_at"
+	UserInfoExtraSuffixValid       = "valid"
+	UserInfoExtraSuffixUpdated     = "updated_at"
+	UserInfoExtraSuffixResetAt     = "budget_reset_at"
+	UserInfoExtraSuffixKeyAlias    = "key_alias"
+	UserInfoExtraSuffixWindows     = "windows"
+	UserInfoExtraSuffixRPM         = "rpm_limit"
+	UserInfoExtraSuffixParallel    = "max_parallel_requests"
+	UserInfoExtraSuffixTPM         = "tpm_limit"
+	UserInfoExtraSuffixLimitsKnown = "limits_known"
 )
 
 // UserInfoQuotaExtraKey 拼接 Extra 快照键。
@@ -239,15 +243,19 @@ type UserInfoBudgetWindow struct {
 
 // UserInfoQuotaResult 是 /key/info 额度探测结果（管理端 + 前端消费）。
 type UserInfoQuotaResult struct {
-	Provider  string  `json:"provider"`
-	Success   bool    `json:"success"`
-	Remaining float64 `json:"remaining"`
-	MaxBudget float64 `json:"max_budget"`
-	Spend     float64 `json:"spend"`
-	Unit      string  `json:"unit"`
-	Valid     bool    `json:"valid"`
-	ExpiresAt string  `json:"expires_at,omitempty"`
-	Blocked   bool    `json:"blocked,omitempty"`
+	RPMLimit            *int    `json:"rpm_limit"`
+	MaxParallelRequests *int    `json:"max_parallel_requests"`
+	TPMLimit            *int    `json:"tpm_limit"`
+	LimitsKnown         bool    `json:"limits_known"`
+	Provider            string  `json:"provider"`
+	Success             bool    `json:"success"`
+	Remaining           float64 `json:"remaining"`
+	MaxBudget           float64 `json:"max_budget"`
+	Spend               float64 `json:"spend"`
+	Unit                string  `json:"unit"`
+	Valid               bool    `json:"valid"`
+	ExpiresAt           string  `json:"expires_at,omitempty"`
+	Blocked             bool    `json:"blocked,omitempty"`
 	// BudgetResetAt 当前约束窗口的重置时间（RFC3339），空表示无周期预算。
 	BudgetResetAt string `json:"budget_reset_at,omitempty"`
 	// KeyAlias 当前 key 的别名，便于核对取的是哪一个。

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 
 	"entgo.io/ent/dialect"
@@ -17,6 +19,54 @@ import (
 
 type captureEntQueryMatcher struct {
 	actual *string
+}
+
+func TestListSchedulableCapacityByGroupIDsStoresOnlyUSTCScopeHash(t *testing.T) {
+	var capturedSQL string
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(captureEntQueryMatcher{actual: &capturedSQL}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	driver := entsql.OpenDB(dialect.Postgres, db)
+	client := dbent.NewClient(dbent.Driver(driver))
+	t.Cleanup(func() { _ = client.Close() })
+	repo := newAccountRepositoryWithSQL(client, db, nil)
+
+	const apiKey = "secret-ustc-key"
+	mock.ExpectQuery("schedulable capacity by groups").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"group_id", "account_id", "platform", "type", "concurrency", "extra", "credentials",
+			"session_window_start", "session_window_end", "session_window_status",
+		}).AddRow(
+			int64(7), int64(11), service.PlatformOpenAI, service.AccountTypeAPIKey, 10,
+			`{"upstream_userinfo_limits_known":true}`, `{"base_url":"https://api.llm.ustc.edu.cn","api_key":"`+apiKey+`"}`,
+			nil, nil, "",
+		))
+
+	rows, err := repo.ListSchedulableCapacityByGroupIDs(context.Background(), []int64{7})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, service.PlatformOpenAI, rows[0].Platform)
+	require.Equal(t, service.AccountTypeAPIKey, rows[0].Type)
+	require.Equal(t, service.USTCKeyScope(&service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://api.llm.ustc.edu.cn",
+			"api_key":  apiKey,
+		},
+		Extra: map[string]any{"upstream_userinfo_limits_known": true},
+	}), rows[0].USTCScope)
+	serialized, err := json.Marshal(rows[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(serialized), apiKey)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	selectClause, _, found := strings.Cut(normalizeSQLWhitespace(capturedSQL), " FROM ")
+	require.True(t, found, "unexpected capacity projection SQL: %s", capturedSQL)
+	require.Contains(t, selectClause, "a.platform")
+	require.Contains(t, selectClause, "a.type")
+	require.Contains(t, selectClause, "a.credentials")
 }
 
 func (m captureEntQueryMatcher) Match(_, actual string) error {
