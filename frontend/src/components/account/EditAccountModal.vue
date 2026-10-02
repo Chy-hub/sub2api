@@ -3188,7 +3188,7 @@ import {
   readPlanType,
   resolveOpenCodeAccountMode,
   isCustomGrokBaseUrl,
-  isUstcQuotaAccount,
+  isUstcCapacityAccount,
   isHeaderOverrideCapable,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
@@ -3714,7 +3714,7 @@ const sessionIdleTimeout = ref<number | null>(null)
 const isAnthropicOAuthOrSetupToken = computed(() =>
   props.account?.platform === 'anthropic' && (props.account?.type === 'oauth' || props.account?.type === 'setup-token')
 )
-const isUstcAccount = computed(() => props.account != null && isUstcQuotaAccount(props.account))
+const isUstcAccount = computed(() => props.account != null && isUstcCapacityAccount(props.account))
 const isRPMEligible = computed(() => isAnthropicOAuthOrSetupToken.value)
 const rpmLimitEnabled = ref(false)
 const baseRpm = ref<number | null>(null)

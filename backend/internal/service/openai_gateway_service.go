@@ -458,6 +458,8 @@ type OpenAIGatewayService struct {
 	ustcQuotaRefresher    USTCQuotaSchedulingRefresher
 	ustcPoolOnce          sync.Once
 	ustcPool              *ustcAccountPoolState
+	ustcLeaseOnce         sync.Once
+	ustcLeases            *ustcLeaseRenewer
 	billingCacheService   *BillingCacheService
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream

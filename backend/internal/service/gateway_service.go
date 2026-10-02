@@ -587,6 +587,7 @@ type AccountSelectionResult struct {
 	// 调度栈之外做抢槽后终检与准入后粘性绑定。
 	profitGate    *openAIProfitControlGate
 	ustcAdmission *ustcAdmission
+	ustcRetryAt   time.Time
 }
 
 // ProfitGateActive 报告本次选号是否处于利润门之下。

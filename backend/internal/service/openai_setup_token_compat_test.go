@@ -143,6 +143,22 @@ func TestOpenAISetupTokenWSCompatibility(t *testing.T) {
 	require.Equal(t, false, payload["store"])
 }
 
+func TestBuildOpenAIResponsesWSURL_RejectsUSTCNativeTransport(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-ustc-test",
+			"base_url": "https://api.llm.ustc.edu.cn/v1",
+		},
+	}
+
+	wsURL, err := svc.buildOpenAIResponsesWSURL(account)
+	require.ErrorContains(t, err, "USTC native Responses WebSocket transport is unsupported")
+	require.Empty(t, wsURL)
+}
+
 func TestOpenAISetupTokenChatCompletionsUsesCodexTransform(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"setup instructions"},{"role":"user","content":"hello"}],"stream":false}`)

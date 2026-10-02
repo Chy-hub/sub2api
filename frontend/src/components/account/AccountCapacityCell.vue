@@ -86,7 +86,7 @@ import { useI18n } from 'vue-i18n'
 import type { Account } from '@/types'
 import CapacityBadge from '@/components/account/CapacityBadge.vue'
 import QuotaBadge from '@/components/account/QuotaBadge.vue'
-import { isUstcQuotaAccount } from '@/components/account/credentialsBuilder'
+import { isUstcCapacityAccount } from '@/components/account/credentialsBuilder'
 import { formatDateTime, formatTime } from '@/utils/format'
 
 const props = defineProps<{
@@ -95,10 +95,18 @@ const props = defineProps<{
 
 const { t } = useI18n()
 
-const showUstcCapacity = computed(() => isUstcQuotaAccount(props.account))
+const showUstcCapacity = computed(() => isUstcCapacityAccount(props.account))
 const ustcCapacity = computed(() => props.account.ustc_capacity)
-const ustcCapacityKnown = computed(() => !!ustcCapacity.value && ustcCapacity.value.state !== 'unknown')
-const formatUstcCurrent = (current: number | undefined) => ustcCapacity.value ? current ?? 0 : '—'
+const ustcCapacityKnown = computed(() => {
+  const capacity = ustcCapacity.value
+  return !!capacity && (capacity.limits_known ?? capacity.state !== 'unknown')
+})
+const ustcCountsKnown = computed(() => {
+  const capacity = ustcCapacity.value
+  return !!capacity && (capacity.counts_known ?? capacity.state !== 'unknown')
+})
+const formatUstcCurrent = (current: number | undefined) =>
+  ustcCountsKnown.value ? current ?? 0 : '—'
 const formatUstcLimit = (limit: number | null | undefined) => {
   if (!ustcCapacityKnown.value || limit === undefined) return '—'
   return limit === null ? '∞' : limit
@@ -106,7 +114,7 @@ const formatUstcLimit = (limit: number | null | undefined) => {
 const formatLimit = (current: number | undefined, limit: number | null | undefined) =>
   `${formatUstcCurrent(current)}/${formatUstcLimit(limit)}`
 const ustcAvailable = computed(() => {
-  if (!ustcCapacityKnown.value) return '—'
+  if (!ustcCapacityKnown.value || !ustcCountsKnown.value) return '—'
   if (ustcCapacity.value?.state === 'ready' && ustcCapacity.value.rpm_limit === null && ustcCapacity.value.parallel_limit === null) return '∞'
   return String(ustcCapacity.value?.available ?? 0)
 })
@@ -144,7 +152,7 @@ const ustcCapacityTooltip = computed(() => [
 ].filter(Boolean).join('\n'))
 
 const ustcConcurrencyClass = computed(() => {
-  if (!ustcCapacityKnown.value) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  if (!ustcCapacityKnown.value || !ustcCountsKnown.value) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
   const current = ustcCapacity.value?.in_flight ?? 0
   const limit = ustcCapacity.value?.parallel_limit
   if (limit != null && current >= limit) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
@@ -153,7 +161,7 @@ const ustcConcurrencyClass = computed(() => {
 })
 
 const ustcRPMClass = computed(() => {
-  if (!ustcCapacityKnown.value) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  if (!ustcCapacityKnown.value || !ustcCountsKnown.value) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
   const current = ustcCapacity.value?.used ?? 0
   const limit = ustcCapacity.value?.rpm_limit
   if (limit != null && current >= limit) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
