@@ -893,6 +893,11 @@ export default {
       accountsRateLimited: '限流:',
       accountsTotal: '总量:',
       accountsUnit: '个账号',
+      capacityIncomplete: {
+        knownSubtotal: '显示已知容量小计。',
+        limitsUnknown: '另有 {count} 个 USTC Key 的容量限额待探测。',
+        countersUnavailable: '另有 {count} 个 USTC Key 的实时计数暂不可用。'
+      },
       form: {
         name: '名称',
         description: '描述',

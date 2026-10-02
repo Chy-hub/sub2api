@@ -73,11 +73,22 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 		case OpenAIWSIngressModeOff:
 			return openAIWSHTTPDecision("account_mode_off")
 		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough:
-			// continue
+			if isDefaultUSTCAccount(account) {
+				if wsCfg.ResponsesWebsocketsV2 {
+					return openAIWSHTTPDecision("ustc_http_bridge")
+				}
+				return openAIWSHTTPDecision("feature_disabled")
+			}
 		case OpenAIWSIngressModeHTTPBridge:
 			return openAIWSHTTPDecision("ws_v2_mode_http_bridge")
 		case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
 			// 历史值兼容：按 ctx_pool 处理。
+			if isDefaultUSTCAccount(account) {
+				if wsCfg.ResponsesWebsocketsV2 {
+					return openAIWSHTTPDecision("ustc_http_bridge")
+				}
+				return openAIWSHTTPDecision("feature_disabled")
+			}
 			mode = OpenAIWSIngressModeCtxPool
 		default:
 			return openAIWSHTTPDecision("account_mode_off")
@@ -101,6 +112,12 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	}
 	if !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return openAIWSHTTPDecision("account_disabled")
+	}
+	if isDefaultUSTCAccount(account) {
+		if wsCfg.ResponsesWebsocketsV2 {
+			return openAIWSHTTPDecision("ustc_http_bridge")
+		}
+		return openAIWSHTTPDecision("feature_disabled")
 	}
 	if wsCfg.ResponsesWebsocketsV2 {
 		return OpenAIWSProtocolDecision{

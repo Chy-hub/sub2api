@@ -719,6 +719,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	var windowCosts map[int64]float64
 	var activeSessions map[int64]int
 	var rpmCounts map[int64]int
+	var ustcCapacities map[int64]*service.USTCCapacity
 	// 双重门控：用户要看该列，且当前页确实有 OpenAI 账号，才进入昂贵的候选池打分路径。
 	var schedulerScores map[int64]*AccountSchedulerScore
 	var schedulerGroupScores map[int64][]AccountSchedulerGroupScore
@@ -769,6 +770,13 @@ func (h *AccountHandler) List(c *gin.Context) {
 		if rpmCounts == nil {
 			rpmCounts = make(map[int64]int)
 		}
+	}
+
+	// Read one current snapshot per physical USTC Key. This must happen before
+	// the response ETag is built so changes to live counters cannot produce a
+	// stale 304 response.
+	if len(accounts) > 0 {
+		ustcCapacities = service.USTCAccountCapacitiesBatch(c.Request.Context(), h.rpmCache, accounts)
 	}
 
 	// 始终获取活跃会话数（Redis ZCARD，低开销）
@@ -824,7 +832,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 			CurrentConcurrency: concurrencyCounts[acc.ID],
 			SchedulerScore:     schedulerScores[acc.ID],
 			SchedulerScores:    schedulerGroupScores[acc.ID],
-			USTCCapacity:       service.USTCAccountCapacity(c.Request.Context(), h.rpmCache, acc),
+			USTCCapacity:       ustcCapacities[acc.ID],
 		}
 
 		// 添加窗口费用（仅当启用时）
