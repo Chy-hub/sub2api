@@ -125,6 +125,127 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_RateLimitedMiss(
 	require.Zero(t, boundAccountID)
 }
 
+func TestOpenAIGatewayService_ResolveAccountIDByPreviousResponseIDForScheduler_USTCCooldownsKeepBinding(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(2301)
+	future := time.Now().Add(30 * time.Minute)
+	cases := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "rate_limit",
+			mutate: func(account *Account) {
+				account.RateLimitResetAt = &future
+			},
+		},
+		{
+			name: "overload",
+			mutate: func(account *Account) {
+				account.OverloadUntil = &future
+			},
+		},
+		{
+			name: "temporary_unschedulable",
+			mutate: func(account *Account) {
+				account.TempUnschedulableUntil = &future
+				account.TempUnschedulableReason = "upstream_transport"
+			},
+		},
+		{
+			name: "model_cooldown",
+			mutate: func(account *Account) {
+				account.Extra[modelRateLimitsKey] = map[string]any{
+					"gpt-5.1": map[string]any{
+						"rate_limit_reset_at": future.UTC().Format(time.RFC3339),
+					},
+				}
+			},
+		},
+		{
+			name: "quota_exhausted",
+			mutate: func(account *Account) {
+				account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget)] = 10.0
+				account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend)] = 10.0
+				account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixResetAt)] = future.UTC().Format(time.RFC3339)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account := Account{
+				ID:          9301,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				GroupIDs:    []int64{groupID},
+				Credentials: map[string]any{
+					"api_key":  "sk-ustc-sticky-test",
+					"base_url": "https://api.llm.ustc.edu.cn/v1",
+				},
+				Extra: map[string]any{
+					"openai_apikey_responses_websockets_v2_enabled": true,
+				},
+			}
+			tc.mutate(&account)
+
+			cache := &stubGatewayCache{}
+			store := NewOpenAIWSStateStore(cache)
+			svc := &OpenAIGatewayService{
+				accountRepo:        stubOpenAIAccountRepo{accounts: []Account{account}},
+				cache:              cache,
+				openaiWSStateStore: store,
+			}
+			responseID := "resp_ustc_cooldown_" + tc.name
+			require.NoError(t, store.BindResponseAccount(ctx, groupID, responseID, account.ID, time.Hour))
+
+			resolvedID := svc.ResolveAccountIDByPreviousResponseIDForScheduler(
+				ctx, &groupID, responseID, "gpt-5.1", nil, "", false,
+			)
+			require.Equal(t, account.ID, resolvedID, "temporary cooldown or quota must not erase the physical-Key sticky ID")
+			boundID, err := store.GetResponseAccount(ctx, groupID, responseID)
+			require.NoError(t, err)
+			require.Equal(t, account.ID, boundID, "temporary unavailability must preserve the binding")
+		})
+	}
+}
+
+func TestOpenAIGatewayService_SelectUSTCPreviousResponseWithImageCapabilityStaysBound(t *testing.T) {
+	ctx := context.Background()
+	svc, capacityCache := ustcSchedulerFixture(2, false)
+	store := NewOpenAIWSStateStore(svc.cache)
+	svc.openaiWSStateStore = store
+	responseID := "resp_ustc_image_capability"
+	require.NoError(t, store.BindResponseAccount(ctx, 0, responseID, 1, time.Hour))
+
+	selection, decision, err := svc.selectAccountWithScheduler(
+		ctx,
+		nil,
+		responseID,
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		"",
+		OpenAIImagesCapabilityAPIKey,
+		false,
+		PlatformOpenAI,
+		false,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(1), selection.Account.ID, "an image-capability requirement must still use the response's physical USTC Key")
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	require.NotNil(t, selection.ustcAdmission)
+	require.Equal(t, USTCKeyScope(selection.Account), selection.ustcAdmission.ticket.Scope)
+	require.Len(t, capacityCache.tickets, 1, "the other USTC Key must not receive an admission ticket")
+	selection.ReleaseFunc()
+}
+
 func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_DBRuntimeRecheckRateLimitedMiss(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(24)

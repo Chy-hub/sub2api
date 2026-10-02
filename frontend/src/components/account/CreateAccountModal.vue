@@ -4202,7 +4202,7 @@ import {
   isCNProviderPlatform,
   isHeaderOverrideCapable,
   isMultiProtocolApiKeyPlatform,
-  isUstcQuotaAccount,
+  isUstcCapacityAccount,
   providerAccountModes,
   providerModeLabel,
   providerNativeProtocols,
@@ -4907,7 +4907,7 @@ const sessionIdleTimeout = ref<number | null>(null)
 const isAnthropicOAuthOrSetupToken = computed(() =>
   form.platform === 'anthropic' && accountCategory.value === 'oauth-based'
 )
-const isUstcAccount = computed(() => isUstcQuotaAccount({
+const isUstcAccount = computed(() => isUstcCapacityAccount({
   platform: form.platform,
   type: accountCategory.value === 'apikey' ? 'apikey' : form.type,
   credentials: { base_url: apiKeyBaseUrl.value }

@@ -1931,6 +1931,7 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
+	ustcCapacityCache      service.RPMCache
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
 	accountPlatform        string
@@ -2977,7 +2978,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	upstreamErrCh := make(chan error, 1)
 	var channelSvc *service.ChannelService
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tc.accountPlatform == service.PlatformGrok {
+		if tc.accountPlatform == service.PlatformGrok || tc.ustcCapacityCache != nil {
 			payload, err := io.ReadAll(r.Body)
 			if err != nil {
 				upstreamErrCh <- err
@@ -3062,6 +3063,14 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	if strings.TrimSpace(tc.ingressMode) != "" {
 		account.Extra["openai_apikey_responses_websockets_v2_mode"] = tc.ingressMode
 	}
+	upstream := &compositeWSHTTPUpstream{}
+	if tc.ustcCapacityCache != nil {
+		account.Credentials["base_url"] = "https://api.llm.ustc.edu.cn"
+		account.Extra["upstream_userinfo_limits_known"] = true
+		account.Extra["upstream_userinfo_rpm_limit"] = 20
+		account.Extra["upstream_userinfo_max_parallel_requests"] = 1
+		upstream.rewriteBaseURL = upstreamServer.URL
+	}
 
 	cfg := &config.Config{}
 	cfg.RunMode = config.RunModeSimple
@@ -3114,7 +3123,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		service.NewBillingService(cfg, nil),
 		nil,
 		billingCacheSvc,
-		&compositeWSHTTPUpstream{},
+		upstream,
 		&service.DeferredService{},
 		nil,
 		nil,
@@ -3124,6 +3133,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		nil, // userPlatformQuotaRepo
 	)
+	if tc.ustcCapacityCache != nil {
+		gatewaySvc.SetRPMCache(tc.ustcCapacityCache)
+	}
 
 	cache := &concurrencyCacheMock{
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -3289,7 +3301,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		}
 	}
 
-	if tc.accountPlatform == service.PlatformGrok {
+	if tc.accountPlatform == service.PlatformGrok || tc.ustcCapacityCache != nil {
 		upstreamErrCh <- nil
 	}
 	select {

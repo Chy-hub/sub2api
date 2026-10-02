@@ -22,8 +22,8 @@ type ustcBoundAccountKey struct{}
 
 // Continuation IDs belong to one upstream Key. Temporary capacity pressure must
 // wait/reject on that Key rather than silently moving the continuation elsewhere.
-func (s *OpenAIGatewayService) selectUSTCPreviousResponse(ctx context.Context, groupID *int64, responseID, sessionHash, model string, excluded map[int64]struct{}, compact bool, capability OpenAIEndpointCapability) (*AccountSelectionResult, bool, error) {
-	if strings.TrimSpace(responseID) == "" || s.accountRepo == nil {
+func (s *OpenAIGatewayService) selectUSTCPreviousResponse(ctx context.Context, groupID *int64, responseID, sessionHash, model string, excluded map[int64]struct{}, compact bool, capability OpenAIEndpointCapability, imageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport) (*AccountSelectionResult, bool, error) {
+	if strings.TrimSpace(responseID) == "" {
 		return nil, false, nil
 	}
 	store := s.getOpenAIWSStateStore()
@@ -34,15 +34,30 @@ func (s *OpenAIGatewayService) selectUSTCPreviousResponse(ctx context.Context, g
 	if err != nil || id <= 0 {
 		return nil, false, nil
 	}
-	account, err := s.accountRepo.GetByID(ctx, id)
+	account, err := s.loadResponseBindingAccount(ctx, id)
 	if err != nil || !isDefaultUSTCAccount(account) {
 		return nil, false, nil
+	}
+	if requiredTransport != OpenAIUpstreamTransportAny && requiredTransport != OpenAIUpstreamTransportHTTPSSE && requiredTransport != OpenAIUpstreamTransportResponsesWebsocketV2Ingress {
+		return nil, true, fmt.Errorf("%w: USTC native Responses WebSocket transport is unsupported; use the HTTP/SSE bridge", ErrNoAvailableAccounts)
+	}
+	if requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress && !s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+		return nil, true, fmt.Errorf("%w: USTC WebSocket ingress is disabled or unsupported for this account", ErrNoAvailableAccounts)
 	}
 	if s.checkChannelPricingRestriction(ctx, groupID, model) || !s.openAIAccountMatchesSchedulingGroup(account, groupID) {
 		return nil, true, ErrNoAvailableAccounts
 	}
+	if !account.SupportsOpenAIImageCapability(imageCapability) {
+		return nil, true, ErrNoAvailableAccounts
+	}
 	ctx = context.WithValue(ctx, ustcBoundAccountKey{}, true)
 	selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, []Account{*account}, sessionHash, model, excluded, compact, capability, false)
+	if err == nil && selection != nil && selection.Account != nil && !selection.Account.SupportsOpenAIImageCapability(imageCapability) {
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+		return nil, true, ErrNoAvailableAccounts
+	}
 	return selection, true, err
 }
 
@@ -54,7 +69,7 @@ type ustcAdmission struct {
 	limits              USTCLimits
 	origin              context.Context
 	committed, released bool
-	stop                chan struct{}
+	renewer             *ustcLeaseRenewer
 	notify              func()
 }
 
@@ -72,24 +87,9 @@ func (r *ustcAdmission) commit(ctx context.Context) bool {
 		return false
 	}
 	r.committed = true
-	r.stop = make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-r.stop:
-				return
-			case <-ticker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				err := r.cache.USTCRenew(ctx, r.ticket)
-				cancel()
-				if err != nil {
-					slog.Warn("ustc_parallel_lease_renew_failed", "error", err)
-				}
-			}
-		}
-	}()
+	if r.renewer != nil {
+		r.renewer.register(r.ticket)
+	}
 	return true
 }
 
@@ -107,8 +107,8 @@ func (r *ustcAdmission) releaseWithNotification(notify, pendingOnly bool) {
 		return
 	}
 	r.released = true
-	if r.stop != nil {
-		close(r.stop)
+	if r.renewer != nil {
+		r.renewer.unregister(r.ticket)
 	}
 	r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -127,6 +127,27 @@ func (r *AccountSelectionResult) ReleaseUSTCAdmission() {
 		// the transport/body lifecycle may release the actual upstream lease.
 		r.ustcAdmission.releaseWithNotification(true, true)
 	}
+}
+
+// ReleaseWithUSTCAdmission keeps pending-ticket cleanup and slot cleanup together.
+// A committed ticket remains owned by the upstream response body.
+func (r *AccountSelectionResult) ReleaseWithUSTCAdmission(releaseSlot func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.ReleaseUSTCAdmission()
+			if releaseSlot != nil {
+				releaseSlot()
+			}
+		})
+	}
+}
+
+func (r *AccountSelectionResult) USTCAdmissionRetryAfter() int {
+	if r == nil || r.ustcRetryAt.IsZero() {
+		return 1
+	}
+	return max(1, int(math.Ceil(time.Until(r.ustcRetryAt).Seconds())))
 }
 
 func ContextWithUSTCAdmission(ctx context.Context, selection *AccountSelectionResult) context.Context {
@@ -154,7 +175,7 @@ func (s *OpenAIGatewayService) reserveUSTC(ctx context.Context, account *Account
 	if previous, _ := ctx.Value(ustcAdmissionContextKey{}).(*ustcAdmission); previous != nil && previous.origin != nil {
 		origin = previous.origin
 	}
-	return &ustcAdmission{cache: cache, ticket: ticket, limits: limits, origin: origin, notify: s.notifyUSTCCapacity}, capacity, nil
+	return &ustcAdmission{cache: cache, ticket: ticket, limits: limits, origin: origin, renewer: s.ustcLeaseRenewer(cache), notify: s.notifyUSTCCapacity}, capacity, nil
 }
 
 // The final gate also covers previous_response_id and experimental selections.
@@ -163,8 +184,13 @@ func (s *OpenAIGatewayService) PrepareUSTCAdmission(ctx context.Context, selecti
 	if selection == nil || !isDefaultUSTCAccount(selection.Account) {
 		return true
 	}
+	selection.ustcRetryAt = time.Now().Add(time.Second)
 	account := s.ustcAccountForAdmission(ctx, selection.Account)
-	if account == nil || userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
+	if account == nil {
+		return false
+	}
+	if userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
+		selection.ustcRetryAt = ustcQuotaNextCheck(account, time.Now())
 		return false
 	}
 	selection.Account = account
@@ -174,11 +200,15 @@ func (s *OpenAIGatewayService) PrepareUSTCAdmission(ctx context.Context, selecti
 	if selection.ustcAdmission != nil {
 		selection.ustcAdmission.release()
 	}
-	reservation, _, err := s.reserveUSTC(ctx, account)
+	reservation, capacity, err := s.reserveUSTC(ctx, account)
 	if err != nil || reservation == nil {
+		if err == nil && !capacity.ResetAt.IsZero() && !ustcCapacityCanRecoverEarly(capacity) {
+			selection.ustcRetryAt = capacity.ResetAt
+		}
 		return false
 	}
 	selection.ustcAdmission = reservation
+	selection.ustcRetryAt = time.Time{}
 	return true
 }
 
@@ -221,10 +251,22 @@ func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL st
 		reusable := !reservation.committed && !reservation.released && reservation.ticket.Scope == USTCKeyScope(account)
 		reservation.mu.Unlock()
 		if !reusable {
+			reservation.releaseWithNotification(true, true)
 			reservation = nil
 		}
 	}
 	if reservation == nil {
+		// Retries and new WebSocket bridge turns may have no live selection
+		// ticket. Refresh their metadata without blocking on an upstream probe,
+		// and apply the same quota gate before creating a new reservation.
+		current := s.ustcAccountForAdmission(ctx, account)
+		if current == nil {
+			return s.ustcLocalCapacityResponse(request, account), nil
+		}
+		account = current
+		if userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
+			return s.ustcLocalCapacityResponse(request, account), nil
+		}
 		var err error
 		reservation, _, err = s.reserveUSTC(ctx, account)
 		if err != nil || reservation == nil {
@@ -236,10 +278,10 @@ func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL st
 	// a conservative cooldown the real queued request itself verifies recovery.
 	if reservation.ticket.Cold {
 		if model := ustcColdStreamingModel(request); model != "" {
-			response, err := s.calibrateUSTCStream(ctx, request, proxyURL, account, reservation, model)
-			if err != nil || response != nil {
-				return response, err
+			if err := s.calibrateUSTCStream(ctx, request, proxyURL, account, reservation, model); err != nil {
+				return nil, err
 			}
+			var err error
 			reservation, _, err = s.reserveUSTC(ctx, account)
 			s.notifyUSTCCapacity()
 			if err != nil || reservation == nil {
@@ -296,19 +338,19 @@ func ustcColdStreamingModel(request *http.Request) string {
 	return gjson.GetBytes(data, "model").String()
 }
 
-func (s *OpenAIGatewayService) calibrateUSTCStream(ctx context.Context, original *http.Request, proxyURL string, account *Account, reservation *ustcAdmission, model string) (*http.Response, error) {
+func (s *OpenAIGatewayService) calibrateUSTCStream(ctx context.Context, original *http.Request, proxyURL string, account *Account, reservation *ustcAdmission, model string) error {
 	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "."}}, "max_tokens": 1, "stream": false})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, original.URL.String(), bytes.NewReader(body))
 	if err != nil {
 		reservation.release()
-		return nil, err
+		return err
 	}
 	req.Header = original.Header.Clone()
 	req.Header.Del("Content-Length")
 	req.Header.Set("Accept", "application/json")
 	if !reservation.commit(ctx) {
 		reservation.release()
-		return s.ustcLocalCapacityResponse(original, account), nil
+		return nil
 	}
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
@@ -316,25 +358,25 @@ func (s *OpenAIGatewayService) calibrateUSTCStream(ctx context.Context, original
 		_ = reservation.cache.USTCObserve(observeCtx, reservation.ticket, USTCFeedback{RetryAfter: time.Minute})
 		cancel()
 		reservation.release()
-		return nil, err
+		// The auxiliary request's error is not the real request's result. An
+		// uncertain send conservatively closes admission; the next reserve sees it.
+		return ctx.Err()
 	}
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
 	if readErr != nil {
+		observeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = reservation.cache.USTCObserve(observeCtx, reservation.ticket, USTCFeedback{RetryAfter: time.Minute})
+		cancel()
 		reservation.release()
-		return nil, readErr
+		return ctx.Err()
 	}
 	s.observeUSTCResponse(reservation, resp, data)
-	if resp.StatusCode >= 400 {
-		reservation.release()
-		resp.Body = io.NopCloser(bytes.NewReader(data))
-		return resp, nil
-	}
 	// Obtain the real request's ticket before waking local pool waiters.
 	reservation.releaseWithNotification(false, false)
 	// Never send the calibration text to the client. If its feedback cannot
 	// prove remaining capacity, the shared gate still blocks the real attempt.
-	return nil, nil
+	return nil
 }
 
 func (s *OpenAIGatewayService) observeUSTCResponse(reservation *ustcAdmission, resp *http.Response, body []byte) {
@@ -346,6 +388,8 @@ func (s *OpenAIGatewayService) observeUSTCResponse(reservation *ustcAdmission, r
 		} else {
 			feedback.RetryAfter = ustc429Delay(resp.Header, time.Now())
 		}
+	} else if resp.StatusCode >= 400 && !feedback.Refund {
+		feedback.RetryAfter = retryAfter(resp.Header, time.Now())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -371,13 +415,16 @@ func ustcIntegerHeader(headers http.Header, key string) *int {
 
 func (s *OpenAIGatewayService) ustcLocalCapacityResponse(request *http.Request, account *Account) *http.Response {
 	retry := 1
+	if userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
+		retry = max(retry, int(math.Ceil(time.Until(ustcQuotaNextCheck(account, time.Now())).Seconds())))
+	}
 	if limits, known := USTCAccountLimits(account); known {
 		if cache, ok := s.rpmCache.(USTCCapacityCache); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			capacity, err := cache.USTCRead(ctx, USTCKeyScope(account), limits)
 			cancel()
-			if err == nil && !capacity.ResetAt.IsZero() && (capacity.State == "sync_wait" || (limits.RPM > 0 && capacity.Used >= limits.RPM && capacity.Pending == 0 && capacity.InFlight == 0)) {
-				retry = max(1, int(math.Ceil(time.Until(capacity.ResetAt).Seconds())))
+			if err == nil && !capacity.ResetAt.IsZero() && !ustcCapacityCanRecoverEarly(capacity) {
+				retry = max(retry, int(math.Ceil(time.Until(capacity.ResetAt).Seconds())))
 			}
 		}
 	}

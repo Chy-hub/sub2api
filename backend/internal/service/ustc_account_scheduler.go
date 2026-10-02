@@ -19,7 +19,7 @@ func defaultUSTCAccountBalancingEnabled(accounts []Account) bool {
 	return false
 }
 func isDefaultUSTCAccount(account *Account) bool {
-	return account != nil && account.IsOpenAI() && account.Type == AccountTypeAPIKey && account.SupportsUserInfoQuota()
+	return IsUSTCCapacityAccount(account)
 }
 func (s *OpenAIGatewayService) refreshUSTCQuotaDuringCandidateCheck(ctx context.Context, account *Account) *Account {
 	if deferred, _ := ctx.Value(deferUSTCQuotaEligibilityKey{}).(bool); deferred {
@@ -261,13 +261,7 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			return nil, err
 		}
 		selection.ustcAdmission = reservation
-		releaseSlot := selection.ReleaseFunc
-		selection.ReleaseFunc = func() {
-			selection.ReleaseUSTCAdmission()
-			if releaseSlot != nil {
-				releaseSlot()
-			}
-		}
+		selection.ReleaseFunc = selection.ReleaseWithUSTCAdmission(selection.ReleaseFunc)
 		if sessionHash != "" && !stickySpillover && !gatewayProfitControlGateActive(ctx) {
 			_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
 		}
@@ -275,7 +269,17 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 	}
 	if waiting != nil {
 		cfg := s.schedulingConfig()
-		return s.newSelectionResult(ctx, waiting, false, nil, &AccountWaitPlan{AccountID: waiting.ID, MaxConcurrency: waiting.Concurrency, Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting})
+		plan := &AccountWaitPlan{AccountID: waiting.ID, MaxConcurrency: waiting.Concurrency, Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting}
+		stickyHit := waiting.ID == stickyID
+		if stickyHit && s.concurrencyService != nil {
+			waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, waiting.ID)
+			if waitingCount < cfg.StickySessionMaxWaiting {
+				plan.Timeout = cfg.StickySessionWaitTimeout
+				plan.MaxWaiting = cfg.StickySessionMaxWaiting
+			}
+		}
+		selection, err := s.newSelectionResult(ctx, waiting, false, nil, plan)
+		return markStickySessionHit(selection, stickyHit), err
 	}
 	err := noAvailableOpenAISelectionError(requestedModel, compactBlocked, stats.summary(""))
 	if !retryAt.IsZero() && !compactBlocked {

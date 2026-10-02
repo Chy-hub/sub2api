@@ -30,6 +30,9 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
 	if account == nil {
 		return "", errors.New("account is nil")
 	}
+	if isDefaultUSTCAccount(account) {
+		return "", errors.New("USTC native Responses WebSocket transport is unsupported; use the HTTP/SSE bridge")
+	}
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:

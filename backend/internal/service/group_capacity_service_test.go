@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -88,6 +89,7 @@ type groupCapacitySharedRPMCacheStub struct {
 	ustcReads    []string
 	ustcLimits   []USTCLimits
 	capacity     USTCCapacity
+	readErr      error
 }
 
 func (s *groupCapacitySharedRPMCacheStub) GetRPMBatch(_ context.Context, accountIDs []int64) (map[int64]int, error) {
@@ -102,7 +104,7 @@ func (s *groupCapacitySharedRPMCacheStub) GetRPMBatch(_ context.Context, account
 func (s *groupCapacitySharedRPMCacheStub) USTCRead(_ context.Context, scope string, limits USTCLimits) (USTCCapacity, error) {
 	s.ustcReads = append(s.ustcReads, scope)
 	s.ustcLimits = append(s.ustcLimits, limits)
-	return s.capacity, nil
+	return s.capacity, s.readErr
 }
 
 type groupCapacitySequentialAccountRepoStub struct {
@@ -280,7 +282,11 @@ func TestGetAllGroupCapacityDoesNotFallbackToManualRPMForUnknownUSTCLimits(t *te
 
 	results, err := svc.GetAllGroupCapacity(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, []GroupCapacitySummary{{GroupID: 10}}, results)
+	require.Equal(t, []GroupCapacitySummary{{
+		GroupID:           10,
+		RPMUsedIncomplete: 1, RPMMaxIncomplete: 1,
+		ConcurrencyUsedIncomplete: 1, ConcurrencyMaxIncomplete: 1,
+	}}, results)
 	require.Empty(t, rpmCache.ustcReads)
 	require.Empty(t, rpmCache.rpmRequested)
 }
@@ -321,4 +327,72 @@ func TestGetAllGroupCapacitySequentialSharesUSTCReadAcrossGroups(t *testing.T) {
 		Type:        AccountTypeAPIKey,
 		Credentials: map[string]any{"base_url": "https://api.llm.ustc.edu.cn", "api_key": key},
 	}), rpmCache.ustcReads[0])
+}
+
+func TestGetAllGroupCapacityMarksUnknownUSTCLimitsAndKeepsKnownSubtotal(t *testing.T) {
+	const unknownScope = "unknown-key"
+	const knownScope = "known-key"
+	accountRepo := &groupCapacityAccountRepoStub{rows: []GroupAccountCapacityRow{
+		{GroupID: 10, AccountID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, USTCScope: unknownScope, Concurrency: 99, Extra: map[string]any{"base_rpm": 99}},
+		{GroupID: 10, AccountID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, USTCScope: unknownScope, Concurrency: 99, Extra: map[string]any{"base_rpm": 99}},
+		{GroupID: 10, AccountID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, USTCScope: knownScope, Concurrency: 99, Extra: knownUSTCCapacityExtra(20, 4)},
+	}}
+	groupRepo := &groupCapacityGroupRepoStub{groupIDs: []int64{10}}
+	rpmCache := &groupCapacitySharedRPMCacheStub{capacity: USTCCapacity{Used: 6, Pending: 1, InFlight: 2}}
+	svc := NewGroupCapacityService(accountRepo, groupRepo, nil, nil, rpmCache)
+
+	results, err := svc.GetAllGroupCapacity(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []GroupCapacitySummary{{
+		GroupID: 10, RPMUsed: 7, RPMMax: 20,
+		RPMUsedIncomplete: 1, RPMMaxIncomplete: 1,
+		ConcurrencyUsed: 2, ConcurrencyMax: 4,
+		ConcurrencyUsedIncomplete: 1, ConcurrencyMaxIncomplete: 1,
+	}}, results)
+	require.Equal(t, []string{knownScope}, rpmCache.ustcReads, "unknown metadata must not be read as unlimited 0/0")
+}
+
+func TestGetAllGroupCapacityMarksLiveUSTCReadFailureWithoutLosingKnownLimits(t *testing.T) {
+	const scope = "known-key"
+	accountRepo := &groupCapacityAccountRepoStub{rows: []GroupAccountCapacityRow{{
+		GroupID: 10, AccountID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		USTCScope: scope, Concurrency: 99,
+		Extra: map[string]any{"base_rpm": 99, UserInfoQuotaExtraKey("limits_known"): true,
+			UserInfoQuotaExtraKey("rpm_limit"): 20, UserInfoQuotaExtraKey("max_parallel_requests"): 4},
+	}}}
+	groupRepo := &groupCapacityGroupRepoStub{groupIDs: []int64{10}}
+	rpmCache := &groupCapacitySharedRPMCacheStub{readErr: errors.New("redis unavailable")}
+	svc := NewGroupCapacityService(accountRepo, groupRepo, nil, nil, rpmCache)
+
+	results, err := svc.GetAllGroupCapacity(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []GroupCapacitySummary{{
+		GroupID: 10, RPMMax: 20, RPMUsedIncomplete: 1,
+		ConcurrencyMax: 4, ConcurrencyUsedIncomplete: 1,
+	}}, results)
+}
+
+func TestGetAllGroupCapacityUsesLearnedRPMCapForUnlimitedMetadata(t *testing.T) {
+	const scope = "learned-cap-key"
+	var learnedCap = 17
+	accountRepo := &groupCapacityAccountRepoStub{rows: []GroupAccountCapacityRow{{
+		GroupID: 10, AccountID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, USTCScope: scope,
+		Extra: map[string]any{
+			UserInfoQuotaExtraKey("limits_known"):          true,
+			UserInfoQuotaExtraKey("rpm_limit"):             nil,
+			UserInfoQuotaExtraKey("max_parallel_requests"): 4,
+		},
+	}}}
+	groupRepo := &groupCapacityGroupRepoStub{groupIDs: []int64{10}}
+	rpmCache := &groupCapacitySharedRPMCacheStub{capacity: USTCCapacity{
+		RPMLimit: &learnedCap, ParallelLimit: intPtr(4), Used: 3, InFlight: 1,
+	}}
+	svc := NewGroupCapacityService(accountRepo, groupRepo, nil, nil, rpmCache)
+
+	results, err := svc.GetAllGroupCapacity(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []GroupCapacitySummary{{
+		GroupID: 10, RPMUsed: 3, RPMMax: learnedCap, ConcurrencyUsed: 1, ConcurrencyMax: 4,
+	}}, results)
+	require.Equal(t, []string{scope}, rpmCache.ustcReads)
 }

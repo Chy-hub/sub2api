@@ -732,7 +732,7 @@
 
       <!-- Concurrency & Priority -->
       <div class="grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 dark:border-dark-600 lg:grid-cols-4">
-        <div>
+        <div v-if="!allTargetsUseUstcCapacity">
           <div class="mb-3 flex items-center justify-between">
             <label
               id="bulk-edit-concurrency-label"
@@ -1566,6 +1566,7 @@ interface Props {
   accountIds: number[]
   selectedPlatforms: AccountPlatform[]
   selectedTypes: AccountType[]
+  allSelectedUstcCapacityAccounts?: boolean
   target?: {
     mode: 'selected' | 'filtered'
     filters?: Record<string, unknown>
@@ -1591,6 +1592,7 @@ const targetMode = computed(() => props.target?.mode ?? 'selected')
 const targetPreviewCount = computed(() => props.target?.previewCount ?? props.accountIds.length)
 const targetSelectedPlatforms = computed(() => props.target?.selectedPlatforms ?? props.selectedPlatforms)
 const targetSelectedTypes = computed(() => props.target?.selectedTypes ?? props.selectedTypes)
+const allTargetsUseUstcCapacity = computed(() => props.allSelectedUstcCapacityAccounts === true)
 // Grok 快捷端点仅在所选账号全部为 grok 平台时展示（其他平台不显示）
 const allTargetsGrok = computed(
   () =>

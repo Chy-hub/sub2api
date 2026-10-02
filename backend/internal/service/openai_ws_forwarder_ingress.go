@@ -115,9 +115,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
-	forceHTTPBridge := account.Platform == PlatformGrok ||
-		(s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account))
 	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
+	ustcHTTPBridge := isDefaultUSTCAccount(account)
+	if ustcHTTPBridge && modeRouterV2Enabled && account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault) == OpenAIWSIngressModeOff {
+		return NewOpenAIWSClientCloseError(
+			coderws.StatusPolicyViolation,
+			"websocket mode is disabled for this account",
+			nil,
+		)
+	}
+	// USTC's upstream Responses WebSocket protocol has not been verified. Keep
+	// client WebSocket ingress available through the HTTP/SSE bridge so every
+	// upstream attempt passes through USTC's normal Key admission.
+	forceHTTPBridge := account.Platform == PlatformGrok || ustcHTTPBridge ||
+		(s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account))
 	ingressMode := OpenAIWSIngressModeCtxPool
 	if modeRouterV2Enabled && !forceHTTPBridge {
 		ingressMode = account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
