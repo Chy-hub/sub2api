@@ -65,4 +65,34 @@ describe('USTC quota snapshot sync', () => {
     expect(wrapper.get('[data-test="userinfo-upstream-limits"]').text()).toContain('12000')
     wrapper.unmount()
   })
+
+  it('ignores a probe response after the account row changes', async () => {
+    let resolveProbe!: (value: Record<string, unknown>) => void
+    getUserInfoQuota.mockReturnValueOnce(new Promise((resolve) => {
+      resolveProbe = resolve
+    }))
+    const account = { id: 1, type: 'apikey', credentials: { base_url: 'https://api.llm.ustc.edu.cn' }, extra: {} } as any
+    const wrapper = mount(UpstreamUserInfoQuotaCell, {
+      props: { account }, global: { stubs: { UsageProgressBar: true } }
+    })
+
+    await wrapper.get('button').trigger('click')
+    await wrapper.setProps({ account: { ...account, id: 2 } })
+    resolveProbe({
+      success: true,
+      remaining: 8,
+      max_budget: 10,
+      spend: 2,
+      valid: true,
+      unit: 'CNY',
+      limits_known: false,
+      fetched_at: Date.now() / 1000
+    })
+    await flushPromises()
+
+    expect(getUserInfoQuota).toHaveBeenCalledWith(1)
+    expect(wrapper.text()).toContain('admin.accounts.userInfoQuota.empty')
+    expect(wrapper.text()).not.toContain('8.00')
+    wrapper.unmount()
+  })
 })

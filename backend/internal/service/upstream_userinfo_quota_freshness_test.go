@@ -116,7 +116,7 @@ func TestRefreshForSchedulingUsesCacheWithoutChangingLatestAccountFields(t *test
 	latest.Name = "latest name"
 	latest.Status = StatusDisabled
 	latest.RateLimitResetAt = &resetAt
-	latest.Credentials["api_key"] = "sk-latest-credential"
+	latest.Credentials["model_mapping"] = map[string]any{"public-model": "upstream-model"}
 	latest.Extra = map[string]any{
 		"application_value": "latest",
 		UserInfoQuotaExtraKey(UserInfoExtraSuffixUpdated): cachedAt.Add(-time.Second).Format(time.RFC3339),
@@ -128,7 +128,7 @@ func TestRefreshForSchedulingUsesCacheWithoutChangingLatestAccountFields(t *test
 	require.NoError(t, err)
 	require.Equal(t, firstCallCount, len(upstream.calls), "fresh per-account cache should avoid another upstream query")
 	require.NotSame(t, latest, refreshed)
-	require.Equal(t, "sk-latest-credential", refreshed.GetCredential("api_key"))
+	require.Equal(t, latest.Credentials, refreshed.Credentials)
 	require.Equal(t, latest.Name, refreshed.Name)
 	require.Equal(t, latest.Status, refreshed.Status)
 	require.Same(t, latest.RateLimitResetAt, refreshed.RateLimitResetAt)
@@ -150,6 +150,26 @@ func TestRefreshForSchedulingUsesCacheWithoutChangingLatestAccountFields(t *test
 	require.NoError(t, err)
 	require.Equal(t, "3h", refreshedAgain.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)].([]UserInfoBudgetWindow)[0].Duration,
 		"mutating one return value must not alter the cached snapshot")
+}
+
+func TestRefreshForSchedulingDoesNotReuseQuotaCacheAfterAPIKeyRotation(t *testing.T) {
+	svc, upstream, _ := newUserInfoQuotaProbeFixture()
+	account := userInfoQuotaTestAccount()
+
+	first, err := svc.RefreshForScheduling(context.Background(), account)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	require.Len(t, upstream.calls, 2, "the initial refresh calls key/info and user/info")
+
+	rotated := copyAccountForUserInfoQuotaRefresh(account)
+	rotated.Credentials["api_key"] = "sk-synthetic-rotated"
+	require.NotEqual(t, userInfoQuotaCacheIdentity(account), userInfoQuotaCacheIdentity(rotated))
+	require.NotContains(t, userInfoQuotaCacheIdentity(rotated), "sk-synthetic-rotated", "the cache identity must not expose the credential")
+
+	second, err := svc.RefreshForScheduling(context.Background(), rotated)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.Len(t, upstream.calls, 4, "a rotated key must trigger a new pair of probes instead of reusing the prior identity's cache")
 }
 
 func TestUserInfoQuotaOverlayDoesNotRegressNewerSnapshotOnFailure(t *testing.T) {
@@ -180,7 +200,7 @@ func TestRefreshForSchedulingPreservesLastSnapshotAndThrottlesFailures(t *testin
 
 	upstream.status = map[string]int{"/key/info": 503}
 	latest := userInfoQuotaTestAccount()
-	latest.Credentials["api_key"] = "sk-latest-credential"
+	latest.Credentials["model_mapping"] = map[string]any{"public-model": "upstream-model"}
 	latest.Status = StatusDisabled
 	latest.Extra = map[string]any{
 		"other_extra": "keep",
@@ -193,7 +213,7 @@ func TestRefreshForSchedulingPreservesLastSnapshotAndThrottlesFailures(t *testin
 	require.NotNil(t, refreshed)
 	require.Equal(t, 26.1032844, refreshed.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend)], "failure must preserve and overlay the last successful snapshot")
 	require.Equal(t, "keep", refreshed.Extra["other_extra"])
-	require.Equal(t, "sk-latest-credential", refreshed.GetCredential("api_key"))
+	require.Equal(t, latest.Credentials, refreshed.Credentials)
 	require.Equal(t, StatusDisabled, refreshed.Status)
 	require.Equal(t, 999.0, latest.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend)])
 	require.Equal(t, priorCalls+1, len(upstream.calls))
@@ -343,7 +363,7 @@ func TestQuotaForAdmissionReturnsImmediatelyAndCoalescesRefresh(t *testing.T) {
 	}
 
 	secondAccount := copyAccountForUserInfoQuotaRefresh(account)
-	secondAccount.Credentials["api_key"] = "sk-second-caller"
+	secondAccount.Credentials["model_mapping"] = map[string]any{"public-model": "upstream-model"}
 	secondCopy, secondReady := svc.QuotaForAdmission(context.Background(), secondAccount)
 	require.False(t, secondReady)
 	require.NotSame(t, secondAccount, secondCopy)

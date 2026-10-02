@@ -96,6 +96,26 @@ func TestUSTCPoolWaitReleaseIsIdempotentAndIgnoresRequestCancellation(t *testing
 	require.Zero(t, count)
 }
 
+func TestUSTCPoolWaitAcquireRetryKeepsTheOriginalPermit(t *testing.T) {
+	_, client, server := newUSTCPoolWaitTestCache(t)
+	ctx := context.Background()
+	key := ustcPoolWaitKeyPrefix + "retry"
+	reserve := func(token string) int {
+		allowed, err := reserveUSTCPoolWaitScript.Run(ctx, client, []string{key}, 1, token, 10000).Int()
+		require.NoError(t, err)
+		return allowed
+	}
+	require.Equal(t, 1, reserve("same-command"))
+	expires, err := client.ZScore(ctx, key, "same-command").Result()
+	require.NoError(t, err)
+	now, err := client.Time(ctx).Result()
+	require.NoError(t, err)
+	server.SetTime(now.Add(time.Second))
+	require.Equal(t, 1, reserve("same-command"), "a lost Redis reply must not deny an already acquired permit")
+	require.Equal(t, 0, reserve("other-command"))
+	require.Equal(t, expires, client.ZScore(ctx, key, "same-command").Val(), "retry must not extend the waiting budget")
+}
+
 func TestUSTCPoolWaitReclaimsExpiredLeases(t *testing.T) {
 	cache, client, server := newUSTCPoolWaitTestCache(t)
 	ctx := context.Background()

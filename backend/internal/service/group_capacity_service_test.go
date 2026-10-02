@@ -110,11 +110,15 @@ func (s *groupCapacitySharedRPMCacheStub) USTCRead(_ context.Context, scope stri
 type groupCapacitySequentialAccountRepoStub struct {
 	AccountRepository
 	accountsByGroup map[int64][]Account
+	errorsByGroup   map[int64]error
 	requested       []int64
 }
 
 func (s *groupCapacitySequentialAccountRepoStub) ListSchedulableByGroupID(_ context.Context, groupID int64) ([]Account, error) {
 	s.requested = append(s.requested, groupID)
+	if err := s.errorsByGroup[groupID]; err != nil {
+		return nil, err
+	}
 	return append([]Account(nil), s.accountsByGroup[groupID]...), nil
 }
 
@@ -125,6 +129,18 @@ func knownUSTCCapacityExtra(rpm, parallel int) map[string]any {
 		UserInfoQuotaExtraKey("rpm_limit"):             rpm,
 		UserInfoQuotaExtraKey("max_parallel_requests"): parallel,
 	}
+}
+
+func TestGetAllGroupCapacitySequentialSkipsFailedGroups(t *testing.T) {
+	repo := &groupCapacitySequentialAccountRepoStub{
+		accountsByGroup: map[int64][]Account{20: {{ID: 2, Concurrency: 4}}},
+		errorsByGroup:   map[int64]error{10: errors.New("database unavailable")},
+	}
+	svc := NewGroupCapacityService(repo, &groupCapacityGroupRepoStub{groupIDs: []int64{10, 20, 30}}, nil, nil, nil)
+	results, err := svc.GetAllGroupCapacity(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []GroupCapacitySummary{{GroupID: 20, ConcurrencyMax: 4}, {GroupID: 30}}, results,
+		"a failed group query is not an empty group with zero capacity")
 }
 
 func TestGetAllGroupCapacityBatchAggregatesRuntimeAndLimits(t *testing.T) {

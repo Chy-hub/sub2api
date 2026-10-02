@@ -2333,12 +2333,6 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
-// IsRPMEligible retains Anthropic's existing manually configured RPM policy.
-// USTC has a separate upstream-derived Key window; other OpenAI keys use neither.
-func (a *Account) IsRPMEligible() bool {
-	return a.IsAnthropicOAuthOrSetupToken()
-}
-
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
 // 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征
@@ -3051,8 +3045,8 @@ func (a *Account) GetRPMStrategy() string {
 }
 
 // GetRPMStickyBuffer 获取 RPM 粘性缓冲数量
-// USTC API-key accounts default to 20% of base RPM (minimum 1), matching the UI.
-// Other accounts retain the cache-driven concurrency + maxSessions buffer.
+// Cache-driven: buffer = concurrency + maxSessions（覆盖幽灵窗口 + 稳态会话需求）
+// floor = baseRPM / 5（向后兼容 maxSessions=0 且 concurrency=0 场景）
 func (a *Account) GetRPMStickyBuffer() int {
 	if a.Extra == nil {
 		return 0
@@ -3070,6 +3064,7 @@ func (a *Account) GetRPMStickyBuffer() int {
 	if base <= 0 {
 		return 0
 	}
+
 	// Cache-driven buffer = concurrency + maxSessions
 	conc := a.Concurrency
 	if conc < 0 {

@@ -92,7 +92,7 @@ func TestUSTCMixedPoolFallbackRestoresNonUSTCStickyWaitPlan(t *testing.T) {
 	svc.concurrencyService = NewConcurrencyService(concurrency)
 	ctx := context.Background()
 	require.NoError(t, svc.cache.SetSessionAccountID(ctx, 0, "openai:session", 2, time.Hour))
-	selection, err := svc.selectBalancedDefaultUSTCAccount(ctx, nil, accounts, "session", "deepseek-flash", nil, false, OpenAIEndpointCapabilityResponses, false)
+	selection, err := svc.selectBalancedDefaultUSTCAccount(ctx, nil, accounts, "session", "deepseek-flash", nil, false, OpenAIEndpointCapabilityResponses, false, OpenAIUpstreamTransportAny)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), selection.Account.ID)
 	require.True(t, selection.stickySessionHit)
@@ -127,7 +127,9 @@ func TestUSTCPoolDispatchCoalescesDBRechecksAcrossWaiters(t *testing.T) {
 	for i := range jobs {
 		jobs[i] = &ustcPoolJob{ctx: ctx, accounts: []Account{account}, model: "deepseek-flash", capability: OpenAIEndpointCapabilityResponses, result: make(chan ustcPoolResult, 1)}
 	}
-	coordinator.jobs = jobs
+	// The coordinator compacts its queue in place; keep the waiter's iteration
+	// independent from that mutable backing array.
+	coordinator.jobs = append([]*ustcPoolJob(nil), jobs...)
 	state.coordinators[coordinator.scope] = coordinator
 	go coordinator.run()
 	for _, job := range jobs {
