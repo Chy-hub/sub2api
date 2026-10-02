@@ -121,6 +121,7 @@ const visible = computed(() => userInfoQuotaCellVisible(props.account))
 const loading = ref(false)
 const error = ref<string | null>(null)
 const data = ref<UserInfoQuotaResult | null>(null)
+let probeSequence = 0
 
 // 落库快照（后端探测写入 account.Extra，键在 upstream_userinfo_ 命名空间下）。
 const snapshotRemaining = computed(() => {
@@ -138,10 +139,6 @@ const snapshotSpend = computed(() => {
 // 键缺失按未知处理（当作可用），只有显式 false 才判定失效；
 // 与 API 路径的 valid !== false 语义对齐，避免部分写入的 Extra 误报「已失效」。
 const snapshotValid = computed(() => props.account.extra?.upstream_userinfo_valid !== false)
-const snapshotExpiresAt = computed(() => {
-  const v = props.account.extra?.upstream_userinfo_expires_at
-  return typeof v === 'string' ? v : ''
-})
 const snapshotResetAt = computed(() => {
   const v = props.account.extra?.upstream_userinfo_budget_reset_at
   return typeof v === 'string' ? v : ''
@@ -189,7 +186,6 @@ const current = computed(() => {
       spend: snapshotSpend.value,
       unit: 'CNY',
       valid: snapshotValid.value,
-      expires_at: snapshotExpiresAt.value || undefined,
       budget_reset_at: snapshotResetAt.value || undefined,
       windows: snapshotWindows.value,
       rpm_limit: snapshotUpstreamLimits.value.rpm,
@@ -340,19 +336,23 @@ const truncatedError = computed(() => {
 
 const handleProbe = async () => {
   if (loading.value) return
+  const requestSequence = ++probeSequence
+  const accountID = props.account.id
   loading.value = true
   error.value = null
   try {
-    const result = await adminAPI.accounts.getUserInfoQuota(props.account.id)
+    const result = await adminAPI.accounts.getUserInfoQuota(accountID)
+    if (requestSequence !== probeSequence || props.account.id !== accountID) return
     if (result.success) {
       data.value = result
     } else {
       error.value = result.error || t('common.error')
     }
   } catch (e) {
+    if (requestSequence !== probeSequence || props.account.id !== accountID) return
     error.value = extractErrorMessage(e)
   } finally {
-    loading.value = false
+    if (requestSequence === probeSequence) loading.value = false
   }
 }
 
@@ -370,6 +370,7 @@ watch(
 watch(
   () => props.account.id,
   () => {
+    probeSequence += 1
     data.value = null
     error.value = null
     loading.value = false

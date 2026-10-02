@@ -396,7 +396,6 @@ elseif op == 'commit' then
       end
     end
     redis.call('HSET', meta, 'used', used, 'active', active, 'deadline', deadline, 'c:' .. id, epoch, 'cs:' .. id, commit_seq, 'seen', '1')
-    if not state then state = 'ready' end
     redis.call('HSET', meta, 'state', state)
     return reply(1, ticket_probe, seq)
   end
@@ -540,13 +539,6 @@ else
   return redis.error_reply('unknown USTC capacity operation')
 end
 
--- Refresh every extant key for at least 24h. Lease expiry is independently
--- enforced by the sorted-set score, so persisted state never frees a live RPM.
-if redis.call('EXISTS', meta) == 1 then redis.call('PEXPIRE', meta, 86400000) end
-if redis.call('EXISTS', leases) == 1 then redis.call('PEXPIRE', leases, 86400000) end
-if redis.call('EXISTS', pending) == 1 then redis.call('PEXPIRE', pending, 86400000) end
-if redis.call('EXISTS', commits) == 1 then redis.call('PEXPIRE', commits, 86400000) end
-
 inflight = redis.call('ZCARD', leases)
 pending_count = redis.call('SCARD', pending)
 used = tonumber(redis.call('HGET', meta, 'used') or '0')
@@ -557,18 +549,7 @@ rpm = tonumber(redis.call('HGET', meta, 'rpm') or '0')
 cap = tonumber(redis.call('HGET', meta, 'cap') or tostring(rpm))
 parallel = tonumber(redis.call('HGET', meta, 'parallel') or '0')
 
-local result_code = 0
-local result_probe = 0
-local result_seq = 0
-if op == 'reserve' then
-  -- Successful reservations returned from their branch above.
-  result_code = 0
-elseif op == 'commit' then
-  result_code = 0
-elseif op == 'renew' then
-  result_code = 1
-end
-return reply(result_code, result_probe, result_seq)
+return reply(0, 0, 0)
 `)
 
 // USTC lease renewal stays independent from the capacity state machine. Every

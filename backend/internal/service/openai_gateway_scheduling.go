@@ -1210,7 +1210,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			accounts = s.supplementDefaultUSTCPool(ctx, groupID, accounts)
 			prefetchedAccounts = [][]Account{accounts}
 			if defaultUSTCAccountBalancingEnabled(accounts) {
-				return s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+				return s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate, OpenAIUpstreamTransportAny)
 			}
 		}
 	}
@@ -1681,6 +1681,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
 		account = s.refreshUSTCQuotaDuringCandidateCheck(ctx, account)
+		if account == nil {
+			return nil
+		}
 		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
 			return nil
 		}

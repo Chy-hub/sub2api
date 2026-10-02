@@ -169,3 +169,25 @@ func TestQueryQuotaForAccount_UserInfoFailureKeepsKeyWindows(t *testing.T) {
 		})
 	}
 }
+
+func TestQueryQuotaForAccountRejectsInvalidOrTruncatedKeyInfoJSON(t *testing.T) {
+	oversizedValidPrefix := `{"info":{"spend":1,"max_budget":100}}` + strings.Repeat(" ", userInfoQuotaMaxBodyBytes)
+	for name, body := range map[string]string{
+		"truncated":          `{"info":{"spend":1,"max_budget":100},"tail":"incomplete`,
+		"trailing-json":      `{"info":{"spend":1,"max_budget":100}} {"another":true}`,
+		"oversized-response": oversizedValidPrefix,
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, upstream, repo := newUserInfoQuotaProbeFixture()
+			upstream.bodies["/key/info"] = body
+
+			result, err := svc.QueryQuotaForAccount(context.Background(), userInfoQuotaTestAccount())
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.False(t, result.Success)
+			require.Equal(t, "invalid /key/info response body", result.Error)
+			require.Nil(t, repo.updated, "an invalid response must not overwrite the last quota snapshot")
+			require.NotContains(t, upstream.calls, "/user/info")
+		})
+	}
+}

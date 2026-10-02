@@ -39,13 +39,20 @@ func TestUserInfoQuotaURL(t *testing.T) {
 		{"https://api.llm.ustc.edu.cn/", "https://api.llm.ustc.edu.cn/key/info"},
 		{"https://api.llm.ustc.edu.cn/v1", "https://api.llm.ustc.edu.cn/key/info"},
 		{"https://api.llm.ustc.edu.cn/v1/", "https://api.llm.ustc.edu.cn/key/info"},
+		{"https://synthetic-user:synthetic-pass@api.llm.ustc.edu.cn", ""},
+		{"https://api.llm.ustc.edu.cn/v1?tenant=synthetic", ""},
+		{"https://api.llm.ustc.edu.cn/v1#fragment", ""},
 	}
 	for _, tc := range cases {
 		if got := userInfoQuotaURL(tc.baseURL); got != tc.want {
 			t.Errorf("userInfoQuotaURL(%q) = %q, want %q", tc.baseURL, got, tc.want)
 		}
-		if wantUser := userInfoUserURL(tc.baseURL); wantUser != "https://api.llm.ustc.edu.cn/user/info" {
-			t.Errorf("userInfoUserURL(%q) = %q, want user/info", tc.baseURL, wantUser)
+		wantUser := ""
+		if tc.want != "" {
+			wantUser = "https://api.llm.ustc.edu.cn/user/info"
+		}
+		if gotUser := userInfoUserURL(tc.baseURL); gotUser != wantUser {
+			t.Errorf("userInfoUserURL(%q) = %q, want %q", tc.baseURL, gotUser, wantUser)
 		}
 	}
 }
