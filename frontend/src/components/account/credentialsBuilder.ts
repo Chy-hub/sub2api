@@ -630,15 +630,6 @@ export function userInfoQuotaCellVisible(account: {
   }
 }
 
-/** USTC quota-window visibility, including supported upstream account rows. */
-export function isUstcQuotaAccount(account: {
-  platform?: string
-  type?: string
-  credentials?: Record<string, unknown>
-}): boolean {
-  return account.platform === 'openai' && userInfoQuotaCellVisible(account)
-}
-
 /** USTC automated capacity applies only to OpenAI API-key accounts. */
 export function isUstcCapacityAccount(account: {
   platform?: string

@@ -51,7 +51,7 @@ func (s *OpenAIGatewayService) selectUSTCPreviousResponse(ctx context.Context, g
 		return nil, true, ErrNoAvailableAccounts
 	}
 	ctx = context.WithValue(ctx, ustcBoundAccountKey{}, true)
-	selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, []Account{*account}, sessionHash, model, excluded, compact, capability, false)
+	selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, []Account{*account}, sessionHash, model, excluded, compact, capability, false, requiredTransport)
 	if err == nil && selection != nil && selection.Account != nil && !selection.Account.SupportsOpenAIImageCapability(imageCapability) {
 		if selection.ReleaseFunc != nil {
 			selection.ReleaseFunc()
@@ -438,20 +438,13 @@ func ustc429Delay(headers http.Header, now time.Time) time.Duration {
 	delay := retryAfter(headers, now)
 	if reset, err := parseUserInfoTime(headers.Get("reset_at")); err == nil {
 		if serverNow, err := http.ParseTime(headers.Get("Date")); err == nil {
-			delay = maxUSTCDuration(delay, reset.Sub(serverNow))
+			delay = max(delay, reset.Sub(serverNow))
 		} else {
-			delay = maxUSTCDuration(delay, reset.Sub(now))
+			delay = max(delay, reset.Sub(now))
 		}
 	}
 	if delay <= 0 {
 		delay = time.Minute
 	}
 	return delay
-}
-
-func maxUSTCDuration(a, b time.Duration) time.Duration {
-	if a > b {
-		return a
-	}
-	return b
 }

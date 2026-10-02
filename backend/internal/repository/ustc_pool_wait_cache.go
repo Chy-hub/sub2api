@@ -25,6 +25,12 @@ local now = redis.call('TIME')
 local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
 
+-- A retried command may already own the last permit. Confirm that lease
+-- before checking capacity, without extending its original expiry.
+if redis.call('ZSCORE', KEYS[1], ARGV[2]) then
+  return 1
+end
+
 local limit = tonumber(ARGV[1])
 if redis.call('ZCARD', KEYS[1]) >= limit then
   return 0

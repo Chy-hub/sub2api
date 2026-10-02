@@ -3,6 +3,9 @@ package service
 import (
 	"container/list"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,7 +55,7 @@ type UpstreamUserInfoQuotaService struct {
 	refreshMu         sync.Mutex
 	refreshCache      map[int64]*userInfoQuotaRefreshCacheEntry
 	refreshLRU        *list.List
-	refreshPending    map[int64]bool
+	refreshPending    map[int64]string
 	refreshProbeOnce  sync.Once
 	refreshProbeSlots chan struct{}
 }
@@ -61,6 +64,7 @@ var _ USTCQuotaAdmissionRefresher = (*UpstreamUserInfoQuotaService)(nil)
 
 type userInfoQuotaRefreshCacheEntry struct {
 	snapshot     map[string]any
+	identity     string
 	successAt    time.Time
 	lastAttempt  time.Time
 	lastError    error
@@ -105,7 +109,7 @@ func (s *UpstreamUserInfoQuotaService) QueryQuotaForAccount(ctx context.Context,
 	if err := validateUserInfoQuotaAccount(account); err != nil {
 		return nil, err
 	}
-	key := "userinfo_quota:" + strconv.FormatInt(account.ID, 10)
+	key := "userinfo_quota:" + strconv.FormatInt(account.ID, 10) + ":" + userInfoQuotaCacheIdentity(account)
 	resultCh := s.flight.DoChan(key, func() (any, error) {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 2*userInfoQuotaUpstreamTimeout+5*time.Second)
 		defer cancel()
@@ -139,11 +143,12 @@ func (s *UpstreamUserInfoQuotaService) RefreshForScheduling(ctx context.Context,
 		return accountCopy, nil
 	}
 	now := time.Now().UTC()
+	identity := userInfoQuotaCacheIdentity(account)
 	incomingUpdatedAt, hasIncomingUpdatedAt := userInfoQuotaExtraUpdatedAt(account.Extra)
 	forceRefresh := userInfoQuotaResetElapsed(account.Extra, now)
 	if userInfoQuotaExtraIsFresh(account.Extra, now) && !forceRefresh {
 		if s != nil {
-			if snapshot, ok := s.newerCachedSchedulingRefresh(account.ID, now, incomingUpdatedAt); ok {
+			if snapshot, ok := s.newerCachedSchedulingRefresh(account.ID, identity, now, incomingUpdatedAt); ok {
 				return overlayUserInfoQuotaSnapshot(accountCopy, snapshot), nil
 			}
 		}
@@ -153,11 +158,11 @@ func (s *UpstreamUserInfoQuotaService) RefreshForScheduling(ctx context.Context,
 		return accountCopy, infraerrors.New(http.StatusInternalServerError, "USERINFO_QUOTA_NOT_CONFIGURED", "upstream userinfo quota service is not configured")
 	}
 
-	if snapshot, err, done := s.cachedSchedulingRefresh(account.ID, now, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt); done {
+	if snapshot, err, done := s.cachedSchedulingRefresh(account.ID, identity, now, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt); done {
 		return overlayUserInfoQuotaSnapshot(accountCopy, snapshot), err
 	}
 
-	resultCh := s.startSchedulingRefresh(accountCopy, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt)
+	resultCh := s.startSchedulingRefresh(accountCopy, identity, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt)
 	select {
 	case <-ctx.Done():
 		return accountCopy, ctx.Err()
@@ -189,12 +194,13 @@ func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, ac
 		return accountCopy, true
 	}
 	now := time.Now().UTC()
+	identity := userInfoQuotaCacheIdentity(account)
 	incomingUpdatedAt, hasIncomingUpdatedAt := userInfoQuotaExtraUpdatedAt(account.Extra)
 	_, limitsKnown := USTCAccountLimits(account)
 	forceRefresh := userInfoQuotaResetElapsed(account.Extra, now) || (isDefaultUSTCAccount(account) && !limitsKnown)
 	if userInfoQuotaExtraIsFresh(account.Extra, now) && !forceRefresh {
 		if s != nil {
-			if snapshot, ok := s.newerCachedSchedulingRefresh(account.ID, now, incomingUpdatedAt); ok {
+			if snapshot, ok := s.newerCachedSchedulingRefresh(account.ID, identity, now, incomingUpdatedAt); ok {
 				return overlayUserInfoQuotaSnapshot(accountCopy, snapshot), true
 			}
 		}
@@ -204,7 +210,7 @@ func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, ac
 		return accountCopy, false
 	}
 
-	if snapshot, _, done := s.cachedSchedulingRefresh(account.ID, now, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt); done {
+	if snapshot, _, done := s.cachedSchedulingRefresh(account.ID, identity, now, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt); done {
 		if len(snapshot) > 0 {
 			accountCopy = overlayUserInfoQuotaSnapshot(accountCopy, snapshot)
 		}
@@ -216,7 +222,7 @@ func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, ac
 
 	// DoChan starts the callback asynchronously. The callback and the synchronous
 	// RefreshForScheduling path use the same key and share one upstream refresh.
-	s.ensureSchedulingRefresh(accountCopy, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt)
+	s.ensureSchedulingRefresh(accountCopy, identity, forceRefresh, incomingUpdatedAt, hasIncomingUpdatedAt)
 	if ctx != nil {
 		if background, _ := ctx.Value(ustcQuotaBackgroundAdmissionKey{}).(bool); background && userInfoQuotaSchedulingFailureReason(accountCopy, now) == "" {
 			return accountCopy, true
@@ -227,22 +233,25 @@ func (s *UpstreamUserInfoQuotaService) QuotaForAdmission(ctx context.Context, ac
 
 // Polling waiters need one background subscriber per account, not a new
 // singleflight result channel on every poll while the upstream is slow.
-func (s *UpstreamUserInfoQuotaService) ensureSchedulingRefresh(account *Account, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) {
+func (s *UpstreamUserInfoQuotaService) ensureSchedulingRefresh(account *Account, identity string, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) {
 	s.refreshMu.Lock()
 	if s.refreshPending == nil {
-		s.refreshPending = make(map[int64]bool)
+		s.refreshPending = make(map[int64]string)
 	}
-	if s.refreshPending[account.ID] || len(s.refreshPending) >= userInfoQuotaSchedulingCacheMax {
+	pendingIdentity, pending := s.refreshPending[account.ID]
+	if (pending && pendingIdentity == identity) || (!pending && len(s.refreshPending) >= userInfoQuotaSchedulingCacheMax) {
 		s.refreshMu.Unlock()
 		return
 	}
-	s.refreshPending[account.ID] = true
+	s.refreshPending[account.ID] = identity
 	s.refreshMu.Unlock()
-	resultCh := s.startSchedulingRefresh(account, forceRefresh, forceAfter, hasForceAfter)
+	resultCh := s.startSchedulingRefresh(account, identity, forceRefresh, forceAfter, hasForceAfter)
 	go func() {
 		<-resultCh
 		s.refreshMu.Lock()
-		delete(s.refreshPending, account.ID)
+		if s.refreshPending[account.ID] == identity {
+			delete(s.refreshPending, account.ID)
+		}
 		s.refreshMu.Unlock()
 		if s.onRefresh != nil {
 			s.onRefresh()
@@ -250,25 +259,25 @@ func (s *UpstreamUserInfoQuotaService) ensureSchedulingRefresh(account *Account,
 	}()
 }
 
-func (s *UpstreamUserInfoQuotaService) startSchedulingRefresh(account *Account, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) <-chan singleflight.Result {
+func (s *UpstreamUserInfoQuotaService) startSchedulingRefresh(account *Account, identity string, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) <-chan singleflight.Result {
 	queryAccount := copyAccountForUserInfoQuotaRefresh(account)
-	key := "userinfo_quota_scheduling:" + strconv.FormatInt(account.ID, 10)
+	key := "userinfo_quota_scheduling:" + strconv.FormatInt(account.ID, 10) + ":" + identity
 	return s.refreshFlight.DoChan(key, func() (any, error) {
-		if snapshot, err, done := s.cachedSchedulingRefresh(queryAccount.ID, time.Now().UTC(), forceRefresh, forceAfter, hasForceAfter); done {
+		if snapshot, err, done := s.cachedSchedulingRefresh(queryAccount.ID, identity, time.Now().UTC(), forceRefresh, forceAfter, hasForceAfter); done {
 			return &userInfoQuotaRefreshFlightResult{snapshot: snapshot, err: err}, nil
 		}
-		return s.refreshSchedulingSnapshot(queryAccount), nil
+		return s.refreshSchedulingSnapshot(queryAccount, identity), nil
 	})
 }
 
-func (s *UpstreamUserInfoQuotaService) newerCachedSchedulingRefresh(accountID int64, now, incomingUpdatedAt time.Time) (map[string]any, bool) {
+func (s *UpstreamUserInfoQuotaService) newerCachedSchedulingRefresh(accountID int64, identity string, now, incomingUpdatedAt time.Time) (map[string]any, bool) {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 	entry := s.getRefreshCacheEntryLocked(accountID, now, false)
 	if entry == nil {
 		return nil, false
 	}
-	if entry.snapshot == nil || entry.successAt.IsZero() || !entry.successAt.After(incomingUpdatedAt) ||
+	if entry.identity != identity || entry.snapshot == nil || entry.successAt.IsZero() || !entry.successAt.After(incomingUpdatedAt) ||
 		now.Sub(entry.successAt) < 0 || now.Sub(entry.successAt) > userInfoQuotaSchedulingFreshness ||
 		userInfoQuotaResetElapsed(entry.snapshot, now) {
 		return nil, false
@@ -276,11 +285,11 @@ func (s *UpstreamUserInfoQuotaService) newerCachedSchedulingRefresh(accountID in
 	return cloneUserInfoQuotaSnapshot(entry.snapshot), true
 }
 
-func (s *UpstreamUserInfoQuotaService) cachedSchedulingRefresh(accountID int64, now time.Time, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) (map[string]any, error, bool) {
+func (s *UpstreamUserInfoQuotaService) cachedSchedulingRefresh(accountID int64, identity string, now time.Time, forceRefresh bool, forceAfter time.Time, hasForceAfter bool) (map[string]any, error, bool) {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 	entry := s.getRefreshCacheEntryLocked(accountID, now, false)
-	if entry == nil {
+	if entry == nil || entry.identity != identity {
 		return nil, nil, false
 	}
 	forceStillRequired := forceRefresh && (!hasForceAfter || entry.successAt.IsZero() || entry.successAt.Before(forceAfter))
@@ -295,7 +304,7 @@ func (s *UpstreamUserInfoQuotaService) cachedSchedulingRefresh(accountID int64, 
 	return nil, nil, false
 }
 
-func (s *UpstreamUserInfoQuotaService) refreshSchedulingSnapshot(account *Account) *userInfoQuotaRefreshFlightResult {
+func (s *UpstreamUserInfoQuotaService) refreshSchedulingSnapshot(account *Account, identity string) *userInfoQuotaRefreshFlightResult {
 	s.refreshProbeOnce.Do(func() {
 		s.refreshProbeSlots = make(chan struct{}, userInfoQuotaSchedulingMaxProbes)
 	})
@@ -305,6 +314,13 @@ func (s *UpstreamUserInfoQuotaService) refreshSchedulingSnapshot(account *Accoun
 	now := time.Now().UTC()
 	s.refreshMu.Lock()
 	entry := s.getRefreshCacheEntryLocked(accountID, now, true)
+	if entry.identity != identity {
+		entry.identity = identity
+		entry.snapshot = nil
+		entry.successAt = time.Time{}
+		entry.lastError = nil
+		entry.lastAttempt = time.Time{}
+	}
 	entry.lastAttempt = now
 	entry.lastError = nil
 	entry.lastAccessAt = now
@@ -323,10 +339,16 @@ func (s *UpstreamUserInfoQuotaService) refreshSchedulingSnapshot(account *Accoun
 		s.refreshMu.Lock()
 		failedAt := time.Now().UTC()
 		entry := s.getRefreshCacheEntryLocked(accountID, failedAt, true)
-		entry.lastAttempt = failedAt
-		entry.lastError = err
-		entry.lastAccessAt = failedAt
-		snapshot := cloneUserInfoQuotaSnapshot(entry.snapshot)
+		if entry.identity == "" {
+			entry.identity = identity
+		}
+		var snapshot map[string]any
+		if entry.identity == identity {
+			entry.lastAttempt = failedAt
+			entry.lastError = err
+			entry.lastAccessAt = failedAt
+			snapshot = cloneUserInfoQuotaSnapshot(entry.snapshot)
+		}
 		s.refreshMu.Unlock()
 		return &userInfoQuotaRefreshFlightResult{snapshot: snapshot, err: err}
 	}
@@ -338,10 +360,15 @@ func (s *UpstreamUserInfoQuotaService) refreshSchedulingSnapshot(account *Accoun
 	}
 	s.refreshMu.Lock()
 	entry = s.getRefreshCacheEntryLocked(accountID, time.Now().UTC(), true)
-	entry.snapshot = cloneUserInfoQuotaSnapshot(snapshot)
-	entry.successAt = successAt
-	entry.lastError = nil
-	entry.lastAccessAt = time.Now().UTC()
+	if entry.identity == "" {
+		entry.identity = identity
+	}
+	if entry.identity == identity {
+		entry.snapshot = cloneUserInfoQuotaSnapshot(snapshot)
+		entry.successAt = successAt
+		entry.lastError = nil
+		entry.lastAccessAt = time.Now().UTC()
+	}
 	s.refreshMu.Unlock()
 	return &userInfoQuotaRefreshFlightResult{snapshot: snapshot}
 }
@@ -380,6 +407,46 @@ func (s *UpstreamUserInfoQuotaService) getRefreshCacheEntryLocked(accountID int6
 		}
 	}
 	return entry
+}
+
+func userInfoQuotaAPIKey(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(account.GetCredential("access_token"))
+	}
+	return apiKey
+}
+
+// Cache and singleflight keys include the effective endpoint and credential
+// state. Hashing keeps API keys and custom header values out of cache metadata.
+func userInfoQuotaCacheIdentity(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	hasher := sha256.New()
+	writePart := func(value string) {
+		_, _ = fmt.Fprintf(hasher, "%d:", len(value))
+		_, _ = io.WriteString(hasher, value)
+	}
+	writePart(userInfoQuotaURL(account.userInfoQuotaBaseURL()))
+	writePart(userInfoQuotaAPIKey(account))
+	accountCopy := *account
+	accountCopy.headerOverrideCacheReady = false
+	accountCopy.headerOverrideCache = nil
+	overrides := accountCopy.GetHeaderOverrides()
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		writePart(name)
+		writePart(overrides[name])
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 func userInfoQuotaRefreshEntryIdle(entry *userInfoQuotaRefreshCacheEntry, now time.Time) bool {
@@ -573,10 +640,7 @@ func cloneUserInfoQuotaExtraValue(value any) any {
 }
 
 func (s *UpstreamUserInfoQuotaService) queryQuotaForAccount(ctx context.Context, account *Account) (*UserInfoQuotaResult, error) {
-	apiKey := strings.TrimSpace(account.GetCredential("api_key"))
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(account.GetCredential("access_token"))
-	}
+	apiKey := userInfoQuotaAPIKey(account)
 	if apiKey == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "USERINFO_QUOTA_NO_APIKEY", "account api_key is empty")
 	}
@@ -607,8 +671,11 @@ func (s *UpstreamUserInfoQuotaService) queryQuotaForAccount(ctx context.Context,
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "USERINFO_QUOTA_REQUEST_FAILED", "upstream request failed: %v", err)
 	}
+	if resp == nil || resp.Body == nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "USERINFO_QUOTA_RESPONSE_INVALID", "upstream returned an empty response")
+	}
 	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, userInfoQuotaMaxBodyBytes))
+	bodyBytes, bodyErr := readUserInfoQuotaResponseBody(resp.Body)
 
 	now := time.Now().UTC()
 	result := &UserInfoQuotaResult{
@@ -624,6 +691,10 @@ func (s *UpstreamUserInfoQuotaService) queryQuotaForAccount(ctx context.Context,
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		result.Error = fmt.Sprintf("API error (HTTP %d): %s", resp.StatusCode, truncate(strings.TrimSpace(string(bodyBytes)), 240))
+		return result, nil
+	}
+	if bodyErr != nil || !json.Valid(bodyBytes) {
+		result.Error = "invalid /key/info response body"
 		return result, nil
 	}
 
@@ -755,6 +826,23 @@ func parseUserInfoF64(node gjson.Result) float64 {
 	default:
 		return 0
 	}
+}
+
+// readUserInfoQuotaResponseBody detects both read failures and responses that
+// exceed the parser's limit; silently parsing a truncated JSON prefix can turn
+// an incomplete quota response into a successful snapshot.
+func readUserInfoQuotaResponseBody(body io.Reader) ([]byte, error) {
+	if body == nil {
+		return nil, errors.New("missing response body")
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(body, int64(userInfoQuotaMaxBodyBytes)+1))
+	if err != nil {
+		return bodyBytes, err
+	}
+	if len(bodyBytes) > userInfoQuotaMaxBodyBytes {
+		return bodyBytes[:userInfoQuotaMaxBodyBytes], errors.New("response body exceeds size limit")
+	}
+	return bodyBytes, nil
 }
 
 // parseUserInfoTime 解析 LiteLLM 的时间字段。
@@ -960,12 +1048,18 @@ func (s *UpstreamUserInfoQuotaService) fetchUserInfoBudgetWindow(ctx context.Con
 		slog.Warn("userinfo_user_budget_fetch_failed", "account_id", account.ID, "error", err)
 		return nil
 	}
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("userinfo_user_budget_http_error", "account_id", account.ID, "status", resp.StatusCode)
 		return nil
 	}
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, userInfoQuotaMaxBodyBytes))
+	bodyBytes, bodyErr := readUserInfoQuotaResponseBody(resp.Body)
+	if bodyErr != nil || !json.Valid(bodyBytes) {
+		return nil
+	}
 	root := gjson.ParseBytes(bodyBytes)
 	userNode := root.Get("user_info")
 	if !userNode.IsObject() {

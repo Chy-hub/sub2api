@@ -101,12 +101,14 @@ func (s *GroupCapacityService) listActiveGroupIDs(ctx context.Context) ([]int64,
 
 func (s *GroupCapacityService) getGroupCapacitiesSequential(ctx context.Context, groupIDs []int64) []GroupCapacitySummary {
 	rows := make([]GroupAccountCapacityRow, 0)
+	loadedGroupIDs := make([]int64, 0, len(groupIDs))
 	for _, groupID := range groupIDs {
 		accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
 		if err != nil {
 			// Skip groups with errors, return partial results
 			continue
 		}
+		loadedGroupIDs = append(loadedGroupIDs, groupID)
 		for i := range accounts {
 			acc := &accounts[i]
 			rows = append(rows, GroupAccountCapacityRow{
@@ -123,7 +125,7 @@ func (s *GroupCapacityService) getGroupCapacitiesSequential(ctx context.Context,
 			})
 		}
 	}
-	results, _ := s.aggregateGroupCapacityRows(ctx, groupIDs, rows)
+	results, _ := s.aggregateGroupCapacityRows(ctx, loadedGroupIDs, rows)
 	return results
 }
 
@@ -234,7 +236,7 @@ func (s *GroupCapacityService) aggregateGroupCapacityRows(ctx context.Context, g
 
 		// Blank platform is retained for older callers/tests that only provide
 		// the historical projection. Real repository rows always include it.
-		if acc.IsRPMEligible() || row.Platform == "" {
+		if acc.IsAnthropicOAuthOrSetupToken() || row.Platform == "" {
 			if rpm := acc.GetBaseRPM(); rpm > 0 {
 				refRPMEligible[ref] = true
 				results[idx].RPMMax += rpm
