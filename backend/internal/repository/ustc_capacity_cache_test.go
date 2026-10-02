@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -353,7 +354,7 @@ func TestUSTCCapacity403ProbeRefundStaysInVerifyOne(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, next)
 	require.True(t, next.Probe, "the denied cold probe did not verify a usable RPM window")
-	require.True(t, next.Cold)
+	require.False(t, next.Cold, "a committed denial must not trigger another cold calibration")
 	require.Zero(t, capacity.Available)
 	require.NoError(t, cache.USTCRelease(ctx, next))
 }
@@ -381,6 +382,36 @@ func TestUSTCCapacityPendingReservationCanCommitAcrossMatureWindow(t *testing.T)
 	require.NoError(t, err)
 	require.True(t, committed, "a pending reservation can revalidate into the mature next window")
 	require.NotEqual(t, oldEpoch, pending.Epoch)
+	keys, err := cache.ustcCapacityKeys("pending-rollover")
+	require.NoError(t, err)
+	seqBeforeReplay, err := cache.rdb.HGet(ctx, keys[0], "seq").Int64()
+	require.NoError(t, err)
+	commitSeqBeforeReplay, err := cache.rdb.HGet(ctx, keys[0], "commit_seq").Int64()
+	require.NoError(t, err)
+	capacityBeforeReplay, err := cache.USTCRead(ctx, "pending-rollover", limits)
+	require.NoError(t, err)
+	require.Equal(t, 1, capacityBeforeReplay.Used)
+
+	// Simulate go-redis replaying the exact EVAL arguments after Redis committed
+	// the ticket but the first response was lost. Keep its original epoch rather
+	// than the wrapper-updated ticket epoch above.
+	replayedCommit, err := cache.runUSTCCapacity(ctx, "pending-rollover", "commit", pending.ID, oldEpoch, false, &limits, nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, replayedCommit.code, "cross-window Commit replay remains idempotently allowed")
+	require.Equal(t, pending.Epoch, replayedCommit.epoch, "the replay returns the new committed epoch")
+	require.Equal(t, 1, replayedCommit.used)
+	require.Equal(t, seqBeforeReplay, replayedCommit.seq)
+	seqAfterReplay, err := cache.rdb.HGet(ctx, keys[0], "seq").Int64()
+	require.NoError(t, err)
+	commitSeqAfterReplay, err := cache.rdb.HGet(ctx, keys[0], "commit_seq").Int64()
+	require.NoError(t, err)
+	require.Equal(t, seqBeforeReplay, seqAfterReplay)
+	require.Equal(t, commitSeqBeforeReplay, commitSeqAfterReplay)
+	capacityAfterReplay, err := cache.USTCRead(ctx, "pending-rollover", limits)
+	require.NoError(t, err)
+	require.Equal(t, 1, capacityAfterReplay.Used)
+	require.Equal(t, capacityBeforeReplay.ResetAt, capacityAfterReplay.ResetAt, "a replay does not restart the window")
+
 	capacity, err = cache.USTCRead(ctx, "pending-rollover", limits)
 	require.NoError(t, err)
 	require.Equal(t, 1, capacity.Used)
@@ -675,6 +706,65 @@ func TestUSTCCapacityLongStreamLeaseSurvivesWindowRollover(t *testing.T) {
 	require.NoError(t, cache.USTCRelease(ctx, nextRequest))
 }
 
+func TestUSTCCapacityRenewBatchOnlyExtendsLiveLeases(t *testing.T) {
+	cache, client, server := newUSTCCapacityTestCache(t)
+	ctx := context.Background()
+	limits := service.USTCLimits{RPM: 5, Parallel: 2}
+
+	live, _, err := cache.USTCReserve(ctx, "batch-renew-live", limits)
+	require.NoError(t, err)
+	require.NotNil(t, live)
+	committed, err := cache.USTCCommit(ctx, live, limits)
+	require.NoError(t, err)
+	require.True(t, committed)
+	liveKeys, err := cache.ustcCapacityKeys(live.Scope)
+	require.NoError(t, err)
+	oldLiveScore, err := client.ZScore(ctx, liveKeys[1], live.ID).Result()
+	require.NoError(t, err)
+	usedBefore, err := client.HGet(ctx, liveKeys[0], "used").Result()
+	require.NoError(t, err)
+
+	expired, _, err := cache.USTCReserve(ctx, "batch-renew-expired", limits)
+	require.NoError(t, err)
+	require.NotNil(t, expired)
+	committed, err = cache.USTCCommit(ctx, expired, limits)
+	require.NoError(t, err)
+	require.True(t, committed)
+	expiredKeys, err := cache.ustcCapacityKeys(expired.Scope)
+	require.NoError(t, err)
+	now, err := client.Time(ctx).Result()
+	require.NoError(t, err)
+	expiredScore := float64(now.UnixMilli() - 1)
+	require.NoError(t, client.ZAdd(ctx, expiredKeys[1], redis.Z{Score: expiredScore, Member: expired.ID}).Err())
+
+	released, _, err := cache.USTCReserve(ctx, "batch-renew-released", limits)
+	require.NoError(t, err)
+	require.NotNil(t, released)
+	releasedKeys, err := cache.ustcCapacityKeys(released.Scope)
+	require.NoError(t, err)
+	require.NoError(t, cache.USTCRelease(ctx, released))
+
+	advanceUSTCRedisTime(t, cache, server, 30*time.Second)
+	require.NoError(t, cache.USTCRenewBatch(ctx, []*service.USTCTicket{live, live, expired, released}))
+	newLiveScore, err := client.ZScore(ctx, liveKeys[1], live.ID).Result()
+	require.NoError(t, err)
+	require.Greater(t, newLiveScore, oldLiveScore, "a live lease is extended from current Redis time")
+
+	newNow, err := client.Time(ctx).Result()
+	require.NoError(t, err)
+	unchangedExpiredScore, err := client.ZScore(ctx, expiredKeys[1], expired.ID).Result()
+	require.NoError(t, err)
+	require.Equal(t, expiredScore, unchangedExpiredScore, "an expired lease is never moved into the future")
+	require.LessOrEqual(t, unchangedExpiredScore, float64(newNow.UnixMilli()))
+	_, err = client.ZScore(ctx, releasedKeys[1], released.ID).Result()
+	require.ErrorIs(t, err, redis.Nil, "a released ticket is not recreated")
+	usedAfter, err := client.HGet(ctx, liveKeys[0], "used").Result()
+	require.NoError(t, err)
+	require.Equal(t, usedBefore, usedAfter, "batch renewal leaves capacity state untouched")
+
+	require.NoError(t, cache.USTCRenewBatch(ctx, nil))
+}
+
 func TestUSTCCapacityVerifyOneRetainsOneSlotBesidePreviousWindowStream(t *testing.T) {
 	cache, _, server := newUSTCCapacityTestCache(t)
 	ctx := context.Background()
@@ -818,4 +908,325 @@ func TestUSTCCapacityRedisFailureAndInvalidInputsFailClosed(t *testing.T) {
 	require.Error(t, err)
 	_, _, err = cache.USTCReserve(context.Background(), "valid", service.USTCLimits{RPM: -1})
 	require.Error(t, err)
+}
+
+func TestUSTCCapacityReserveAndCommitRetriesAreIdempotent(t *testing.T) {
+	cache, _, server := newUSTCCapacityTestCache(t)
+	ctx := context.Background()
+	limits := service.USTCLimits{RPM: 5}
+	const scope = "commit-replay"
+
+	ticket, _, err := cache.USTCReserve(ctx, scope, limits)
+	require.NoError(t, err)
+	require.NotNil(t, ticket)
+	committed, err := cache.USTCCommit(ctx, ticket, limits)
+	require.NoError(t, err)
+	require.True(t, committed)
+
+	keys, err := cache.ustcCapacityKeys(scope)
+	require.NoError(t, err)
+	seqBefore, err := cache.rdb.HGet(ctx, keys[0], "seq").Int64()
+	require.NoError(t, err)
+	commitSeqBefore, err := cache.rdb.HGet(ctx, keys[0], "commit_seq").Int64()
+	require.NoError(t, err)
+	capacityBefore, err := cache.USTCRead(ctx, scope, limits)
+	require.NoError(t, err)
+	require.Equal(t, 1, capacityBefore.Used)
+	require.False(t, capacityBefore.ResetAt.IsZero())
+
+	advanceUSTCRedisTime(t, cache, server, 10*time.Second)
+	committed, err = cache.USTCCommit(ctx, ticket, limits)
+	require.NoError(t, err)
+	require.True(t, committed, "a live committed ticket confirms a Redis retry")
+
+	replayedReserve, err := cache.runUSTCCapacity(ctx, scope, "reserve", ticket.ID, 0, false, &limits, nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, replayedReserve.code, "a same-ID Reserve retry returns its existing live ticket")
+	require.Equal(t, ticket.Epoch, replayedReserve.epoch)
+	require.True(t, replayedReserve.probe)
+	require.Equal(t, int64(1), replayedReserve.seq)
+
+	seqAfter, err := cache.rdb.HGet(ctx, keys[0], "seq").Int64()
+	require.NoError(t, err)
+	commitSeqAfter, err := cache.rdb.HGet(ctx, keys[0], "commit_seq").Int64()
+	require.NoError(t, err)
+	require.Equal(t, seqBefore, seqAfter, "Reserve retry must not allocate another sequence")
+	require.Equal(t, commitSeqBefore, commitSeqAfter, "Commit retry must not allocate another commit sequence")
+	capacityAfter, err := cache.USTCRead(ctx, scope, limits)
+	require.NoError(t, err)
+	require.Equal(t, 1, capacityAfter.Used, "Commit retry must not count RPM twice")
+	require.Equal(t, capacityBefore.ResetAt, capacityAfter.ResetAt, "Commit retry must not restart the RPM window")
+
+	require.NoError(t, cache.USTCRelease(ctx, ticket))
+	committed, err = cache.USTCCommit(ctx, ticket, limits)
+	require.NoError(t, err)
+	require.False(t, committed, "a released ticket cannot be committed again")
+
+	expired, _, err := cache.USTCReserve(ctx, "commit-expired", limits)
+	require.NoError(t, err)
+	require.NotNil(t, expired)
+	committed, err = cache.USTCCommit(ctx, expired, limits)
+	require.NoError(t, err)
+	require.True(t, committed)
+	advanceUSTCRedisTime(t, cache, server, ustcCapacityLease+time.Second)
+	committed, err = cache.USTCCommit(ctx, expired, limits)
+	require.NoError(t, err)
+	require.False(t, committed, "an expired lease cannot confirm a commit")
+
+	uncommitted, _, err := cache.USTCReserve(ctx, "commit-released-pending", limits)
+	require.NoError(t, err)
+	require.NotNil(t, uncommitted)
+	require.NoError(t, cache.USTCRelease(ctx, uncommitted))
+	committed, err = cache.USTCCommit(ctx, uncommitted, limits)
+	require.NoError(t, err)
+	require.False(t, committed, "a released pending reservation cannot be committed")
+}
+
+func TestUSTCCapacityObserveRetryDoesNotExtend429Cooldown(t *testing.T) {
+	cache, _, server := newUSTCCapacityTestCache(t)
+	ctx := context.Background()
+	limits := service.USTCLimits{RPM: 10}
+	primeUSTCCapacity(t, cache, "observe-replay", limits)
+
+	ticket, _, err := cache.USTCReserve(ctx, "observe-replay", limits)
+	require.NoError(t, err)
+	require.NotNil(t, ticket)
+	committed, err := cache.USTCCommit(ctx, ticket, limits)
+	require.NoError(t, err)
+	require.True(t, committed)
+	feedback := service.USTCFeedback{StatusCode: 429, RetryAfter: time.Minute}
+	require.NoError(t, cache.USTCObserve(ctx, ticket, feedback))
+	first, err := cache.USTCRead(ctx, "observe-replay", limits)
+	require.NoError(t, err)
+	require.Equal(t, "sync_wait", first.State)
+
+	advanceUSTCRedisTime(t, cache, server, 10*time.Second)
+	require.NoError(t, cache.USTCObserve(ctx, ticket, feedback))
+	replayed, err := cache.USTCRead(ctx, "observe-replay", limits)
+	require.NoError(t, err)
+	require.Equal(t, first.ResetAt, replayed.ResetAt, "an Observe retry cannot extend Retry-After")
+	require.Equal(t, first.Used, replayed.Used, "an Observe retry cannot change RPM usage")
+	require.NoError(t, cache.USTCRelease(ctx, ticket))
+}
+
+func TestUSTCCapacityOrdinaryProbeErrorsKeepOneProbeAndRPMCharge(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 500} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			cache, _, _ := newUSTCCapacityTestCache(t)
+			ctx := context.Background()
+			limits := service.USTCLimits{RPM: 5, Parallel: 2}
+			scope := "ordinary-probe-error-" + strconv.Itoa(status)
+
+			probe, _, err := cache.USTCReserve(ctx, scope, limits)
+			require.NoError(t, err)
+			require.NotNil(t, probe)
+			require.True(t, probe.Probe)
+			require.True(t, probe.Cold)
+			committed, err := cache.USTCCommit(ctx, probe, limits)
+			require.NoError(t, err)
+			require.True(t, committed)
+			require.NoError(t, cache.USTCObserve(ctx, probe, service.USTCFeedback{StatusCode: status}))
+
+			capacity, err := cache.USTCRead(ctx, scope, limits)
+			require.NoError(t, err)
+			require.Equal(t, "verify_one", capacity.State, "an ordinary error without Retry-After should leave one recovery probe")
+			require.Equal(t, 1, capacity.Used, "the request reached the provider and remains RPM charged")
+			require.Equal(t, 1, capacity.Available, "other requests stay behind the single probe")
+			require.False(t, capacity.ResetAt.IsZero(), "the sent request anchors the normal RPM window")
+
+			require.NoError(t, cache.USTCRelease(ctx, probe))
+			next, _, err := cache.USTCReserve(ctx, scope, limits)
+			require.NoError(t, err)
+			require.NotNil(t, next)
+			require.True(t, next.Probe)
+			require.False(t, next.Cold, "an ordinary error must not trigger another cold calibration")
+			require.Equal(t, probe.Epoch, next.Epoch, "the next probe keeps the charged window")
+			committed, err = cache.USTCCommit(ctx, next, limits)
+			require.NoError(t, err)
+			require.True(t, committed)
+			require.NoError(t, cache.USTCObserve(ctx, next, service.USTCFeedback{StatusCode: 200}))
+			capacity, err = cache.USTCRead(ctx, scope, limits)
+			require.NoError(t, err)
+			require.Equal(t, "sync_wait", capacity.State, "a headerless success without a completed cooldown remains conservative")
+			require.Equal(t, 2, capacity.Used)
+			require.NoError(t, cache.USTCRelease(ctx, next))
+		})
+	}
+}
+
+func TestUSTCCapacityOrdinaryProbeErrorUsesValidQuotaHeaders(t *testing.T) {
+	for _, status := range []int{400, 500} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			cache, _, _ := newUSTCCapacityTestCache(t)
+			ctx := context.Background()
+			limits := service.USTCLimits{RPM: 10}
+			probe, _, err := cache.USTCReserve(ctx, "ordinary-header-probe", limits)
+			require.NoError(t, err)
+			require.NotNil(t, probe)
+			committed, err := cache.USTCCommit(ctx, probe, limits)
+			require.NoError(t, err)
+			require.True(t, committed)
+			limit, remaining := 4, 2
+			require.NoError(t, cache.USTCObserve(ctx, probe, service.USTCFeedback{
+				StatusCode: status,
+				RPMLimit:   &limit,
+				Remaining:  &remaining,
+			}))
+
+			capacity, err := cache.USTCRead(ctx, "ordinary-header-probe", limits)
+			require.NoError(t, err)
+			require.Equal(t, "ready", capacity.State, "valid quota headers release the single-probe state")
+			require.Equal(t, 2, capacity.Used)
+			require.Equal(t, 2, capacity.Available)
+			next, _, err := cache.USTCReserve(ctx, "ordinary-header-probe", limits)
+			require.NoError(t, err)
+			require.NotNil(t, next)
+			require.False(t, next.Probe)
+			require.NoError(t, cache.USTCRelease(ctx, probe))
+			require.NoError(t, cache.USTCRelease(ctx, next))
+		})
+	}
+}
+
+func TestUSTCCapacityUnlimitedMetadataPreservesLearnedCapAndCooldown(t *testing.T) {
+	cache, _, server := newUSTCCapacityTestCache(t)
+	ctx := context.Background()
+	bounded := service.USTCLimits{RPM: 10}
+	const scope = "learned-unlimited"
+
+	probe, _, err := cache.USTCReserve(ctx, scope, bounded)
+	require.NoError(t, err)
+	require.NotNil(t, probe)
+	committed, err := cache.USTCCommit(ctx, probe, bounded)
+	require.NoError(t, err)
+	require.True(t, committed)
+	limit, remaining := 4, 3
+	require.NoError(t, cache.USTCObserve(ctx, probe, service.USTCFeedback{
+		StatusCode: 200,
+		RPMLimit:   &limit,
+		Remaining:  &remaining,
+	}))
+	require.NoError(t, cache.USTCRelease(ctx, probe))
+
+	unlimited := service.USTCLimits{}
+	capacity, err := cache.USTCRead(ctx, scope, unlimited)
+	require.NoError(t, err)
+	keys, err := cache.ustcCapacityKeys(scope)
+	require.NoError(t, err)
+	rpmRaw, err := cache.rdb.HGet(ctx, keys[0], "rpm").Result()
+	require.NoError(t, err)
+	require.Equal(t, "0", rpmRaw, "the authoritative metadata remains unlimited")
+	require.NotNil(t, capacity.RPMLimit)
+	require.Equal(t, 4, *capacity.RPMLimit, "the displayed effective limit preserves learned response evidence")
+	require.Equal(t, 1, capacity.Used)
+	require.Equal(t, 3, capacity.Available, "learned response cap remains effective")
+	require.NoError(t, cache.USTCCooldown(ctx, scope, 90*time.Second))
+	capacity, err = cache.USTCRead(ctx, scope, unlimited)
+	require.NoError(t, err)
+	require.Equal(t, "sync_wait", capacity.State, "an unlimited metadata refresh cannot clear cooldown")
+	require.Equal(t, 1, capacity.Used)
+
+	advanceUSTCRedisTime(t, cache, server, 91*time.Second)
+	capacity, err = cache.USTCRead(ctx, scope, unlimited)
+	require.NoError(t, err)
+	require.Equal(t, "verify_one", capacity.State)
+	require.Zero(t, capacity.Used)
+	require.NotNil(t, capacity.RPMLimit)
+	require.Equal(t, 4, *capacity.RPMLimit, "the learned limit survives the cooldown window rollover")
+	recovery, _, err := cache.USTCReserve(ctx, scope, unlimited)
+	require.NoError(t, err)
+	require.NotNil(t, recovery)
+	require.True(t, recovery.Probe)
+	require.False(t, recovery.Cold)
+	committed, err = cache.USTCCommit(ctx, recovery, unlimited)
+	require.NoError(t, err)
+	require.True(t, committed)
+	require.NoError(t, cache.USTCObserve(ctx, recovery, service.USTCFeedback{StatusCode: 200}))
+	require.NoError(t, cache.USTCRelease(ctx, recovery))
+
+	capacity, err = cache.USTCRead(ctx, scope, unlimited)
+	require.NoError(t, err)
+	require.Equal(t, "ready", capacity.State)
+	require.Equal(t, 1, capacity.Used)
+	require.Equal(t, 3, capacity.Available, "the learned finite cap carries into the recovered window")
+
+	var tickets []*service.USTCTicket
+	for i := 0; i < 3; i++ {
+		ticket, _, reserveErr := cache.USTCReserve(ctx, scope, unlimited)
+		require.NoError(t, reserveErr)
+		require.NotNil(t, ticket)
+		require.False(t, ticket.Probe)
+		tickets = append(tickets, ticket)
+	}
+	blocked, capacity, err := cache.USTCReserve(ctx, scope, unlimited)
+	require.NoError(t, err)
+	require.Nil(t, blocked, "upstream metadata unlimited cannot override the learned finite cap")
+	require.Zero(t, capacity.Available)
+	for _, ticket := range tickets {
+		require.NoError(t, cache.USTCRelease(ctx, ticket))
+	}
+}
+
+func TestUSTCCapacityOrdinaryProbeErrorExpiresWithoutFalseRecoveryFlag(t *testing.T) {
+	cache, _, server := newUSTCCapacityTestCache(t)
+	ctx := context.Background()
+	limits := service.USTCLimits{RPM: 5}
+	const scope = "ordinary-error-window"
+	probe, _, err := cache.USTCReserve(ctx, scope, limits)
+	require.NoError(t, err)
+	committed, err := cache.USTCCommit(ctx, probe, limits)
+	require.NoError(t, err)
+	require.True(t, committed)
+	require.NoError(t, cache.USTCObserve(ctx, probe, service.USTCFeedback{StatusCode: 401}))
+	require.NoError(t, cache.USTCRelease(ctx, probe))
+
+	advanceUSTCRedisTime(t, cache, server, 61*time.Second)
+	capacity, err := cache.USTCRead(ctx, scope, limits)
+	require.NoError(t, err)
+	require.Equal(t, "verify_one", capacity.State)
+	require.Zero(t, capacity.Used)
+	probe, _, err = cache.USTCReserve(ctx, scope, limits)
+	require.NoError(t, err)
+	require.NotNil(t, probe)
+	require.True(t, probe.Probe)
+	require.False(t, probe.Cold, "an expired ordinary window is not a new cold key")
+	require.NoError(t, cache.USTCRelease(ctx, probe))
+}
+
+func TestUSTCCapacityAmbiguousProbeFailuresKeepConservativeWait(t *testing.T) {
+	cases := []struct {
+		name     string
+		feedback service.USTCFeedback
+		wait     time.Duration
+	}{
+		{name: "network unknown", feedback: service.USTCFeedback{StatusCode: 0}, wait: time.Minute},
+		{name: "429", feedback: service.USTCFeedback{StatusCode: 429}, wait: time.Minute},
+		{name: "explicit retry-after", feedback: service.USTCFeedback{StatusCode: 400, RetryAfter: 90 * time.Second}, wait: 90 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache, _, _ := newUSTCCapacityTestCache(t)
+			ctx := context.Background()
+			limits := service.USTCLimits{RPM: 5}
+			probe, _, err := cache.USTCReserve(ctx, "ambiguous-probe-"+tc.name, limits)
+			require.NoError(t, err)
+			require.NotNil(t, probe)
+			committed, err := cache.USTCCommit(ctx, probe, limits)
+			require.NoError(t, err)
+			require.True(t, committed)
+			receipt, err := cache.rdb.Time(ctx).Result()
+			require.NoError(t, err)
+			require.NoError(t, cache.USTCObserve(ctx, probe, tc.feedback))
+
+			capacity, err := cache.USTCRead(ctx, "ambiguous-probe-"+tc.name, limits)
+			require.NoError(t, err)
+			require.Equal(t, "sync_wait", capacity.State)
+			require.Equal(t, 1, capacity.Used)
+			require.GreaterOrEqual(t, capacity.ResetAt.UnixMilli(), receipt.Add(tc.wait).UnixMilli())
+			blocked, _, err := cache.USTCReserve(ctx, "ambiguous-probe-"+tc.name, limits)
+			require.NoError(t, err)
+			require.Nil(t, blocked)
+			require.NoError(t, cache.USTCRelease(ctx, probe))
+		})
+	}
 }

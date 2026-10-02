@@ -41,11 +41,15 @@ func TestListSchedulableCapacityByGroupIDsStoresOnlyUSTCScopeHash(t *testing.T) 
 			int64(7), int64(11), service.PlatformOpenAI, service.AccountTypeAPIKey, 10,
 			`{"upstream_userinfo_limits_known":true}`, `{"base_url":"https://api.llm.ustc.edu.cn","api_key":"`+apiKey+`"}`,
 			nil, nil, "",
+		).AddRow(
+			int64(7), int64(12), service.PlatformOpenAI, service.AccountTypeUpstream, 10,
+			`{"upstream_userinfo_limits_known":true}`, `{"base_url":"https://api.llm.ustc.edu.cn","api_key":"upstream-key"}`,
+			nil, nil, "",
 		))
 
 	rows, err := repo.ListSchedulableCapacityByGroupIDs(context.Background(), []int64{7})
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
+	require.Len(t, rows, 2)
 	require.Equal(t, service.PlatformOpenAI, rows[0].Platform)
 	require.Equal(t, service.AccountTypeAPIKey, rows[0].Type)
 	require.Equal(t, service.USTCKeyScope(&service.Account{
@@ -57,6 +61,7 @@ func TestListSchedulableCapacityByGroupIDsStoresOnlyUSTCScopeHash(t *testing.T) 
 		},
 		Extra: map[string]any{"upstream_userinfo_limits_known": true},
 	}), rows[0].USTCScope)
+	require.Empty(t, rows[1].USTCScope, "upstream quota accounts do not get automated API-key capacity scope")
 	serialized, err := json.Marshal(rows[0])
 	require.NoError(t, err)
 	require.NotContains(t, string(serialized), apiKey)
