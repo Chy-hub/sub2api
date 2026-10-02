@@ -240,8 +240,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, parsed.Stream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireUSTCVetoed {
-			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
-				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
+			if !h.retryUSTCAdmission(c, failedAccountIDs, account.ID, &ustcAdmissionVetoCount, streamStarted, reqLog) {
 				return
 			}
 			continue

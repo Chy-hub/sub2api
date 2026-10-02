@@ -63,6 +63,22 @@ describe('AccountCapacityCell USTC capacity', () => {
     wrapper.unmount()
   })
 
+  it('keeps USTC quota upstream accounts on local capacity display', () => {
+    const account = {
+      id: 8,
+      platform: 'openai',
+      type: 'upstream',
+      credentials: { base_url: 'https://api.llm.ustc.edu.cn/v1' },
+      concurrency: 3,
+      current_concurrency: 1
+    } as any
+    const wrapper = mount(AccountCapacityCell, { props: { account } })
+
+    expect(wrapper.find('[data-testid="ustc-capacity"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="local-concurrency-capacity"]').text()).toContain('1')
+    wrapper.unmount()
+  })
+
   it.each([
     [20, 0, 'rpm_wait'],
     [2, 20, 'parallel_wait']
@@ -95,7 +111,7 @@ describe('AccountCapacityCell USTC capacity', () => {
       in_flight: 2,
       available: 0,
       state: 'unknown'
-    }, '7/—']
+    }, '—/—']
   ])('shows unknown limits for %s', (_label, ustc_capacity, expected) => {
     const account = {
       id: 3,
@@ -110,6 +126,34 @@ describe('AccountCapacityCell USTC capacity', () => {
 
     expect(capacity.text().replace(/\s/g, '')).toContain(expected)
     expect(capacity.text()).not.toContain('∞')
+    wrapper.unmount()
+  })
+
+  it('shows unknown Redis counts as dashes while retaining known limits', () => {
+    const account = {
+      id: 9,
+      platform: 'openai',
+      type: 'apikey',
+      credentials: { base_url: 'https://api.llm.ustc.edu.cn/v1' },
+      concurrency: 1,
+      ustc_capacity: {
+        rpm_limit: 20,
+        parallel_limit: 3,
+        limits_known: true,
+        counts_known: false,
+        used: 0,
+        in_flight: 0,
+        available: 0,
+        state: 'unknown'
+      }
+    } as any
+    const wrapper = mount(AccountCapacityCell, { props: { account } })
+    const capacity = wrapper.get('[data-testid="ustc-capacity"]')
+
+    expect(capacity.text().replace(/\s/g, '')).toContain('—/20')
+    expect(capacity.text().replace(/\s/g, '')).toContain('—/3')
+    expect(wrapper.get('[data-testid="ustc-concurrency-capacity"]').classes().join(' ')).toContain('bg-gray-100')
+    expect(wrapper.get('[data-testid="ustc-rpm-capacity"]').classes().join(' ')).toContain('bg-gray-100')
     wrapper.unmount()
   })
 

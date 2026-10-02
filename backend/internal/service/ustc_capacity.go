@@ -7,6 +7,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // USTCCapacity observes one physical upstream Key. Null limits mean unlimited
@@ -14,6 +16,8 @@ import (
 type USTCCapacity struct {
 	RPMLimit      *int      `json:"rpm_limit"`
 	ParallelLimit *int      `json:"parallel_limit"`
+	LimitsKnown   bool      `json:"limits_known"`
+	CountsKnown   bool      `json:"counts_known"`
 	Used          int       `json:"used"`
 	InFlight      int       `json:"in_flight"`
 	Available     int       `json:"available"`
@@ -58,7 +62,7 @@ type USTCCapacityCache interface {
 }
 
 func USTCKeyScope(account *Account) string {
-	if !isDefaultUSTCAccount(account) {
+	if !IsUSTCCapacityAccount(account) {
 		return ""
 	}
 	key := strings.TrimSpace(account.GetCredential("api_key"))
@@ -67,6 +71,13 @@ func USTCKeyScope(account *Account) string {
 	}
 	fingerprint := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(fingerprint[:])
+}
+
+// IsUSTCCapacityAccount is the narrower USTC Key-capacity policy. UserInfo
+// quota observations can also apply to upstream accounts, but automated RPM
+// and concurrency admission is only for OpenAI API-key accounts.
+func IsUSTCCapacityAccount(account *Account) bool {
+	return account != nil && account.IsOpenAI() && account.Type == AccountTypeAPIKey && account.SupportsUserInfoQuota()
 }
 
 func USTCAccountLimits(account *Account) (USTCLimits, bool) {
@@ -97,25 +108,108 @@ func USTCAccountLimits(account *Account) (USTCLimits, bool) {
 	return USTCLimits{RPM: rpm, Parallel: parallel}, rpmKnown && parallelKnown
 }
 
-func USTCAccountCapacity(ctx context.Context, cache RPMCache, account *Account) *USTCCapacity {
-	if !isDefaultUSTCAccount(account) {
-		return nil
-	}
-	limits, known := USTCAccountLimits(account)
-	capacity := USTCCapacity{State: "unknown"}
-	if !known {
-		return &capacity
-	}
-	if limits.RPM > 0 {
+type ustcCapacityDisplayScope struct {
+	limits     USTCLimits
+	known      bool
+	accountIDs []int64
+}
+
+func ustcCapacityWithLimits(limits USTCLimits, known bool) *USTCCapacity {
+	capacity := &USTCCapacity{State: "unknown", LimitsKnown: known}
+	if known && limits.RPM > 0 {
 		capacity.RPMLimit = &limits.RPM
 	}
-	if limits.Parallel > 0 {
+	if known && limits.Parallel > 0 {
 		capacity.ParallelLimit = &limits.Parallel
 	}
-	if store, ok := cache.(USTCCapacityCache); ok {
-		if observed, err := store.USTCRead(ctx, USTCKeyScope(account), limits); err == nil {
-			capacity = observed
+	return capacity
+}
+
+// USTCAccountCapacitiesBatch reads one snapshot per physical Key, with bounded
+// parallelism so account lists do not serialize a Redis round trip per row.
+// The runtime cache interface remains read-only and unchanged.
+func USTCAccountCapacitiesBatch(ctx context.Context, cache RPMCache, accounts []Account) map[int64]*USTCCapacity {
+	capacities := make(map[int64]*USTCCapacity)
+	scopes := make(map[string]ustcCapacityDisplayScope)
+	scopeOrder := make([]string, 0)
+	for i := range accounts {
+		account := &accounts[i]
+		if !IsUSTCCapacityAccount(account) {
+			continue
+		}
+		limits, known := USTCAccountLimits(account)
+		capacities[account.ID] = ustcCapacityWithLimits(limits, known)
+		scope := USTCKeyScope(account)
+		if scope == "" {
+			continue
+		}
+		state, exists := scopes[scope]
+		if !exists {
+			state = ustcCapacityDisplayScope{limits: limits, known: known}
+			scopeOrder = append(scopeOrder, scope)
+		} else if !state.known && known {
+			state.limits = limits
+			state.known = true
+		}
+		state.accountIDs = append(state.accountIDs, account.ID)
+		scopes[scope] = state
+	}
+	for _, state := range scopes {
+		capacity := ustcCapacityWithLimits(state.limits, state.known)
+		for _, accountID := range state.accountIDs {
+			copy := *capacity
+			capacities[accountID] = &copy
 		}
 	}
-	return &capacity
+	store, ok := cache.(USTCCapacityCache)
+	if !ok {
+		return capacities
+	}
+
+	type readResult struct {
+		capacity USTCCapacity
+		ok       bool
+	}
+	readResults := make([]readResult, len(scopeOrder))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i, scope := range scopeOrder {
+		state := scopes[scope]
+		if !state.known {
+			continue
+		}
+		i, scope := i, scope
+		g.Go(func() error {
+			observed, err := store.USTCRead(gctx, scope, state.limits)
+			if err == nil {
+				observed.LimitsKnown = true
+				observed.CountsKnown = true
+				readResults[i] = readResult{capacity: observed, ok: true}
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	for i, scope := range scopeOrder {
+		if !readResults[i].ok {
+			continue
+		}
+		capacity := readResults[i].capacity
+		for _, accountID := range scopes[scope].accountIDs {
+			copy := capacity
+			capacities[accountID] = &copy
+		}
+	}
+	return capacities
+}
+
+func USTCAccountCapacity(ctx context.Context, cache RPMCache, account *Account) *USTCCapacity {
+	if !IsUSTCCapacityAccount(account) {
+		return nil
+	}
+	capacity, ok := USTCAccountCapacitiesBatch(ctx, cache, []Account{*account})[account.ID]
+	if !ok {
+		return ustcCapacityWithLimits(USTCLimits{}, false)
+	}
+	return capacity
 }

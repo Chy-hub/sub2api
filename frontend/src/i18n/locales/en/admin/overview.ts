@@ -900,6 +900,11 @@ export default {
       accountsRateLimited: 'Limited:',
       accountsTotal: 'Total:',
       accountsUnit: 'accounts',
+      capacityIncomplete: {
+        knownSubtotal: 'Showing the known capacity subtotal.',
+        limitsUnknown: 'Limits are not yet known for {count} USTC key(s).',
+        countersUnavailable: 'Live counters are unavailable for {count} USTC key(s).'
+      },
       rateAndAccounts: '{rate}x rate · {count} accounts',
       accountsCount: '{count} accounts',
       rateLabel: 'rate',

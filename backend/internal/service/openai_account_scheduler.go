@@ -1194,6 +1194,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 				continue
 			}
 			candidateCtx = context.WithValue(ctx, ustcQuotaAdmissionKey{}, true)
+			candidateCtx = context.WithValue(candidateCtx, ustcQuotaBackgroundAdmissionKey{}, true)
 		}
 		if candidate.loadKnown && candidate.account.Concurrency > 0 &&
 			candidate.loadInfo.CurrentConcurrency >= candidate.account.Concurrency {
@@ -2347,14 +2348,20 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	decision := OpenAIAccountScheduleDecision{}
+	// Pricing applies before every selection path, including the USTC-only
+	// fast path and previous-response bindings.
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		slog.Warn("channel pricing restriction blocked request", "group_id", derefGroupID(groupID), "model", requestedModel)
+		return nil, decision, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+	}
 	preserveGuardianParentBinding := preserveOpenAIGuardianParentBinding(ctx, sessionHash)
 	guardianParentAccountID := int64(0)
 	if strings.TrimSpace(previousResponseID) == "" {
 		guardianParentAccountID = s.resolveOpenAIGuardianParentAccountID(ctx, groupID)
 	}
 	scheduler := s.getOpenAIAccountScheduler(ctx)
-	if platform == PlatformOpenAI && (requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE) && requiredImageCapability == "" {
-		if selection, handled, err := s.selectUSTCPreviousResponse(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability); handled {
+	if platform == PlatformOpenAI {
+		if selection, handled, err := s.selectUSTCPreviousResponse(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport); handled {
 			decision.Layer = openAIAccountScheduleLayerPreviousResponse
 			if selection != nil && selection.Account != nil {
 				decision.StickyPreviousHit = true
@@ -2363,9 +2370,15 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 			}
 			return selection, decision, err
 		}
+		ustcAdmissionTransport := requiredTransport == OpenAIUpstreamTransportAny ||
+			requiredTransport == OpenAIUpstreamTransportHTTPSSE ||
+			requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress
 		// USTC-only groups use the same admission/fairness regardless of the
-		// optional OpenAI experimental scheduler. Mixed groups keep its policy.
-		if scheduler != nil && strings.TrimSpace(previousResponseID) == "" && guardianParentAccountID == 0 {
+		// optional OpenAI experimental scheduler. WS ingress is an HTTP bridge
+		// for USTC and therefore shares this admission path. Mixed groups keep
+		// their regular scheduling policy; the final USTC gate still runs before
+		// the HTTP/SSE upstream request.
+		if ustcAdmissionTransport && requiredImageCapability == "" && (scheduler != nil || requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress) && strings.TrimSpace(previousResponseID) == "" && guardianParentAccountID == 0 {
 			accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
 			if err != nil {
 				return nil, decision, err
@@ -2379,7 +2392,17 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 				}
 			}
 			if onlyUSTC {
-				selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx))
+				eligibleAccounts := make([]Account, 0, len(accounts))
+				for i := range accounts {
+					if requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress && !s.isOpenAIAccountTransportCompatible(&accounts[i], requiredTransport) {
+						continue
+					}
+					eligibleAccounts = append(eligibleAccounts, accounts[i])
+				}
+				if len(eligibleAccounts) == 0 {
+					return nil, decision, ErrNoAvailableAccounts
+				}
+				selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, eligibleAccounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx))
 				decision.Layer = openAIAccountScheduleLayerLoadBalance
 				if selection != nil {
 					applyLegacySelectionDecision(&decision, selection)
@@ -2400,9 +2423,6 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 			return selection, decision, nil
 		}
 		if guardianParentAccountID > 0 {
-			if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
-				return nil, decision, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
-			}
 			fallbackScheduler := &defaultOpenAIAccountScheduler{service: s, stats: newOpenAIAccountRuntimeStats()}
 			selection, _, err := fallbackScheduler.selectBySessionHash(ctx, OpenAIAccountScheduleRequest{
 				GroupID:                 groupID,
@@ -2487,13 +2507,6 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		}
 	}
 
-	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
-		slog.Warn("channel pricing restriction blocked request",
-			"group_id", derefGroupID(groupID),
-			"model", requestedModel)
-		return nil, decision, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
-	}
-
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && accountID > 0 {
@@ -2558,7 +2571,8 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 	}
 	if requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress {
 		if s.cfg == nil || !s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
-			return s.getOpenAIWSProtocolResolver().Resolve(account).Transport == OpenAIUpstreamTransportResponsesWebsocketV2
+			decision := s.getOpenAIWSProtocolResolver().Resolve(account)
+			return decision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 || decision.Reason == "ustc_http_bridge"
 		}
 		mode := account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
 		switch mode {

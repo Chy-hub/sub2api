@@ -239,8 +239,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireUSTCVetoed {
-			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
-				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
+			if !h.retryUSTCAdmission(c, failedAccountIDs, account.ID, &ustcAdmissionVetoCount, streamStarted, reqLog) {
 				return
 			}
 			continue
