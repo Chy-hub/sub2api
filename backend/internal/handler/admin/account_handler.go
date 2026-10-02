@@ -408,11 +408,11 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 				}
 			}
 		}
-	}
 
-	if account.IsRPMEligible() && h.rpmCache != nil && account.GetBaseRPM() > 0 {
-		if rpm, err := h.rpmCache.GetRPM(ctx, account.ID); err == nil {
-			item.CurrentRPM = &rpm
+		if h.rpmCache != nil && account.GetBaseRPM() > 0 {
+			if rpm, err := h.rpmCache.GetRPM(ctx, account.ID); err == nil {
+				item.CurrentRPM = &rpm
+			}
 		}
 	}
 
@@ -758,9 +758,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 				sessionLimitAccountIDs = append(sessionLimitAccountIDs, acc.ID)
 				sessionIdleTimeouts[acc.ID] = time.Duration(acc.GetSessionIdleTimeoutMinutes()) * time.Minute
 			}
-		}
-		if acc.IsRPMEligible() && acc.GetBaseRPM() > 0 {
-			rpmAccountIDs = append(rpmAccountIDs, acc.ID)
+			if acc.GetBaseRPM() > 0 {
+				rpmAccountIDs = append(rpmAccountIDs, acc.ID)
+			}
 		}
 	}
 

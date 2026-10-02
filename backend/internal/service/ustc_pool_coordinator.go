@@ -23,6 +23,7 @@ type ustcPoolJob struct {
 	excluded               map[int64]struct{}
 	compact, preferLowRate bool
 	capability             OpenAIEndpointCapability
+	transport              OpenAIUpstreamTransport
 	deadline               time.Time
 	lastError              error
 	done                   bool
@@ -52,7 +53,7 @@ func (s *OpenAIGatewayService) notifyUSTCCapacity() {
 	}
 }
 
-func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccountWithWait(ctx context.Context, groupID *int64, accounts []Account, sessionHash, model string, excluded map[int64]struct{}, compact bool, capability OpenAIEndpointCapability, preferLowRate bool) (*AccountSelectionResult, error) {
+func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccountWithWait(ctx context.Context, groupID *int64, accounts []Account, sessionHash, model string, excluded map[int64]struct{}, compact bool, capability OpenAIEndpointCapability, preferLowRate bool, requiredTransport OpenAIUpstreamTransport) (*AccountSelectionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -61,14 +62,14 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccountWithWait(ctx cont
 	if maximum <= 0 {
 		maximum = 1
 	}
-	allowed, release := s.acquireDefaultUSTCPoolWait(ctx, groupID, maximum, maxUSTCDuration(time.Second, cfg.FallbackWaitTimeout)+2*time.Second)
+	allowed, release := s.acquireDefaultUSTCPoolWait(ctx, groupID, maximum, max(time.Second, cfg.FallbackWaitTimeout)+2*time.Second)
 	if !allowed {
 		return nil, &ustcPoolCapacityError{cause: noAvailableOpenAISelectionError(model, false, "ustc_pool_wait_full"), retryAfter: time.Second}
 	}
 	if release != nil {
 		defer release()
 	}
-	job := &ustcPoolJob{ctx: ctx, groupID: groupID, accounts: cloneUSTCPool(accounts), sessionHash: sessionHash, model: model, excluded: cloneExcludedAccountIDs(excluded), compact: compact, capability: capability, preferLowRate: preferLowRate, result: make(chan ustcPoolResult, 1)}
+	job := &ustcPoolJob{ctx: ctx, groupID: groupID, accounts: cloneUSTCPool(accounts), sessionHash: sessionHash, model: model, excluded: cloneExcludedAccountIDs(excluded), compact: compact, capability: capability, preferLowRate: preferLowRate, transport: requiredTransport, result: make(chan ustcPoolResult, 1)}
 	state := s.defaultUSTCPoolState()
 	scope, _, _ := s.defaultUSTCPoolScope(groupID)
 	state.mu.Lock()
@@ -145,7 +146,7 @@ func (c *ustcPoolCoordinator) run() {
 			ctx := context.WithValue(job.ctx, ustcCapacityReadsKey{}, reads)
 			ctx = context.WithValue(ctx, ustcAccountReadsKey{}, accountReads)
 			job.accounts = c.service.supplementDefaultUSTCPool(ctx, job.groupID, job.accounts)
-			selection, err := c.service.selectBalancedDefaultUSTCAccount(ctx, job.groupID, job.accounts, job.sessionHash, job.model, job.excluded, job.compact, job.capability, job.preferLowRate)
+			selection, err := c.service.selectBalancedDefaultUSTCAccount(ctx, job.groupID, job.accounts, job.sessionHash, job.model, job.excluded, job.compact, job.capability, job.preferLowRate, job.transport)
 			var capacity *ustcPoolCapacityError
 			if !errors.As(err, &capacity) {
 				finish(selection, err)
@@ -170,7 +171,7 @@ func (c *ustcPoolCoordinator) run() {
 			if capacity.mutable {
 				delay = min(delay, time.Second)
 			}
-			pause = min(pause, maxUSTCDuration(time.Millisecond, min(delay, remaining)))
+			pause = min(pause, max(time.Millisecond, min(delay, remaining)))
 		}
 		c.state.mu.Lock()
 		pending := c.jobs[:0]

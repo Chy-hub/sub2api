@@ -409,7 +409,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
-			compatible, _ := s.isAccountRequestCompatibleReason(ctx, selection.Account, req, true)
+			compatible, _ := s.isAccountRequestCompatibleReason(ctx, selection.Account, req)
 			hasGroupMetadata := len(selection.Account.GroupIDs) > 0 || len(selection.Account.AccountGroups) > 0
 			groupCompatible := !hasGroupMetadata || openAIStickyAccountMatchesGroup(selection.Account, req.GroupID)
 			if hasGroupMetadata && s.service != nil {
@@ -532,7 +532,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		clearBinding()
 		return nil, false, nil
 	}
-	if !s.isAccountRequestCompatibleSticky(ctx, account, req) {
+	if !s.isAccountRequestCompatible(ctx, account, req) {
 		return nil, false, nil
 	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -540,7 +540,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
-	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) || !s.isAccountRequestCompatibleSticky(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) || !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		clearBinding()
 		return nil, false, nil
 	}
@@ -1479,7 +1479,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			filterStats.exclude("privacy_not_set")
 			continue
 		}
-		if compatible, reason := s.isAccountRequestCompatibleReason(ctx, account, req, false); !compatible {
+		if compatible, reason := s.isAccountRequestCompatibleReason(ctx, account, req); !compatible {
 			filterStats.exclude(reason)
 			continue
 		}
@@ -1775,12 +1775,7 @@ func (s *defaultOpenAIAccountScheduler) lookupShadowParentAccount(ctx context.Co
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) bool {
-	compatible, _ := s.isAccountRequestCompatibleReason(ctx, account, req, false)
-	return compatible
-}
-
-func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleSticky(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) bool {
-	compatible, _ := s.isAccountRequestCompatibleReason(ctx, account, req, true)
+	compatible, _ := s.isAccountRequestCompatibleReason(ctx, account, req)
 	return compatible
 }
 
@@ -1788,7 +1783,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleSticky(ctx con
 // request, and when it cannot, names the veto point. The reason feeds
 // openAISelectionFilterStats so that "no available accounts" errors state why
 // each candidate was dropped instead of failing silently (#4599).
-func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest, isSticky bool) (bool, string) {
+func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) (bool, string) {
 	if account == nil {
 		return false, "account_nil"
 	}
@@ -2304,7 +2299,7 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		RequireCompact:          requireCompact,
 		ExcludedIDs:             excludedIDs,
 		RequirePrivacySet:       s.openAIGroupRequiresPrivacySet(ctx, groupID),
-	}, true)
+	})
 	if !s.openAIAccountMatchesSchedulingGroup(account, groupID) || !compatible || !scheduler.isAccountTransportCompatible(account, requiredTransport) {
 		if selection.ReleaseFunc != nil {
 			selection.ReleaseFunc()
@@ -2392,17 +2387,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 				}
 			}
 			if onlyUSTC {
-				eligibleAccounts := make([]Account, 0, len(accounts))
-				for i := range accounts {
-					if requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress && !s.isOpenAIAccountTransportCompatible(&accounts[i], requiredTransport) {
-						continue
-					}
-					eligibleAccounts = append(eligibleAccounts, accounts[i])
-				}
-				if len(eligibleAccounts) == 0 {
-					return nil, decision, ErrNoAvailableAccounts
-				}
-				selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, eligibleAccounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx))
+				selection, err := s.selectBalancedDefaultUSTCAccountWithWait(ctx, groupID, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx), requiredTransport)
 				decision.Layer = openAIAccountScheduleLayerLoadBalance
 				if selection != nil {
 					applyLegacySelectionDecision(&decision, selection)
