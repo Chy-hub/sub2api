@@ -21,6 +21,9 @@ const (
 )
 
 var _ service.USTCCapacityCache = (*RPMCacheImpl)(nil)
+var _ interface {
+	USTCRenewBatch(context.Context, []*service.USTCTicket) error
+} = (*RPMCacheImpl)(nil)
 
 // The metadata, active leases, and pending RPM reservations share a Redis
 // Cluster hash tag. Every transition uses Redis TIME and one Lua invocation.
@@ -51,6 +54,7 @@ local used = tonumber(redis.call('HGET', meta, 'used') or '0')
 local deadline = tonumber(redis.call('HGET', meta, 'deadline') or '0')
 local waited = tonumber(redis.call('HGET', meta, 'waited') or '0')
 local active = tonumber(redis.call('HGET', meta, 'active') or '0')
+local learned_cap = tonumber(redis.call('HGET', meta, 'learned_cap') or '0')
 
 -- Expired leases release parallel and pending capacity. A sent RPM remains in
 -- used; an unanswered probe instead enters a conservative cooldown.
@@ -68,7 +72,7 @@ for _, expired_id in ipairs(expired) do
   end
   -- Keep send/feedback markers for a late response; only the active lease and
   -- pending reservation expire here.
-  redis.call('HDEL', meta, 'seq:' .. expired_id)
+  redis.call('HDEL', meta, 'seq:' .. expired_id, 'r:' .. expired_id, 'p:' .. expired_id, 'cold:' .. expired_id)
 end
 
 -- Reading a cold key is observational. Return the virtual first-probe state
@@ -129,26 +133,11 @@ if rpm_arg >= 0 and parallel_arg >= 0 then
     redis.call('HDEL', meta, 'probe', 'needs_anchor')
     redis.call('HDEL', meta, 'rollover_from')
     redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
-    redis.call('HSET', meta, 'epoch', epoch, 'used', used, 'state', state, 'waited', waited, 'active', active, 'deadline', deadline, 'cap', rpm_arg)
-  elseif rpm_arg == 0 and state ~= 'sync_wait' then
-    state = 'ready'
-    active = 0
-    deadline = 0
-    used = 0
-    epoch = math.max(epoch, 1)
-    redis.call('HDEL', meta, 'probe', 'needs_anchor')
-    redis.call('HDEL', meta, 'rollover_from')
-    redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
-    redis.call('HSET', meta, 'state', state, 'epoch', epoch, 'used', used, 'active', active, 'deadline', deadline, 'cap', 0)
+    local next_cap = rpm_arg
+    if learned_cap > 0 then next_cap = math.min(next_cap, learned_cap) end
+    redis.call('HSET', meta, 'epoch', epoch, 'used', used, 'state', state, 'waited', waited, 'active', active, 'deadline', deadline, 'cap', next_cap)
   end
   redis.call('HSET', meta, 'rpm', rpm_arg, 'parallel', parallel_arg)
-  local old_cap = tonumber(redis.call('HGET', meta, 'cap') or '-1')
-  if old_cap < 0 then
-    redis.call('HSET', meta, 'cap', rpm_arg)
-  elseif rpm_arg > 0 then
-    local effective = old_cap > 0 and math.min(old_cap, rpm_arg) or rpm_arg
-    redis.call('HSET', meta, 'cap', effective)
-  end
 elseif not state then
   state = 'verify_one'
   epoch = math.max(epoch, 1)
@@ -164,6 +153,26 @@ active = tonumber(redis.call('HGET', meta, 'active') or tostring(active))
 local rpm = tonumber(redis.call('HGET', meta, 'rpm') or '0')
 local cap = tonumber(redis.call('HGET', meta, 'cap') or tostring(rpm))
 local parallel = tonumber(redis.call('HGET', meta, 'parallel') or '0')
+local function effective_cap(metadata_limit)
+  metadata_limit = math.max(0, metadata_limit)
+  if learned_cap > 0 then
+    return metadata_limit > 0 and math.min(metadata_limit, learned_cap) or learned_cap
+  end
+  return metadata_limit
+end
+
+local old_cap = tonumber(redis.call('HGET', meta, 'cap') or '-1')
+if old_cap < 0 then
+  cap = effective_cap(rpm)
+  redis.call('HSET', meta, 'cap', cap)
+elseif rpm > 0 then
+  cap = old_cap > 0 and math.min(old_cap, rpm) or rpm
+  if learned_cap > 0 then cap = math.min(cap, learned_cap) end
+  redis.call('HSET', meta, 'cap', cap)
+elseif learned_cap > 0 then
+  cap = old_cap > 0 and math.min(old_cap, learned_cap) or learned_cap
+  redis.call('HSET', meta, 'cap', cap)
+end
 
 if state ~= 'ready' and state ~= 'sync_wait' and state ~= 'verify_one' then
   state = 'verify_one'
@@ -172,7 +181,7 @@ if state ~= 'ready' and state ~= 'sync_wait' and state ~= 'verify_one' then
   deadline = 0
   waited = 0
   active = 0
-  cap = math.max(0, rpm)
+  cap = effective_cap(rpm)
   redis.call('HDEL', meta, 'probe', 'rollover_from', 'needs_anchor')
   redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
   redis.call('HSET', meta, 'state', state, 'epoch', epoch, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'cap', cap)
@@ -194,6 +203,7 @@ if state == 'ready' and tonumber(redis.call('HGET', meta, 'needs_anchor') or '-1
     deadline = math.max(deadline, now + 60000)
     active = 1
     state = 'sync_wait'
+    waited = 0
     redis.call('HSET', meta, 'state', state, 'deadline', deadline, 'active', active)
   end
 end
@@ -212,10 +222,39 @@ if state == 'ready' and active == 1 and deadline > 0 and now >= deadline then
     deadline = 0
     waited = 0
     active = 0
-    cap = math.max(0, rpm)
+    cap = effective_cap(rpm)
     redis.call('HDEL', meta, 'probe', 'needs_anchor')
     redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
     redis.call('HSET', meta, 'state', state, 'epoch', epoch, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'rollover_from', prior_epoch, 'cap', cap)
+  end
+elseif state == 'verify_one' and active == 1 and deadline > 0 and now >= deadline then
+  local probe_id = redis.call('HGET', meta, 'probe')
+  if not probe_id then
+    epoch = epoch + 1
+    used = 0
+    deadline = 0
+    waited = 0
+    active = 0
+    cap = effective_cap(rpm)
+    redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
+    redis.call('HSET', meta, 'epoch', epoch, 'state', state, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'cap', cap)
+  elseif redis.call('SISMEMBER', pending, probe_id) == 1 then
+    -- A probe reserved before the window boundary has not been sent yet. Move
+    -- its reservation into the new window without losing its live lease.
+    local prior_epoch = epoch
+    epoch = epoch + 1
+    used = 0
+    deadline = 0
+    waited = 0
+    active = 0
+    cap = effective_cap(rpm)
+    redis.call('HSET', meta, 'r:' .. probe_id, epoch, 'rollover_from', prior_epoch, 'epoch', epoch, 'state', state, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'cap', cap)
+    redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
+  else
+    -- A committed probe still has no response. Keep its accounting until its
+    -- response arrives or its lease expires and starts a conservative wait.
+    deadline = 0
+    redis.call('HSET', meta, 'deadline', deadline)
   end
 elseif state == 'sync_wait' and deadline > 0 and now >= deadline then
   state = 'verify_one'
@@ -224,7 +263,7 @@ elseif state == 'sync_wait' and deadline > 0 and now >= deadline then
   deadline = 0
   waited = 1
   active = 0
-  cap = math.max(0, rpm)
+  cap = effective_cap(rpm)
   redis.call('HDEL', meta, 'probe')
   redis.call('HDEL', meta, 'needs_anchor')
   redis.call('HDEL', meta, 'rollover_from')
@@ -261,13 +300,33 @@ local function reply(code, probe, seq)
   if redis.call('EXISTS', leases) == 1 then redis.call('PEXPIRE', leases, 86400000) end
   if redis.call('EXISTS', pending) == 1 then redis.call('PEXPIRE', pending, 86400000) end
   if redis.call('EXISTS', commits) == 1 then redis.call('PEXPIRE', commits, 86400000) end
-  local cold = (probe == 1 and waited == 0) and 1 or 0
+  local cold = tonumber(redis.call('HGET', meta, 'cold:' .. id) or '0')
+  if cold == 0 and probe == 1 and redis.call('HGET', meta, 'seen') ~= '1' then cold = 1 end
   return {code or 0, epoch, probe or 0, used, inflight, pending_count, available_count(), deadline, state, cap, parallel, seq or 0, cold}
 end
 
 if op == 'read' then
   -- read-only apart from expiry cleanup, lease cleanup, and authoritative limits.
 elseif op == 'reserve' then
+  local held = redis.call('ZSCORE', leases, id)
+  local saved_seq = tonumber(redis.call('HGET', meta, 'seq:' .. id) or '0')
+  if held and saved_seq > 0 then
+    local is_pending = redis.call('SISMEMBER', pending, id)
+    local committed_epoch = tonumber(redis.call('HGET', meta, 'c:' .. id) or '-1')
+    local refunded = redis.call('HGET', meta, 'refunded:' .. id) == '1'
+    local saved_epoch = tonumber(redis.call('HGET', meta, 'r:' .. id) or tostring(epoch))
+    if is_pending == 1 or (committed_epoch >= 0 and not refunded) then
+      local saved_probe = tonumber(redis.call('HGET', meta, 'p:' .. id) or '0')
+      local saved_cold = tonumber(redis.call('HGET', meta, 'cold:' .. id) or '0')
+      local result = reply(1, saved_probe, saved_seq)
+      result[2] = is_pending == 1 and saved_epoch or committed_epoch
+      result[3] = saved_probe
+      result[12] = saved_seq
+      result[13] = saved_cold
+      return result
+    end
+    return reply(0, 0, saved_seq)
+  end
   if state == 'sync_wait' then
     -- wait for the cooldown, then exactly one request verifies recovery
   elseif parallel > 0 and inflight >= parallel then
@@ -275,6 +334,9 @@ elseif op == 'reserve' then
   elseif cap > 0 and used + pending_count >= cap then
     -- pending reservations are capacity too
   else
+    -- If an expired ID is deliberately reused, old late-response markers no
+    -- longer describe this reservation generation.
+    redis.call('HDEL', meta, 'c:' .. id, 'cs:' .. id, 'first:' .. id, 'refunded:' .. id, 'o:' .. id)
     local probe = 0
     if state == 'verify_one' then
       if redis.call('HGET', meta, 'probe') then
@@ -285,7 +347,8 @@ elseif op == 'reserve' then
     local seq = redis.call('HINCRBY', meta, 'seq', 1)
     redis.call('ZADD', leases, now + lease_ms, id)
     redis.call('SADD', pending, id)
-    redis.call('HSET', meta, 'seq:' .. id, seq)
+    local cold = (probe == 1 and redis.call('HGET', meta, 'seen') ~= '1') and 1 or 0
+    redis.call('HSET', meta, 'seq:' .. id, seq, 'r:' .. id, epoch, 'p:' .. id, probe, 'cold:' .. id, cold)
     if probe == 1 then redis.call('HSET', meta, 'probe', id) end
     inflight = inflight + 1
     pending_count = pending_count + 1
@@ -294,9 +357,19 @@ elseif op == 'reserve' then
 elseif op == 'commit' then
   local seq = tonumber(redis.call('HGET', meta, 'seq:' .. id) or '0')
   local held = redis.call('ZSCORE', leases, id)
-  local is_pending = redis.call('SISMEMBER', pending, id)
+  local is_pending = redis.call('SISMEMBER', pending, id) == 1
   local rollover_from = tonumber(redis.call('HGET', meta, 'rollover_from') or '-1')
-  local valid_epoch = ticket_epoch == epoch or (state == 'ready' and ticket_probe == 0 and ticket_epoch == rollover_from)
+  local valid_epoch = ticket_epoch == epoch or (state == 'ready' and ticket_probe == 0 and ticket_epoch == rollover_from) or (state == 'verify_one' and ticket_probe == 1 and ticket_epoch == rollover_from)
+  local committed_epoch = tonumber(redis.call('HGET', meta, 'c:' .. id) or '-1')
+  local saved_probe = tonumber(redis.call('HGET', meta, 'p:' .. id) or '-1')
+  local reserved_epoch = tonumber(redis.call('HGET', meta, 'r:' .. id) or '-1')
+  local refunded = redis.call('HGET', meta, 'refunded:' .. id) == '1'
+  if held and committed_epoch >= 0 and not refunded and saved_probe == ticket_probe and (ticket_epoch == committed_epoch or ticket_epoch == reserved_epoch) then
+    local result = reply(1, ticket_probe, seq)
+    result[2] = committed_epoch
+    result[13] = tonumber(redis.call('HGET', meta, 'cold:' .. id) or tostring(result[13]))
+    return result
+  end
   local valid = held and is_pending and valid_epoch
   if ticket_probe == 1 then
     valid = valid and state == 'verify_one' and redis.call('HGET', meta, 'probe') == id
@@ -322,7 +395,7 @@ elseif op == 'commit' then
         redis.call('HSET', meta, 'first:' .. id, '1')
       end
     end
-    redis.call('HSET', meta, 'used', used, 'active', active, 'deadline', deadline, 'c:' .. id, epoch, 'cs:' .. id, commit_seq)
+    redis.call('HSET', meta, 'used', used, 'active', active, 'deadline', deadline, 'c:' .. id, epoch, 'cs:' .. id, commit_seq, 'seen', '1')
     if not state then state = 'ready' end
     redis.call('HSET', meta, 'state', state)
     return reply(1, ticket_probe, seq)
@@ -342,7 +415,7 @@ elseif op == 'release' then
     end
     redis.call('HDEL', meta, 'probe')
   end
-  redis.call('HDEL', meta, 'c:' .. id, 'seq:' .. id, 'cs:' .. id, 'first:' .. id, 'refunded:' .. id)
+  redis.call('HDEL', meta, 'c:' .. id, 'seq:' .. id, 'r:' .. id, 'p:' .. id, 'cold:' .. id, 'cs:' .. id, 'first:' .. id, 'refunded:' .. id, 'o:' .. id)
 elseif op == 'renew' then
   if redis.call('ZSCORE', leases, id) then
     redis.call('ZADD', leases, now + lease_ms, id)
@@ -350,16 +423,21 @@ elseif op == 'renew' then
   end
   return reply(0, 0, 0)
 elseif op == 'observe' then
+  if redis.call('HGET', meta, 'o:' .. id) == '1' then
+    return reply(1, ticket_probe, tonumber(redis.call('HGET', meta, 'seq:' .. id) or '0'))
+  end
   local committed_epoch = tonumber(redis.call('HGET', meta, 'c:' .. id) or '-1')
   local commit_seq = tonumber(redis.call('HGET', meta, 'cs:' .. id) or '0')
   local current_probe = redis.call('HGET', meta, 'probe') == id
   if committed_epoch == ticket_epoch and ticket_epoch == epoch then
+    redis.call('HSET', meta, 'o:' .. id, '1')
     local first_response = redis.call('HGET', meta, 'first:' .. id) == '1'
     local needs_anchor = tonumber(redis.call('HGET', meta, 'needs_anchor') or '-1') == epoch
     local refundable = status == 403 and refund == 1
     if response_limit > 0 then
       cap = cap > 0 and math.min(cap, response_limit) or response_limit
-      redis.call('HSET', meta, 'cap', cap)
+      learned_cap = learned_cap > 0 and math.min(learned_cap, response_limit) or response_limit
+      redis.call('HSET', meta, 'cap', cap, 'learned_cap', learned_cap)
     end
     if needs_anchor and not refundable then
       if state == 'sync_wait' then
@@ -376,7 +454,7 @@ elseif op == 'observe' then
       redis.call('HSET', meta, 'deadline', deadline)
     end
     if first_response then redis.call('HDEL', meta, 'first:' .. id) end
-    if status == 429 then
+    if status == 429 or status == 0 or retry_ms > 0 then
       if retry_ms <= 0 then retry_ms = 60000 end
       deadline = math.max(deadline, now + retry_ms)
       state = 'sync_wait'
@@ -425,27 +503,30 @@ elseif op == 'observe' then
           waited = 0
         end
         active = 1
+      elseif remaining >= 0 and (response_limit > 0 or rpm > 0) then
+        local observed_limit = response_limit > 0 and response_limit or rpm
+        local later_commits = redis.call('ZCOUNT', commits, '(' .. tostring(commit_seq), '+inf')
+        used = math.max(used, math.max(1, observed_limit - remaining) + later_commits)
+        deadline = math.max(deadline, now + 60000)
+        state = 'ready'
+        active = 1
+        waited = 0
       else
-        if retry_ms <= 0 then retry_ms = 60000 end
-        deadline = math.max(deadline, now + retry_ms)
-        state = 'sync_wait'
+        -- An ordinary upstream error proves the request reached the provider,
+        -- but without quota headers the next real request must verify alone.
+        deadline = math.max(deadline, now + 60000)
+        state = 'verify_one'
         active = 1
         waited = 0
       end
       redis.call('HSET', meta, 'state', state, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active)
-    elseif status >= 200 and status < 300 and remaining >= 0 then
+    elseif remaining >= 0 then
       local observed_limit = response_limit > 0 and response_limit or rpm
       if observed_limit > 0 then
         local later_commits = redis.call('ZCOUNT', commits, '(' .. tostring(commit_seq), '+inf')
         used = math.max(used, math.max(0, observed_limit - remaining) + later_commits)
         redis.call('HSET', meta, 'used', used)
       end
-    elseif status == 0 and ticket_probe == 1 then
-      if retry_ms <= 0 then retry_ms = 60000 end
-      deadline = math.max(deadline, now + retry_ms)
-      state = 'sync_wait'
-      if current_probe then redis.call('HDEL', meta, 'probe') end
-      redis.call('HSET', meta, 'state', state, 'deadline', deadline, 'active', 1)
     end
   end
 elseif op == 'cooldown' then
@@ -489,6 +570,22 @@ elseif op == 'renew' then
 end
 return reply(result_code, result_probe, result_seq)
 `)
+
+// USTC lease renewal stays independent from the capacity state machine. Every
+// pipelined call checks Redis time and the live lease score before extending it.
+const ustcRenewScript = `
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local id = ARGV[1]
+local lease_ms = tonumber(ARGV[2]) or 120000
+local score = redis.call('ZSCORE', KEYS[1], id)
+if not score or tonumber(score) <= now then
+  return 0
+end
+redis.call('ZADD', KEYS[1], now + lease_ms, id)
+redis.call('PEXPIRE', KEYS[1], 86400000)
+return 1
+`
 
 func (c *RPMCacheImpl) ustcCapacityKeys(scope string) ([]string, error) {
 	if strings.TrimSpace(scope) == "" {
@@ -781,6 +878,54 @@ func (c *RPMCacheImpl) USTCRenew(ctx context.Context, ticket *service.USTCTicket
 	}
 	if snapshot.code != 1 {
 		return errors.New("ustc capacity lease expired")
+	}
+	return nil
+}
+
+// USTCRenewBatch extends existing, unexpired leases using one pipelined
+// lightweight Lua call per ticket. Missing, released, and expired leases are
+// ignored and can never be recreated by renewal.
+func (c *RPMCacheImpl) USTCRenewBatch(ctx context.Context, tickets []*service.USTCTicket) error {
+	type renewal struct {
+		leaseKey string
+		id       string
+	}
+
+	items := make([]renewal, 0, len(tickets))
+	seen := make(map[renewal]struct{}, len(tickets))
+	for _, ticket := range tickets {
+		if ticket == nil || strings.TrimSpace(ticket.ID) == "" {
+			return errors.New("ustc capacity ticket is invalid")
+		}
+		keys, err := c.ustcCapacityKeys(ticket.Scope)
+		if err != nil {
+			return err
+		}
+		item := renewal{leaseKey: keys[1], id: ticket.ID}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	commands := make([]*redis.Cmd, len(items))
+	_, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for i, item := range items {
+			commands[i] = pipe.Eval(ctx, ustcRenewScript, []string{item.leaseKey}, item.id, ustcCapacityLease.Milliseconds())
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("ustc capacity renew batch: %w", err)
+	}
+	for i, command := range commands {
+		if _, err := command.Int(); err != nil {
+			return fmt.Errorf("ustc capacity renew batch item %d: %w", i, err)
+		}
 	}
 	return nil
 }

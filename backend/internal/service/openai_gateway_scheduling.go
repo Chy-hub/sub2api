@@ -1694,7 +1694,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 		return account
 	}
 
-	latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	latest, err := s.readOpenAIAccountForRecheck(ctx, account.ID)
 	if err != nil || latest == nil {
 		return nil
 	}
@@ -1743,16 +1743,20 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 	if err != nil || account == nil {
 		return account, err
 	}
+	return s.filterSchedulableOpenAIAccount(ctx, account), nil
+}
+
+func (s *OpenAIGatewayService) filterSchedulableOpenAIAccount(ctx context.Context, account *Account) *Account {
 	if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, account) {
-		return nil, nil
+		return nil
 	}
 	// Legacy sticky (advanced scheduler off) must still free-gate Grok OAuth.
 	if account.IsGrok() {
 		if gated := s.filterGrokFreeQuotaAccountsForOpenAI(ctx, []Account{*account}); len(gated) == 0 {
-			return nil, nil
+			return nil
 		}
 	}
-	return account, nil
+	return account
 }
 
 // filterGrokFreeQuotaAccountsForOpenAI applies the same local free soft-gate as

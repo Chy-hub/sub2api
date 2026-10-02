@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -22,9 +23,22 @@ func (r *compositeWSRouteRepo) ListByGroup(context.Context, int64, bool) ([]serv
 	return r.routes, r.err
 }
 
-type compositeWSHTTPUpstream struct{ service.HTTPUpstream }
+type compositeWSHTTPUpstream struct {
+	service.HTTPUpstream
+	rewriteBaseURL string
+}
 
-func (*compositeWSHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+func (u *compositeWSHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	if u.rewriteBaseURL != "" {
+		target, err := url.Parse(u.rewriteBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		cloned := req.Clone(req.Context())
+		cloned.URL.Scheme = target.Scheme
+		cloned.URL.Host = target.Host
+		req = cloned
+	}
 	return http.DefaultClient.Do(req)
 }
 

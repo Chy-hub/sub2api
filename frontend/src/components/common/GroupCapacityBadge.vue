@@ -5,15 +5,22 @@
       <span
         :class="[
           'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium',
-          capacityClass(concurrencyUsed, concurrencyMax)
+          capacityClass(
+            concurrencyUsed,
+            concurrencyMax,
+            concurrencyUsedIncompleteCount > 0 || concurrencyMaxIncompleteCount > 0
+          )
         ]"
+        :title="incompleteTooltip(concurrencyUsedIncompleteCount, concurrencyMaxIncompleteCount)"
       >
         <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
         </svg>
         <span class="font-mono">{{ concurrencyUsed }}</span>
+        <span v-if="concurrencyUsedIncompleteCount > 0" class="font-mono">+?</span>
         <span class="text-gray-400 dark:text-gray-500">/</span>
         <span class="font-mono">{{ concurrencyMax }}</span>
+        <span v-if="concurrencyMaxIncompleteCount > 0" class="font-mono">+?</span>
       </span>
     </div>
 
@@ -35,44 +42,66 @@
     </div>
 
     <!-- RPM -->
-    <div v-if="rpmMax > 0" class="flex items-center gap-1">
+    <div v-if="rpmMax > 0 || rpmMaxIncompleteCount > 0" class="flex items-center gap-1">
       <span
         :class="[
           'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium',
-          capacityClass(rpmUsed, rpmMax)
+          capacityClass(
+            rpmUsed,
+            rpmMax,
+            rpmUsedIncompleteCount > 0 || rpmMaxIncompleteCount > 0
+          )
         ]"
+        :title="incompleteTooltip(rpmUsedIncompleteCount, rpmMaxIncompleteCount)"
       >
         <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
         </svg>
         <span class="font-mono">{{ rpmUsed }}</span>
+        <span v-if="rpmUsedIncompleteCount > 0" class="font-mono">+?</span>
         <span class="text-gray-400 dark:text-gray-500">/</span>
         <span class="font-mono">{{ rpmMax }}</span>
+        <span v-if="rpmMaxIncompleteCount > 0" class="font-mono">+?</span>
       </span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 interface Props {
   concurrencyUsed: number
   concurrencyMax: number
+  concurrencyUsedIncompleteCount?: number
+  concurrencyMaxIncompleteCount?: number
   sessionsUsed: number
   sessionsMax: number
   rpmUsed: number
   rpmMax: number
+  rpmUsedIncompleteCount?: number
+  rpmMaxIncompleteCount?: number
 }
 
 withDefaults(defineProps<Props>(), {
   concurrencyUsed: 0,
   concurrencyMax: 0,
+  concurrencyUsedIncompleteCount: 0,
+  concurrencyMaxIncompleteCount: 0,
   sessionsUsed: 0,
   sessionsMax: 0,
   rpmUsed: 0,
-  rpmMax: 0
+  rpmMax: 0,
+  rpmUsedIncompleteCount: 0,
+  rpmMaxIncompleteCount: 0
 })
 
-function capacityClass(used: number, max: number): string {
+function capacityClass(used: number, max: number, incomplete = false): string {
+  if (incomplete) {
+    return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  }
   if (max > 0 && used >= max) {
     return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
   }
@@ -80,5 +109,17 @@ function capacityClass(used: number, max: number): string {
     return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
   }
   return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+}
+
+function incompleteTooltip(usedCount: number, maxCount: number): string | undefined {
+  if (usedCount <= 0 && maxCount <= 0) return undefined
+  const details = [t('admin.groups.capacityIncomplete.knownSubtotal')]
+  if (maxCount > 0) {
+    details.push(t('admin.groups.capacityIncomplete.limitsUnknown', { count: maxCount }))
+  }
+  if (usedCount > 0) {
+    details.push(t('admin.groups.capacityIncomplete.countersUnavailable', { count: usedCount }))
+  }
+  return details.join('\n')
 }
 </script>

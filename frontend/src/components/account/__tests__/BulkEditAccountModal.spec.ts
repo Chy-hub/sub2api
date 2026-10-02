@@ -108,6 +108,24 @@ describe('BulkEditAccountModal', () => {
     anthropicWrapper.unmount()
   })
 
+  it('hides the generic concurrency input when every selected account uses USTC capacity', () => {
+    const ustcWrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey'],
+      allSelectedUstcCapacityAccounts: true
+    })
+    expect(ustcWrapper.find('#bulk-edit-concurrency-enabled').exists()).toBe(false)
+    ustcWrapper.unmount()
+
+    const regularWrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey'],
+      allSelectedUstcCapacityAccounts: false
+    })
+    expect(regularWrapper.find('#bulk-edit-concurrency-enabled').exists()).toBe(true)
+    regularWrapper.unmount()
+  })
+
   it('批量修改倍率时提示自动同步账号需要先关闭同步', async () => {
     const wrapper = mountModal()
 
