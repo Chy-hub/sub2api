@@ -216,6 +216,12 @@ func userInfoSiteURL(baseURL, suffix string) string {
 	if !strings.Contains(baseURL, "://") {
 		baseURL = "https://" + baseURL
 	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		// Credentials and query/fragment data do not belong in a base URL used
+		// for a bearer-authenticated management request.
+		return ""
+	}
 	// 去掉尾部斜杠后，剥离末级 /v1（LiteLLM 管理端点在站点根）。
 	trimmed := strings.TrimRight(baseURL, "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")

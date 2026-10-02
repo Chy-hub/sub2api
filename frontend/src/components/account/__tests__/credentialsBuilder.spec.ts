@@ -18,7 +18,6 @@ import {
   defaultOpenCodeProtocolRules,
   isCustomGrokBaseUrl,
   isUstcCapacityAccount,
-  isUstcQuotaAccount,
   resolveOpenCodeAccountMode,
   isHeaderOverrideCapable,
   GROK_BASE_URL_PRESETS,
@@ -89,7 +88,6 @@ describe('USTC account policies', () => {
 
     expect(isUstcCapacityAccount(apiKeyAccount)).toBe(true)
     expect(isUstcCapacityAccount(upstreamAccount)).toBe(false)
-    expect(isUstcQuotaAccount(upstreamAccount)).toBe(true)
     expect(userInfoQuotaCellVisible(upstreamAccount)).toBe(true)
   })
 })

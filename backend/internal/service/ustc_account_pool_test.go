@@ -27,7 +27,7 @@ func TestUSTCPoolBoundWaiterDoesNotBlockAnotherReadyKey(t *testing.T) {
 	defer cancel()
 	finished := make(chan error, 1)
 	go func() {
-		_, err := svc.selectBalancedDefaultUSTCAccountWithWait(ctx, nil, accounts[:1], "", "deepseek-flash", nil, false, "", false)
+		_, err := svc.selectBalancedDefaultUSTCAccountWithWait(ctx, nil, accounts[:1], "", "deepseek-flash", nil, false, "", false, OpenAIUpstreamTransportAny)
 		finished <- err
 	}()
 	state := svc.defaultUSTCPoolState()

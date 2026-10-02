@@ -40,6 +40,7 @@ func (s *OpenAIGatewayService) refreshUSTCQuotaDuringCandidateCheck(ctx context.
 func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 	ctx context.Context, groupID *int64, accounts []Account, sessionHash, requestedModel string,
 	excludedIDs map[int64]struct{}, requireCompact bool, capability OpenAIEndpointCapability, preferLowRate bool,
+	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, error) {
 	stats := openAISelectionFilterStats{pool: len(accounts)}
 	var retryAt time.Time
@@ -61,6 +62,10 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		account := &accounts[i]
 		if _, excluded := excludedIDs[account.ID]; excluded {
 			stats.exclude("excluded")
+			continue
+		}
+		if !s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+			stats.exclude("transport_mismatch")
 			continue
 		}
 		if reason := openAICompatibleAccountEligibilityFailureReason(initialCtx, account, PlatformOpenAI, requestedModel, false, capability); reason != "" {
@@ -206,6 +211,10 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			}
 			continue
 		}
+		if !s.isOpenAIAccountTransportCompatible(fresh, requiredTransport) {
+			stats.exclude("transport_mismatch")
+			continue
+		}
 		if requireCompact && openAICompactSupportTier(fresh) == 0 {
 			compactBlocked = true
 			continue
@@ -260,6 +269,16 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			}
 			return nil, err
 		}
+		if !s.isOpenAIAccountTransportCompatible(selection.Account, requiredTransport) {
+			if reservation != nil {
+				reservation.release()
+			}
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			stats.exclude("transport_mismatch")
+			continue
+		}
 		selection.ustcAdmission = reservation
 		selection.ReleaseFunc = selection.ReleaseWithUSTCAdmission(selection.ReleaseFunc)
 		if sessionHash != "" && !stickySpillover && !gatewayProfitControlGateActive(ctx) {
@@ -283,7 +302,7 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 	}
 	err := noAvailableOpenAISelectionError(requestedModel, compactBlocked, stats.summary(""))
 	if !retryAt.IsZero() && !compactBlocked {
-		return nil, &ustcPoolCapacityError{cause: err, retryAfter: maxUSTCDuration(time.Millisecond, time.Until(retryAt)), mutable: mutable}
+		return nil, &ustcPoolCapacityError{cause: err, retryAfter: max(time.Millisecond, time.Until(retryAt)), mutable: mutable}
 	}
 	return nil, err
 }
