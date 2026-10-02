@@ -7,13 +7,17 @@ import (
 
 // GroupCapacitySummary holds aggregated capacity for a single group.
 type GroupCapacitySummary struct {
-	GroupID         int64 `json:"group_id"`
-	ConcurrencyUsed int   `json:"concurrency_used"`
-	ConcurrencyMax  int   `json:"concurrency_max"`
-	SessionsUsed    int   `json:"sessions_used"`
-	SessionsMax     int   `json:"sessions_max"`
-	RPMUsed         int   `json:"rpm_used"`
-	RPMMax          int   `json:"rpm_max"`
+	GroupID                   int64 `json:"group_id"`
+	ConcurrencyUsed           int   `json:"concurrency_used"`
+	ConcurrencyMax            int   `json:"concurrency_max"`
+	ConcurrencyUsedIncomplete int   `json:"concurrency_used_incomplete_count"`
+	ConcurrencyMaxIncomplete  int   `json:"concurrency_max_incomplete_count"`
+	SessionsUsed              int   `json:"sessions_used"`
+	SessionsMax               int   `json:"sessions_max"`
+	RPMUsed                   int   `json:"rpm_used"`
+	RPMMax                    int   `json:"rpm_max"`
+	RPMUsedIncomplete         int   `json:"rpm_used_incomplete_count"`
+	RPMMaxIncomplete          int   `json:"rpm_max_incomplete_count"`
 }
 
 // GroupAccountCapacityRow is the lightweight account projection needed for
@@ -242,17 +246,6 @@ func (s *GroupCapacityService) aggregateGroupCapacityRows(ctx context.Context, g
 		}
 	}
 
-	for _, groupID := range groupIDs {
-		idx := groupIndex[groupID]
-		for scope := range groupUSTCScopes[groupID] {
-			state := ustcScopes[scope]
-			if state.known {
-				results[idx].RPMMax += state.limits.RPM
-				results[idx].ConcurrencyMax += state.limits.Parallel
-			}
-		}
-	}
-
 	concurrencyMap := map[int64]int{}
 	if s.concurrencyService != nil && len(concurrencyAccountIDs) > 0 {
 		concurrencyMap, _ = s.concurrencyService.GetAccountConcurrencyBatch(ctx, concurrencyAccountIDs)
@@ -296,12 +289,33 @@ func (s *GroupCapacityService) aggregateGroupCapacityRows(ctx context.Context, g
 	for groupID, scopes := range groupUSTCScopes {
 		idx := groupIndex[groupID]
 		for scope := range scopes {
-			capacity, ok := ustcCapacities[scope]
-			if !ok {
+			state := ustcScopes[scope]
+			if !state.known {
+				results[idx].RPMUsedIncomplete++
+				results[idx].RPMMaxIncomplete++
+				results[idx].ConcurrencyUsedIncomplete++
+				results[idx].ConcurrencyMaxIncomplete++
 				continue
 			}
-			results[idx].RPMUsed += capacity.Used + capacity.Pending
-			results[idx].ConcurrencyUsed += capacity.InFlight
+
+			rpmMax := state.limits.RPM
+			parallelMax := state.limits.Parallel
+			capacity, ok := ustcCapacities[scope]
+			if !ok {
+				results[idx].RPMUsedIncomplete++
+				results[idx].ConcurrencyUsedIncomplete++
+			} else {
+				if capacity.RPMLimit != nil {
+					rpmMax = *capacity.RPMLimit
+				}
+				if capacity.ParallelLimit != nil {
+					parallelMax = *capacity.ParallelLimit
+				}
+				results[idx].RPMUsed += capacity.Used + capacity.Pending
+				results[idx].ConcurrencyUsed += capacity.InFlight
+			}
+			results[idx].RPMMax += rpmMax
+			results[idx].ConcurrencyMax += parallelMax
 		}
 	}
 	return results, nil

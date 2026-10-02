@@ -926,6 +926,8 @@ export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 export interface USTCCapacity {
   rpm_limit: number | null
   parallel_limit: number | null
+  limits_known?: boolean
+  counts_known?: boolean
   used: number
   in_flight: number
   available: number

@@ -8,6 +8,12 @@ import (
 
 type ustcCapacityReadsKey struct{}
 type ustcCapacityReads map[string]USTCCapacity
+type ustcAccountReadsKey struct{}
+type ustcAccountRead struct {
+	account *Account
+	err     error
+}
+type ustcAccountReads map[int64]ustcAccountRead
 
 type ustcPoolJob struct {
 	ctx                    context.Context
@@ -121,6 +127,7 @@ func (c *ustcPoolCoordinator) run() {
 		}
 		// One set of shared reads for a dispatch pass, regardless of waiter count.
 		reads := make(ustcCapacityReads)
+		accountReads := make(ustcAccountReads)
 		pause := time.Hour
 		for _, job := range jobs {
 			finish := func(selection *AccountSelectionResult, err error) {
@@ -136,6 +143,7 @@ func (c *ustcPoolCoordinator) run() {
 				continue
 			}
 			ctx := context.WithValue(job.ctx, ustcCapacityReadsKey{}, reads)
+			ctx = context.WithValue(ctx, ustcAccountReadsKey{}, accountReads)
 			job.accounts = c.service.supplementDefaultUSTCPool(ctx, job.groupID, job.accounts)
 			selection, err := c.service.selectBalancedDefaultUSTCAccount(ctx, job.groupID, job.accounts, job.sessionHash, job.model, job.excluded, job.compact, job.capability, job.preferLowRate)
 			var capacity *ustcPoolCapacityError
@@ -186,6 +194,21 @@ func (c *ustcPoolCoordinator) run() {
 		case <-timer.C:
 		}
 	}
+}
+
+// Share only raw rows during one serial pool dispatch. Every waiter still runs
+// its own group/model/privacy/profit checks on a separate account copy.
+func (s *OpenAIGatewayService) readOpenAIAccountForRecheck(ctx context.Context, accountID int64) (*Account, error) {
+	reads, _ := ctx.Value(ustcAccountReadsKey{}).(ustcAccountReads)
+	if reads == nil {
+		return s.accountRepo.GetByID(ctx, accountID)
+	}
+	if value, ok := reads[accountID]; ok {
+		return copyAccountForUserInfoQuotaRefresh(value.account), value.err
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	reads[accountID] = ustcAccountRead{account: copyAccountForUserInfoQuotaRefresh(account), err: err}
+	return copyAccountForUserInfoQuotaRefresh(account), err
 }
 
 func readUSTCCapacity(ctx context.Context, cache USTCCapacityCache, scope string, limits USTCLimits) (USTCCapacity, error) {

@@ -468,6 +468,7 @@
       :account-ids="selIds"
       :selected-platforms="selPlatforms"
       :selected-types="selTypes"
+      :all-selected-ustc-capacity-accounts="allSelectedUstcCapacityAccounts"
       :target="bulkEditTarget ?? undefined"
       :proxies="proxies"
       :groups="groups"
@@ -531,7 +532,7 @@ import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRules
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { fetchAllAccountIds } from '@/utils/accountSelection'
 import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey, buildUserInfoQuotaRefreshKey } from '@/utils/accountUsageRefresh'
-import { userInfoQuotaCellVisible } from '@/components/account/credentialsBuilder'
+import { isUstcCapacityAccount } from '@/components/account/credentialsBuilder'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -601,6 +602,13 @@ const showExportDataDialog = ref(false)
 const includeProxyOnExport = ref(true)
 const showBulkEdit = ref(false)
 const bulkEditTarget = ref<AccountBulkEditTarget | null>(null)
+const allSelectedUstcCapacityAccounts = computed(() => {
+  if (bulkEditTarget.value?.mode === 'filtered') return false
+  const selectedIDs = new Set(selIds.value)
+  if (selectedIDs.size === 0 || selectedIDs.size !== selIds.value.length) return false
+  const selectedRows = accounts.value.filter(account => selectedIDs.has(account.id))
+  return selectedRows.length === selectedIDs.size && selectedRows.every(isUstcCapacityAccount)
+})
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
 const showCreateShadowDialog = ref(false)
@@ -1408,12 +1416,6 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
   )
 }
 
-const isUstcQuotaSnapshotAccount = (account: Pick<Account, 'platform' | 'type' | 'credentials'>) => (
-  account.platform === 'openai' &&
-  account.type === 'apikey' &&
-  userInfoQuotaCellVisible(account)
-)
-
 const syncAccountRefs = (nextAccount: Account) => {
   if (edAcc.value?.id === nextAccount.id) edAcc.value = nextAccount
   if (reAuthAcc.value?.id === nextAccount.id) reAuthAcc.value = nextAccount
@@ -1455,12 +1457,12 @@ const mergeAccountsIncrementally = (nextRows: Account[]) => {
 const mergeUstcQuotaAccountsIncrementally = (nextRows: Account[]) => {
   const nextByID = new Map(
     nextRows
-      .filter(isUstcQuotaSnapshotAccount)
+      .filter(isUstcCapacityAccount)
       .map(row => [row.id, row])
   )
   let changed = false
   const mergedRows = accounts.value.map((currentRow) => {
-    if (!isUstcQuotaSnapshotAccount(currentRow)) return currentRow
+    if (!isUstcCapacityAccount(currentRow)) return currentRow
     const nextRow = nextByID.get(currentRow.id)
     if (!nextRow || !shouldReplaceAutoRefreshRow(currentRow, nextRow)) return currentRow
     changed = true
@@ -1628,7 +1630,7 @@ const { pause: pauseAutoRefresh, resume: resumeAutoRefresh } = useIntervalFn(
 // Scheduling persists USTC quota snapshots. Poll the saved rows even when the
 // general auto refresh is disabled; this never invokes the upstream quota probe.
 useIntervalFn(async () => {
-  if (autoRefreshEnabled.value || !accounts.value.some(isUstcQuotaSnapshotAccount)) return
+  if (autoRefreshEnabled.value || !accounts.value.some(isUstcCapacityAccount)) return
   if (document.hidden || loading.value || autoRefreshFetching.value) return
   if (isAnyModalOpen.value || menu.show || showAccountToolsDropdown.value || showAutoRefreshDropdown.value) return
   if (inAutoRefreshSilentWindow()) return

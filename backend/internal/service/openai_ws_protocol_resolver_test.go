@@ -264,3 +264,62 @@ func TestOpenAIWSProtocolResolver_Resolve_ModeRouterV2(t *testing.T) {
 		require.Equal(t, "account_concurrency_invalid", decision.Reason)
 	})
 }
+
+func TestOpenAIWSProtocolResolver_USTCAlwaysUsesHTTPBridge(t *testing.T) {
+	accountForMode := func(mode string) *Account {
+		return &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"api_key":  "sk-ustc-test",
+				"base_url": "https://api.llm.ustc.edu.cn/v1",
+			},
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_mode": mode,
+			},
+		}
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeCtxPool
+	resolver := NewOpenAIWSProtocolResolver(cfg)
+
+	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
+		t.Run(mode, func(t *testing.T) {
+			decision := resolver.Resolve(accountForMode(mode))
+			require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+			require.Equal(t, "ustc_http_bridge", decision.Reason)
+		})
+	}
+
+	t.Run("explicit mode off remains disabled", func(t *testing.T) {
+		decision := resolver.Resolve(accountForMode(OpenAIWSIngressModeOff))
+		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+		require.Equal(t, "account_mode_off", decision.Reason)
+	})
+
+	t.Run("legacy API key v2 opt-in is bridged with the router disabled", func(t *testing.T) {
+		legacyCfg := *cfg
+		legacyCfg.Gateway.OpenAIWS.ModeRouterV2Enabled = false
+		account := accountForMode("")
+		account.Extra = map[string]any{"openai_apikey_responses_websockets_v2_enabled": true}
+		decision := NewOpenAIWSProtocolResolver(&legacyCfg).Resolve(account)
+		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+		require.Equal(t, "ustc_http_bridge", decision.Reason)
+	})
+
+	t.Run("other API keys retain native v2 routing", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Concurrency: 1,
+			Extra:       map[string]any{"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModeCtxPool},
+		}
+		decision := resolver.Resolve(account)
+		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
+	})
+}

@@ -180,8 +180,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 		accountRelease, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireUSTCVetoed {
-			if !recordOpenAIUSTCAdmissionVeto(failedAccountIDs, account.ID, &ustcAdmissionVetoCount) {
-				h.handleUSTCAdmissionVetoExhausted(c, streamStarted, reqLog, ustcAdmissionVetoCount)
+			if !h.retryUSTCAdmission(c, failedAccountIDs, account.ID, &ustcAdmissionVetoCount, streamStarted, reqLog) {
 				return
 			}
 			continue

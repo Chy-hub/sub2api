@@ -38,7 +38,50 @@ func (u *ustcCalibrationUpstream) Do(req *http.Request, _ string, _ int64, _ int
 	if status == 0 {
 		status = 200
 	}
-	return &http.Response{StatusCode: status, Header: http.Header{"X-Ratelimit-Api_key-Limit-Requests": []string{"20"}, "X-Ratelimit-Api_key-Remaining-Requests": []string{"19"}, "Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader("calibration-answer")), Request: req}, nil
+	headers := http.Header{"X-Ratelimit-Api_key-Limit-Requests": []string{"20"}, "X-Ratelimit-Api_key-Remaining-Requests": []string{"19"}}
+	if status == http.StatusTooManyRequests {
+		headers.Set("Retry-After", "60")
+	}
+	return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader("calibration-answer")), Request: req}, nil
+}
+
+type ustcCalibrationCapacityCache struct{ *ustcTestCapacityCache }
+
+func (c ustcCalibrationCapacityCache) USTCObserve(ctx context.Context, ticket *USTCTicket, feedback USTCFeedback) error {
+	if feedback.RetryAfter > 0 {
+		return c.USTCCooldown(ctx, ticket.Scope, feedback.RetryAfter)
+	}
+	return nil
+}
+
+func TestUSTCOrdinaryCalibrationFailureStillForwardsRealRequest(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 500, 503} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			svc, cache := ustcSchedulerFixture(1, false)
+			svc.rpmCache = ustcCalibrationCapacityCache{cache}
+			upstream := &ustcCalibrationUpstream{status: status}
+			svc.httpUpstream = upstream
+			selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
+			require.NoError(t, err)
+			defer selection.ReleaseFunc()
+			selection.ustcAdmission.ticket.Probe, selection.ustcAdmission.ticket.Cold = true, true
+			req, err := http.NewRequestWithContext(ContextWithUSTCAdmission(context.Background(), selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`))
+			require.NoError(t, err)
+			resp, err := svc.doOpenAIUpstream(req, "", selection.Account)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			data, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Contains(t, string(data), "real-answer")
+			require.NotContains(t, string(data), "calibration-answer")
+			require.Len(t, upstream.bodies, 2)
+			require.NoError(t, resp.Body.Close())
+			capacity, _ := cache.USTCRead(context.Background(), USTCKeyScope(selection.Account), USTCLimits{20, 20})
+			require.Equal(t, "ready", capacity.State)
+			require.Equal(t, 2, capacity.Used)
+			require.Zero(t, capacity.InFlight)
+		})
+	}
 }
 
 func TestUSTCColdSSECalibrationIsCountedAndNeverForwarded(t *testing.T) {
@@ -98,6 +141,7 @@ func TestUSTCRecoverySSEUsesOnlyRealRequest(t *testing.T) {
 
 func TestUSTCRejectedColdCalibrationDoesNotSendRealRequest(t *testing.T) {
 	svc, cache := ustcSchedulerFixture(1, false)
+	svc.rpmCache = ustcCalibrationCapacityCache{cache}
 	upstream := &ustcCalibrationUpstream{status: http.StatusTooManyRequests}
 	svc.httpUpstream = upstream
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
@@ -110,11 +154,55 @@ func TestUSTCRejectedColdCalibrationDoesNotSendRealRequest(t *testing.T) {
 	resp, err := svc.doOpenAIUpstream(req, "", selection.Account)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	require.Equal(t, "1", resp.Header.Get("X-Sub2api-Ustc-Local-Admission"))
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "calibration-answer")
 	require.NoError(t, resp.Body.Close())
 	require.Len(t, upstream.bodies, 1)
 	capacity, _ := cache.USTCRead(context.Background(), USTCKeyScope(selection.Account), USTCLimits{20, 20})
 	require.Equal(t, 1, capacity.Used)
 	require.Zero(t, capacity.InFlight)
+}
+
+func TestUSTCLocalCapacityRetryAfterIgnoresAlreadyCommittedLongStream(t *testing.T) {
+	svc, cache := ustcSchedulerFixture(1, false)
+	account := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts[0]
+	reservation, _, err := svc.reserveUSTC(context.Background(), &account)
+	require.NoError(t, err)
+	require.True(t, reservation.commit(context.Background()))
+	defer reservation.release()
+	cache.mu.Lock()
+	cache.used[USTCKeyScope(&account)] = 20
+	cache.mu.Unlock()
+	request, err := http.NewRequest(http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", nil)
+	require.NoError(t, err)
+	response := svc.ustcLocalCapacityResponse(request, &account)
+	defer response.Body.Close()
+	require.Equal(t, "60", response.Header.Get("Retry-After"))
+}
+
+func TestUSTCTransportReleasesMismatchedPendingTicketBeforeReserving(t *testing.T) {
+	svc, cache := ustcSchedulerFixture(2, false)
+	accounts := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts
+	reservation, _, err := svc.reserveUSTC(context.Background(), &accounts[0])
+	require.NoError(t, err)
+	selection := &AccountSelectionResult{Account: &accounts[0], ustcAdmission: reservation}
+	req, err := http.NewRequestWithContext(ContextWithUSTCAdmission(context.Background(), selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", nil)
+	require.NoError(t, err)
+	svc.httpUpstream = &ustcTransportStub{}
+	resp, err := svc.doOpenAIUpstream(req, "", &accounts[1])
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	old, err := cache.USTCRead(context.Background(), USTCKeyScope(&accounts[0]), USTCLimits{20, 20})
+	require.NoError(t, err)
+	require.Zero(t, old.Pending)
+	require.Zero(t, old.InFlight)
+	require.Zero(t, old.Used)
+	current, err := cache.USTCRead(context.Background(), USTCKeyScope(&accounts[1]), USTCLimits{20, 20})
+	require.NoError(t, err)
+	require.Equal(t, 1, current.Used)
+	require.Zero(t, current.InFlight)
 }
 
 type ustcRecoveryCapacityCache struct{ *ustcTestCapacityCache }

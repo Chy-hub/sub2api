@@ -324,10 +324,14 @@
               v-if="capacityMap.get(row.id)"
               :concurrency-used="capacityMap.get(row.id)!.concurrencyUsed"
               :concurrency-max="capacityMap.get(row.id)!.concurrencyMax"
+              :concurrency-used-incomplete-count="capacityMap.get(row.id)!.concurrencyUsedIncompleteCount"
+              :concurrency-max-incomplete-count="capacityMap.get(row.id)!.concurrencyMaxIncompleteCount"
               :sessions-used="capacityMap.get(row.id)!.sessionsUsed"
               :sessions-max="capacityMap.get(row.id)!.sessionsMax"
               :rpm-used="capacityMap.get(row.id)!.rpmUsed"
               :rpm-max="capacityMap.get(row.id)!.rpmMax"
+              :rpm-used-incomplete-count="capacityMap.get(row.id)!.rpmUsedIncompleteCount"
+              :rpm-max-incomplete-count="capacityMap.get(row.id)!.rpmMaxIncompleteCount"
             />
             <span v-else class="text-xs text-gray-400">—</span>
           </template>
@@ -4794,10 +4798,14 @@ const capacityMap = ref<
     {
       concurrencyUsed: number;
       concurrencyMax: number;
+      concurrencyUsedIncompleteCount: number;
+      concurrencyMaxIncompleteCount: number;
       sessionsUsed: number;
       sessionsMax: number;
       rpmUsed: number;
       rpmMax: number;
+      rpmUsedIncompleteCount: number;
+      rpmMaxIncompleteCount: number;
     }
   >
 >(new Map());
@@ -5705,20 +5713,28 @@ const loadCapacitySummary = async () => {
       {
         concurrencyUsed: number;
         concurrencyMax: number;
+        concurrencyUsedIncompleteCount: number;
+        concurrencyMaxIncompleteCount: number;
         sessionsUsed: number;
         sessionsMax: number;
         rpmUsed: number;
         rpmMax: number;
+        rpmUsedIncompleteCount: number;
+        rpmMaxIncompleteCount: number;
       }
     >();
     for (const item of data) {
       map.set(item.group_id, {
         concurrencyUsed: item.concurrency_used,
         concurrencyMax: item.concurrency_max,
+        concurrencyUsedIncompleteCount: item.concurrency_used_incomplete_count ?? 0,
+        concurrencyMaxIncompleteCount: item.concurrency_max_incomplete_count ?? 0,
         sessionsUsed: item.sessions_used,
         sessionsMax: item.sessions_max,
         rpmUsed: item.rpm_used,
         rpmMax: item.rpm_max,
+        rpmUsedIncompleteCount: item.rpm_used_incomplete_count ?? 0,
+        rpmMaxIncompleteCount: item.rpm_max_incomplete_count ?? 0,
       });
     }
     capacityMap.value = map;

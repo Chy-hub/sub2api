@@ -472,6 +472,20 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if s == nil {
 		return nil, nil
 	}
+	if selection, handled, err := s.selectUSTCPreviousResponse(
+		ctx,
+		groupID,
+		previousResponseID,
+		"",
+		requestedModel,
+		excludedIDs,
+		requireCompact,
+		requiredCapability,
+		"",
+		OpenAIUpstreamTransportAny,
+	); handled {
+		return selection, err
+	}
 	accountID, account, responseID, store := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
 	if accountID <= 0 || account == nil || store == nil {
 		return nil, nil
@@ -520,6 +534,68 @@ func (s *OpenAIGatewayService) ResolveAccountIDByPreviousResponseIDForScheduler(
 	return accountID
 }
 
+func (s *OpenAIGatewayService) loadResponseBindingAccount(ctx context.Context, accountID int64) (*Account, error) {
+	if s.schedulerSnapshot != nil {
+		return s.schedulerSnapshot.GetAccount(ctx, accountID)
+	}
+	if s.accountRepo != nil {
+		return s.accountRepo.GetByID(ctx, accountID)
+	}
+	return nil, nil
+}
+
+func (s *OpenAIGatewayService) resolveUSTCResponseBindingForScheduler(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	requestedModel string,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+	accountID int64,
+	account *Account,
+	store OpenAIWSStateStore,
+) (int64, *Account, string, OpenAIWSStateStore) {
+	responseID := strings.TrimSpace(previousResponseID)
+	if account == nil || accountID <= 0 || store == nil || responseID == "" {
+		return 0, nil, "", nil
+	}
+	if !account.IsActive() || !account.Schedulable ||
+		(account.AutoPauseOnExpired && account.ExpiresAt != nil && !time.Now().Before(*account.ExpiresAt)) {
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		return 0, nil, "", nil
+	}
+	if !account.IsOpenAI() {
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		return 0, nil, "", nil
+	}
+	if !s.openAIAccountMatchesSchedulingGroup(account, groupID) {
+		return 0, nil, "", nil
+	}
+	if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
+		return 0, nil, "", nil
+	}
+	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		return 0, nil, "", nil
+	}
+	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+		return 0, nil, "", nil
+	}
+	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
+		return 0, nil, "", nil
+	}
+	if requireCompact && openAICompactSupportTier(account) == 0 {
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		return 0, nil, "", nil
+	}
+	// This is a sticky-ID hint only. Return the physical Key even while its
+	// observed quota or admission capacity is temporarily unavailable; the
+	// subsequent USTC selection owns bounded waiting and the typed capacity error.
+	// In particular, do not call getSchedulableAccount or synchronously refresh
+	// quota here, since either can hide a cooling account from the binding.
+	return accountID, account, responseID, store
+}
+
 func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	ctx context.Context,
 	groupID *int64,
@@ -551,8 +627,18 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		}
 	}
 
-	account, err := s.getSchedulableAccount(ctx, accountID)
+	account, err := s.loadResponseBindingAccount(ctx, accountID)
 	if err != nil || account == nil {
+		if err == nil {
+			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		}
+		return 0, nil, "", nil
+	}
+	if isDefaultUSTCAccount(account) {
+		return s.resolveUSTCResponseBindingForScheduler(ctx, groupID, responseID, requestedModel, requiredCapability, requireCompact, accountID, account, store)
+	}
+	account = s.filterSchedulableOpenAIAccount(ctx, account)
+	if account == nil {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
 	}

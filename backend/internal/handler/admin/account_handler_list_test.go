@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -118,6 +119,102 @@ func setupAccountListRouter() (*gin.Engine, *stubAdminService) {
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.GET("/api/v1/admin/accounts", handler.List)
 	return router, adminSvc
+}
+
+type accountListUSTCCapacityCacheStub struct {
+	reads int
+}
+
+func (s *accountListUSTCCapacityCacheStub) IncrementRPM(context.Context, int64) (int, error) {
+	return 0, nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) GetRPM(context.Context, int64) (int, error) {
+	return 0, nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) GetRPMBatch(context.Context, []int64) (map[int64]int, error) {
+	return map[int64]int{}, nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCRead(_ context.Context, _ string, limits service.USTCLimits) (service.USTCCapacity, error) {
+	s.reads++
+	rpm, parallel := limits.RPM, limits.Parallel
+	return service.USTCCapacity{
+		RPMLimit: &rpm, ParallelLimit: &parallel,
+		Used: s.reads, InFlight: 1, Available: 1, State: "ready",
+	}, nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCReserve(context.Context, string, service.USTCLimits) (*service.USTCTicket, service.USTCCapacity, error) {
+	return nil, service.USTCCapacity{}, nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCCommit(context.Context, *service.USTCTicket, service.USTCLimits) (bool, error) {
+	return false, nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCRelease(context.Context, *service.USTCTicket) error {
+	return nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCRenew(context.Context, *service.USTCTicket) error {
+	return nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCObserve(context.Context, *service.USTCTicket, service.USTCFeedback) error {
+	return nil
+}
+
+func (s *accountListUSTCCapacityCacheStub) USTCCooldown(context.Context, string, time.Duration) error {
+	return nil
+}
+
+func TestAccountHandlerListBatchesUSTCCapacityBeforeETag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	adminSvc := newStubAdminService()
+	baseExtra := map[string]any{
+		service.UserInfoQuotaExtraKey("limits_known"):          true,
+		service.UserInfoQuotaExtraKey("rpm_limit"):             20,
+		service.UserInfoQuotaExtraKey("max_parallel_requests"): 4,
+	}
+	adminSvc.accounts = []service.Account{
+		{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"api_key": "shared-key", "base_url": "https://api.llm.ustc.edu.cn/v1"}, Extra: baseExtra, Status: service.StatusActive, Schedulable: true},
+		{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"api_key": "shared-key", "base_url": "https://api.llm.ustc.edu.cn/v1"}, Extra: baseExtra, Status: service.StatusActive, Schedulable: true},
+	}
+	cache := &accountListUSTCCapacityCacheStub{}
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, cache, nil)
+	router := gin.New()
+	router.GET("/api/v1/admin/accounts", handler.List)
+
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?page=1&page_size=20&lite=1", nil))
+	require.Equal(t, http.StatusOK, first.Code)
+	require.NotEmpty(t, first.Header().Get("ETag"))
+	require.Equal(t, 1, cache.reads, "two account rows sharing one key need one live read")
+	var firstPayload struct {
+		Data struct {
+			Items []struct {
+				USTCCapacity struct {
+					Used        int  `json:"used"`
+					CountsKnown bool `json:"counts_known"`
+				} `json:"ustc_capacity"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstPayload))
+	require.Len(t, firstPayload.Data.Items, 2)
+	require.Equal(t, 1, firstPayload.Data.Items[0].USTCCapacity.Used)
+	require.True(t, firstPayload.Data.Items[0].USTCCapacity.CountsKnown)
+	require.Equal(t, 1, firstPayload.Data.Items[1].USTCCapacity.Used)
+
+	second := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?page=1&page_size=20&lite=1", nil)
+	request.Header.Set("If-None-Match", first.Header().Get("ETag"))
+	router.ServeHTTP(second, request)
+	require.Equal(t, http.StatusOK, second.Code, "changed live counts must invalidate the response ETag")
+	require.NotEqual(t, first.Header().Get("ETag"), second.Header().Get("ETag"))
+	require.Equal(t, 2, cache.reads, "each request gets a fresh live snapshot")
 }
 
 func TestAccountHandlerListIncludesCreatedAt(t *testing.T) {

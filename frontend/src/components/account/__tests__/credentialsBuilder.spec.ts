@@ -17,6 +17,8 @@ import {
   defaultCNBaseUrl,
   defaultOpenCodeProtocolRules,
   isCustomGrokBaseUrl,
+  isUstcCapacityAccount,
+  isUstcQuotaAccount,
   resolveOpenCodeAccountMode,
   isHeaderOverrideCapable,
   GROK_BASE_URL_PRESETS,
@@ -26,6 +28,7 @@ import {
   readPlanType,
   serializeHeaderOverrideRows,
   splitHeaderOverridesObject,
+  userInfoQuotaCellVisible,
   validateHeaderOverrideRows
 } from '../credentialsBuilder'
 
@@ -70,6 +73,23 @@ describe('applyInterceptWarmup', () => {
     expect(creds.api_key).toBe('sk')
     expect(creds.base_url).toBe('url')
     expect('intercept_warmup_requests' in creds).toBe(false)
+  })
+})
+
+describe('USTC account policies', () => {
+  const ustcAccount = {
+    platform: 'openai',
+    credentials: { base_url: 'https://api.llm.ustc.edu.cn/v1' }
+  }
+
+  it('limits automated capacity to OpenAI API keys while retaining upstream quota visibility', () => {
+    const apiKeyAccount = { ...ustcAccount, type: 'apikey' }
+    const upstreamAccount = { ...ustcAccount, type: 'upstream' }
+
+    expect(isUstcCapacityAccount(apiKeyAccount)).toBe(true)
+    expect(isUstcCapacityAccount(upstreamAccount)).toBe(false)
+    expect(isUstcQuotaAccount(upstreamAccount)).toBe(true)
+    expect(userInfoQuotaCellVisible(upstreamAccount)).toBe(true)
   })
 })
 
