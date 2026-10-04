@@ -8,6 +8,7 @@ import (
 
 type ustcCapacityReadsKey struct{}
 type ustcCapacityReads map[string]USTCCapacity
+type ustcPoolDemandKey struct{}
 type ustcAccountReadsKey struct{}
 type ustcAccountRead struct {
 	account *Account
@@ -130,11 +131,40 @@ func (c *ustcPoolCoordinator) run() {
 		reads := make(ustcCapacityReads)
 		accountReads := make(ustcAccountReads)
 		pause := time.Hour
+		snapshot := len(jobs)
+		// Retire waiters that are already gone before counting demand, so a cancelled
+		// or timed-out request sitting behind a live one cannot push it into the
+		// high-concurrency order.
+		dispatchable := jobs[:0]
+		for _, job := range jobs {
+			if err := job.ctx.Err(); err != nil {
+				job.done = true
+				job.result <- ustcPoolResult{err: err}
+				continue
+			}
+			if !job.deadline.IsZero() && !time.Now().Before(job.deadline) {
+				job.done = true
+				job.result <- ustcPoolResult{err: job.lastError}
+				continue
+			}
+			dispatchable = append(dispatchable, job)
+		}
+		jobs = dispatchable
+		// Count requests still waiting for a slot. A dispatched request leaves this
+		// bucket as it takes its lease: reserveUSTC publishes that lease into the
+		// shared reads, so later jobs in the same pass already see it in flight and
+		// counting it here too would reach the high-concurrency threshold early.
+		queued := len(jobs)
 		for _, job := range jobs {
 			finish := func(selection *AccountSelectionResult, err error) {
+				// Every exit either gives up (cancelled, timed out, no capacity
+				// within the wait budget) or now holds capacity of its own.
+				queued--
 				job.done = true
 				job.result <- ustcPoolResult{selection: selection, err: err}
 			}
+			// A pass is not instantaneous: a waiter that was live above can expire
+			// while earlier jobs are being dispatched.
 			if err := job.ctx.Err(); err != nil {
 				finish(nil, err)
 				continue
@@ -145,6 +175,7 @@ func (c *ustcPoolCoordinator) run() {
 			}
 			ctx := context.WithValue(job.ctx, ustcCapacityReadsKey{}, reads)
 			ctx = context.WithValue(ctx, ustcAccountReadsKey{}, accountReads)
+			ctx = context.WithValue(ctx, ustcPoolDemandKey{}, max(0, queued))
 			job.accounts = c.service.supplementDefaultUSTCPool(ctx, job.groupID, job.accounts)
 			selection, err := c.service.selectBalancedDefaultUSTCAccount(ctx, job.groupID, job.accounts, job.sessionHash, job.model, job.excluded, job.compact, job.capability, job.preferLowRate, job.transport)
 			var capacity *ustcPoolCapacityError
@@ -181,7 +212,7 @@ func (c *ustcPoolCoordinator) run() {
 			}
 		}
 		c.jobs = pending
-		if len(c.jobs) > len(jobs) {
+		if len(c.jobs) > snapshot {
 			pause = time.Millisecond
 		}
 		c.state.mu.Unlock()
