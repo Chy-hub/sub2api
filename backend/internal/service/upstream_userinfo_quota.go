@@ -75,8 +75,9 @@ func (s *OpenAIGatewayService) refreshUSTCQuotaForScheduling(ctx context.Context
 	return account
 }
 
-// Budget observations are eligibility gates, not scheduling weights. A known
-// exhausted window blocks this key until its reset; unknown usage stays usable.
+// A known exhausted window blocks this key until its reset; unknown usage stays
+// usable. Non-exhausted usage also orders the USTC pool (see ustcQuotaUsageBands),
+// but only ahead of the 60s window comparison at low concurrency.
 func userInfoQuotaSchedulingFailureReason(account *Account, now time.Time) string {
 	if !isDefaultUSTCAccount(account) || len(account.Extra) == 0 {
 		return ""

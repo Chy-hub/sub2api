@@ -142,7 +142,10 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 		}
 		return s.isBetterAccount(a, b)
 	})
-	// Preserve non-USTC ordering. Balance USTC only within the same priority/cost.
+	// Preserve non-USTC ordering. Balance USTC only within the same priority/cost:
+	// under high concurrency keep the original live-capacity order, under low
+	// concurrency prefer the least-used budget.
+	highConcurrency := ustcPoolHighConcurrency(ctx, candidates, capacities)
 	state := s.defaultUSTCPoolState()
 	state.mu.Lock()
 	offset := state.cursor
@@ -165,8 +168,21 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			sort.SliceStable(ustc, func(i, j int) bool { return ustc[i].ID < ustc[j].ID })
 			shift := int(offset % uint64(len(ustc)))
 			ustc = append(ustc[shift:], ustc[:shift]...)
+			// High concurrency leaves every usage vector nil, so the budget
+			// comparison below ties and the live capacity order is preserved.
+			var usage map[int64][]int
+			if !highConcurrency {
+				now := time.Now()
+				usage = make(map[int64][]int, len(ustc))
+				for _, account := range ustc {
+					usage[account.ID] = ustcQuotaUsageBands(account, now)
+				}
+			}
 			sort.SliceStable(ustc, func(i, j int) bool {
 				a, b := capacities[ustc[i].ID], capacities[ustc[j].ID]
+				if order := compareUSTCQuotaUsageBands(usage[ustc[i].ID], usage[ustc[j].ID]); order != 0 {
+					return order < 0
+				}
 				x, y := ustcCapacityRatio(a), ustcCapacityRatio(b)
 				if x != y {
 					return x < y
@@ -309,6 +325,132 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 func ustcCapacityRatio(capacity USTCCapacity) float64 {
 	if capacity.RPMLimit != nil && *capacity.RPMLimit > 0 {
 		return float64(capacity.Used+capacity.Pending) / float64(*capacity.RPMLimit)
+	}
+	return 0
+}
+
+const (
+	// ustcQuotaUsageBandWidth 把预算窗口的用量比例量化成档位，同一档内保持原来的
+	// 轮询顺序，只有明显更闲的账号才插队。用量快照 30 秒才更新一次，不量化会让
+	// 最低用量的账号在整个快照周期独占流量。
+	ustcQuotaUsageBandWidth = 0.05
+	ustcQuotaUsageMaxBand   = 20
+	// ustcQuotaUsageBandRounding 抵消分档除法的浮点误差：0.15/0.05 在 float64 下
+	// 是 2.999…，直接截断会把正好压在整档边界上的账号算低一档。
+	ustcQuotaUsageBandRounding = 1e-9
+	// ustcQuotaUsageStaleBand 比任何可信观测都差，用于快照过期时兜底。
+	ustcQuotaUsageStaleBand = ustcQuotaUsageMaxBand + 1
+
+	// ustcQuotaUsageTrustedAge 是排序可以信任用量快照的最大年龄。调度路径每 30 秒
+	// 自动补探、失败退避 5 秒，正常流量下快照远新于此；旧到这个界限说明连续探测
+	// 失败或长时间空闲，数字不再代表当前约束，不能拿它决定给谁加权。
+	ustcQuotaUsageTrustedAge = 2 * time.Minute
+)
+
+// ustcPoolHighConcurrency 报告本轮是否按「高并发」分散：空中的 USTC 请求数超过
+// 可用账号数时，平均每个账号不止一单在跑，此时按实时容量分散，预算用量让位。
+// 用量窗口是每分钟请求数，长流在窗口里只记一次却始终占着并发，因此这里数空中
+// 请求而不是数窗口用量。
+func ustcPoolHighConcurrency(ctx context.Context, candidates []*Account, capacities map[int64]USTCCapacity) bool {
+	accounts, inFlight := 0, ustcPoolDemand(ctx)
+	// 容量按物理 Key 共享：重复导入、同 Key 多分组的账号行读到同一份计数，
+	// 必须按 Key 指纹去重，否则行数会把账号数和在途数一起放大。
+	seen := make(map[string]struct{}, len(candidates))
+	for _, account := range candidates {
+		if !isDefaultUSTCAccount(account) {
+			continue
+		}
+		if scope := USTCKeyScope(account); scope != "" {
+			if _, counted := seen[scope]; counted {
+				continue
+			}
+			seen[scope] = struct{}{}
+		}
+		accounts++
+		// InFlight 是未释放的并发租约，已包含尚未发送的预占，不能再加 Pending。
+		inFlight += capacities[account.ID].InFlight
+	}
+	return inFlight > accounts
+}
+
+// ustcPoolDemand 是本池还没有拿到租约、仍在等待派发的请求数。一次派发共享同一份
+// 容量快照，派发中新建立的预占不会出现在快照里，只看快照会把突发误判成低并发；
+// 拿到租约的请求由协调器从等待数里扣掉，改由在途并发统计，两边不重复计。
+func ustcPoolDemand(ctx context.Context) int {
+	demand, _ := ctx.Value(ustcPoolDemandKey{}).(int)
+	return demand
+}
+
+func ustcUsageBand(used float64) int {
+	// 超出满档的用量按满档处理。这个判断对 NaN 与 +Inf 同样成立，异常快照只会让
+	// 账号更靠后，不会反过来变成「最闲」的账号。
+	if !(used < float64(ustcQuotaUsageMaxBand)*ustcQuotaUsageBandWidth) {
+		return ustcQuotaUsageMaxBand
+	}
+	// used >= 0，截断即向下取整；加上舍入容差避免整档边界被浮点误差吃低一档。
+	return clampUSTCBand(int(used/ustcQuotaUsageBandWidth+ustcQuotaUsageBandRounding), ustcQuotaUsageMaxBand)
+}
+
+func clampUSTCBand(band, maximum int) int {
+	if band < 0 {
+		return 0
+	}
+	if band > maximum {
+		return maximum
+	}
+	return band
+}
+
+// ustcQuotaUsageBands 返回账号各预算窗口的已用档位，从紧张到宽松降序排列。
+// 已重置、用量未知、限额非正（上游报 `max_budget: 0` 的「无预算」快照会退化成
+// 这种窗口）的条目先被剔除；一条都不剩说明没有可均衡的额度，返回 nil 不降权。
+// 只剩过期快照可用时返回兜底档位：旧数字不代表当前约束，宁可退回容量排序，
+// 账号本身仍然可选，只是排在所有可信快照之后，直到后台补探刷回来。
+// 已知耗尽的窗口由 userInfoQuotaSchedulingFailureReason 拦截，与这里的排序无关。
+func ustcQuotaUsageBands(account *Account, now time.Time) []int {
+	var bands []int
+	for _, window := range userInfoQuotaWindowsForScheduling(account.Extra) {
+		// !(Limit > 0) 同时挡掉 0、负数与 NaN 这些算不出比例的窗口。
+		if !window.UsedKnown || !(window.Limit > 0) {
+			continue
+		}
+		if window.ResetAt != "" {
+			if reset, err := parseUserInfoTime(window.ResetAt); err == nil && !reset.After(now) {
+				continue
+			}
+		}
+		bands = append(bands, ustcUsageBand(window.WindowSpend/window.Limit))
+	}
+	if len(bands) == 0 {
+		return nil
+	}
+	if !ustcQuotaUsageSnapshotTrusted(account.Extra, now) {
+		return []int{ustcQuotaUsageStaleBand}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(bands)))
+	return bands
+}
+
+// ustcQuotaUsageSnapshotTrusted 报告用量快照是否新到可以用于排序。这里比刷新触发
+// 的 30 秒有效期宽松：补探在途、偶发失败和短暂空闲都不该让一个健康账号掉队。
+func ustcQuotaUsageSnapshotTrusted(extra map[string]any, now time.Time) bool {
+	return userInfoQuotaExtraAgeWithin(extra, now, ustcQuotaUsageTrustedAge)
+}
+
+// compareUSTCQuotaUsageBands 按「最紧张的窗口优先」比较档位向量：先比最高档，
+// 相同再比次高档，缺失的档位按 0 补齐。
+func compareUSTCQuotaUsageBands(a, b []int) int {
+	for i := 0; i < len(a) || i < len(b); i++ {
+		x, y := 0, 0
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			return x - y
+		}
 	}
 	return 0
 }
