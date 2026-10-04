@@ -506,12 +506,19 @@ func (s *UpstreamUserInfoQuotaService) evictLeastRecentlyUsedRefreshCacheEntryLo
 }
 
 func userInfoQuotaExtraIsFresh(extra map[string]any, now time.Time) bool {
+	return userInfoQuotaExtraAgeWithin(extra, now, userInfoQuotaSchedulingFreshness)
+}
+
+// userInfoQuotaExtraAgeWithin 是快照年龄判定：updated_at 由本地探测在成功时写入，
+// 未来时间戳只可能来自时钟回拨，一律视为超出范围。刷新触发用 30 秒有效期，
+// 调度排序用更宽的信任界限，两者共用这里的时钟回拨口径。
+func userInfoQuotaExtraAgeWithin(extra map[string]any, now time.Time, limit time.Duration) bool {
 	updatedAt, ok := userInfoQuotaExtraUpdatedAt(extra)
 	if !ok {
 		return false
 	}
 	age := now.Sub(updatedAt)
-	return age >= 0 && age <= userInfoQuotaSchedulingFreshness
+	return age >= 0 && age <= limit
 }
 
 func userInfoQuotaExtraUpdatedAt(extra map[string]any) (time.Time, bool) {
