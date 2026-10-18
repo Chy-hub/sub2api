@@ -1,5 +1,5 @@
 <template>
-  <div v-if="visible" class="min-w-[220px] space-y-1">
+  <div v-if="visible" class="min-w-[240px] space-y-1">
     <!-- 状态行：失效标记 / 无限额 / 无数据占位 -->
     <div v-if="!isValid && hasData" class="flex flex-wrap items-center gap-1.5">
       <span
@@ -9,7 +9,7 @@
       </span>
     </div>
     <div
-      v-else-if="hasData && !hasBudget && !barWindows.length && !chipWindows.length"
+      v-else-if="hasData && !hasBudget"
       data-test="userinfo-quota-value"
       class="text-[10px] font-medium leading-4 text-cyan-700 dark:text-cyan-300"
     >
@@ -19,41 +19,35 @@
       {{ t('admin.accounts.userInfoQuota.empty') }}
     </div>
 
-    <!-- 多档预算进度条（3h / 12h / 24h）：每条右侧带本窗口金额 -->
+    <!-- 单行窗口：标签 + 剩余额度条 + 剩余百分比 + 金额 + 倒计时 -->
     <div v-if="barWindows.length" class="space-y-1">
       <UsageProgressBar
-        v-for="(w, i) in barWindows"
-        :key="w.label || i"
+        v-for="w in barWindows"
+        :key="w.key"
         data-test="userinfo-quota-bar"
         :label="w.label"
         :color="w.color"
-        :utilization="w.usedPercent"
+        :utilization="w.remainingPercent"
+        remaining-capacity
+        :dead-percent="w.deadPercent"
+        :dead-title="w.deadTitle"
         :money="w.money"
-        :resets-at="w.resetAt ?? null"
+        :resets-at="w.resetAt"
+        :reset-title="w.resetTitle"
       />
     </div>
-    <!-- 上游未提供用量的窗口：降级为「限额 · 倒计时」，不给虚假百分比 -->
+    <!-- 上游未提供用量的窗口：降级为「限额 · 未提供 · 倒计时」，不给虚假百分比 -->
     <div v-if="chipWindows.length" class="flex flex-wrap items-center gap-1.5">
       <span
         v-for="w in chipWindows"
-        :key="w.label"
+        :key="w.key"
         data-test="userinfo-quota-chip"
         class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-[9px] leading-4 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
         :title="t('admin.accounts.userInfoQuota.usageUnknown')"
       >
-        {{ w.label }} · {{ w.limitLabel }}<template v-if="w.resetLabel"> · {{ w.resetLabel }}</template>
+        {{ w.label }} · {{ w.limitLabel }} · {{ t('admin.accounts.userInfoQuota.notProvided') }}<template v-if="w.resetLabel"> · {{ w.resetLabel }}</template>
       </span>
     </div>
-    <!-- 单窗口兜底（无 windows 数组但有 max_budget） -->
-    <UsageProgressBar
-      v-if="!barWindows.length && !chipWindows.length && hasBudget"
-      data-test="userinfo-quota-bar"
-      :label="t('admin.accounts.userInfoQuota.barLabel')"
-      color="indigo"
-      :utilization="usedPercent"
-      :money="fallbackMoney"
-      :resets-at="current?.budget_reset_at ?? null"
-    />
 
     <!-- 上游限额只读展示；金额预算继续由上方窗口显示。 -->
     <div
@@ -64,6 +58,21 @@
       <span>{{ t('admin.accounts.userInfoQuota.rpmLimit') }} {{ formatUpstreamLimit(upstreamLimits.rpm, limitsKnown) }}</span>
       <span>{{ t('admin.accounts.userInfoQuota.parallelLimit') }} {{ formatUpstreamLimit(upstreamLimits.parallel, limitsKnown) }}</span>
       <span>{{ t('admin.accounts.userInfoQuota.tpmLimit') }} {{ formatUpstreamLimit(upstreamLimits.tpm, limitsKnown) }}</span>
+    </div>
+
+    <div
+      v-if="keyAlias || updatedLabel"
+      data-test="userinfo-quota-meta"
+      class="flex flex-wrap items-center gap-x-2 text-[9px] leading-4 text-gray-400"
+    >
+      <span
+        v-if="keyAlias"
+        class="max-w-[120px] truncate"
+        :title="t('admin.accounts.userInfoQuota.keyAlias', { alias: keyAlias })"
+      >
+        {{ t('admin.accounts.userInfoQuota.keyAlias', { alias: keyAlias }) }}
+      </span>
+      <span v-if="updatedLabel" :title="updatedLabel.title">{{ updatedLabel.label }}</span>
     </div>
 
     <!-- 探测按钮 -->
@@ -100,14 +109,28 @@
   </div>
 </template>
 
+<script lang="ts">
+// 模块级去抖：<script setup> 顶层变量是每实例的，翻页/刷新会重新探测。
+const lastAutoProbeAt = new Map<number, number>()
+</script>
+
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { UserInfoQuotaResult } from '@/api/admin/accounts'
 import type { Account } from '@/types'
 import { userInfoQuotaCellVisible } from './credentialsBuilder'
 import { buildUserInfoQuotaRefreshKey } from '@/utils/accountUsageRefresh'
+import { formatDateTime, formatDateTimeToMinute } from '@/utils/format'
+import {
+  deadPercentOf,
+  normalizeQuotaWindow,
+  normalizeScalarBudget,
+  windowReach,
+  type QuotaWindow,
+  type RawQuotaWindow,
+} from '@/utils/upstreamQuota'
 import UsageProgressBar from './UsageProgressBar.vue'
 
 const props = defineProps<{
@@ -123,195 +146,250 @@ const error = ref<string | null>(null)
 const data = ref<UserInfoQuotaResult | null>(null)
 let probeSequence = 0
 
-// 落库快照（后端探测写入 account.Extra，键在 upstream_userinfo_ 命名空间下）。
-const snapshotRemaining = computed(() => {
-  const v = props.account.extra?.upstream_userinfo_remaining
-  return typeof v === 'number' ? v : null
+const SNAPSHOT_STALE_MS = 60_000
+const AUTO_PROBE_DEBOUNCE_MS = 5 * 60_000
+
+const readExtraNumber = (key: string): number | null => {
+  const value = (props.account.extra as Record<string, unknown> | undefined)?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+const readExtraString = (key: string): string => {
+  const value = (props.account.extra as Record<string, unknown> | undefined)?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
+interface QuotaSource {
+  unitSymbol: string
+  valid: boolean
+  keyAlias: string | null
+  updatedAtMs: number | null
+  maxBudget: number | null
+  spend: number | null
+  remaining: number | null
+  resetAt: string | null
+  rawWindows: RawQuotaWindow[]
+  limits: { rpm: number | null; parallel: number | null; tpm: number | null }
+  limitsKnown: boolean
+  showLimits: boolean
+}
+
+const snapshotRawWindows = computed<RawQuotaWindow[]>(() => {
+  const raw = props.account.extra?.upstream_userinfo_windows
+  if (!Array.isArray(raw)) return []
+  return raw.filter((item) => typeof item === 'object' && item !== null) as RawQuotaWindow[]
 })
-const snapshotMaxBudget = computed(() => {
-  const v = props.account.extra?.upstream_userinfo_max_budget
-  return typeof v === 'number' ? v : null
+
+const snapshotUpdatedAtMs = computed(() => {
+  const raw = readExtraString('upstream_userinfo_updated_at')
+  if (raw === '') return null
+  const ms = Date.parse(raw)
+  return Number.isNaN(ms) ? null : ms
 })
-const snapshotSpend = computed(() => {
-  const v = props.account.extra?.upstream_userinfo_spend
-  return typeof v === 'number' ? v : 0
-})
-// 键缺失按未知处理（当作可用），只有显式 false 才判定失效；
-// 与 API 路径的 valid !== false 语义对齐，避免部分写入的 Extra 误报「已失效」。
-const snapshotValid = computed(() => props.account.extra?.upstream_userinfo_valid !== false)
-const snapshotResetAt = computed(() => {
-  const v = props.account.extra?.upstream_userinfo_budget_reset_at
-  return typeof v === 'string' ? v : ''
-})
-const snapshotLimitsKnown = computed(() => props.account.extra?.upstream_userinfo_limits_known === true)
-const snapshotUpstreamLimits = computed(() => {
-  const extra = props.account.extra
+
+// 探测结果优先；没有本次探测结果时读取后端落库的快照。
+const source = computed<QuotaSource | null>(() => {
+  const probe = data.value
+  if (probe?.success) {
+    return {
+      unitSymbol: probe.unit === 'USD' ? '$' : '¥',
+      valid: probe.valid !== false,
+      keyAlias: typeof probe.key_alias === 'string' && probe.key_alias.trim() !== '' ? probe.key_alias.trim() : null,
+      updatedAtMs: probe.fetched_at > 0 ? probe.fetched_at * 1000 : null,
+      maxBudget: typeof probe.max_budget === 'number' ? probe.max_budget : null,
+      spend: typeof probe.spend === 'number' ? probe.spend : null,
+      remaining: typeof probe.remaining === 'number' ? probe.remaining : null,
+      resetAt: typeof probe.budget_reset_at === 'string' && probe.budget_reset_at !== '' ? probe.budget_reset_at : null,
+      rawWindows: Array.isArray(probe.windows) ? probe.windows : [],
+      limits: {
+        rpm: typeof probe.rpm_limit === 'number' ? probe.rpm_limit : null,
+        parallel: typeof probe.max_parallel_requests === 'number' ? probe.max_parallel_requests : null,
+        tpm: typeof probe.tpm_limit === 'number' ? probe.tpm_limit : null,
+      },
+      limitsKnown: probe.limits_known === true,
+      showLimits: true,
+    }
+  }
+
+  const remaining = readExtraNumber('upstream_userinfo_remaining')
+  if (remaining === null) return null
+  const limitsKnownRaw = props.account.extra?.upstream_userinfo_limits_known
   return {
-    rpm: typeof extra?.upstream_userinfo_rpm_limit === 'number' ? extra.upstream_userinfo_rpm_limit : null,
-    parallel: typeof extra?.upstream_userinfo_max_parallel_requests === 'number'
-      ? extra.upstream_userinfo_max_parallel_requests
-      : null,
-    tpm: typeof extra?.upstream_userinfo_tpm_limit === 'number' ? extra.upstream_userinfo_tpm_limit : null
+    unitSymbol: '¥',
+    valid: props.account.extra?.upstream_userinfo_valid !== false,
+    keyAlias: readExtraString('upstream_userinfo_key_alias').trim() || null,
+    updatedAtMs: snapshotUpdatedAtMs.value,
+    maxBudget: readExtraNumber('upstream_userinfo_max_budget'),
+    spend: readExtraNumber('upstream_userinfo_spend'),
+    remaining,
+    resetAt: readExtraString('upstream_userinfo_budget_reset_at') || null,
+    rawWindows: snapshotRawWindows.value,
+    limits: {
+      rpm: readExtraNumber('upstream_userinfo_rpm_limit'),
+      parallel: readExtraNumber('upstream_userinfo_max_parallel_requests'),
+      tpm: readExtraNumber('upstream_userinfo_tpm_limit'),
+    },
+    limitsKnown: limitsKnownRaw === true,
+    showLimits: typeof limitsKnownRaw === 'boolean',
   }
-})
-// Extra 快照里的多档窗口（后端写 upstream_userinfo_windows）。
-const snapshotWindows = computed<UserInfoQuotaResult['windows']>(() => {
-  const v = props.account.extra?.upstream_userinfo_windows
-  if (!Array.isArray(v)) return undefined
-  const windows = v.flatMap((item): NonNullable<UserInfoQuotaResult['windows']> => {
-    if (!item || typeof item !== 'object') return []
-    const { duration, limit, remaining, used_percent, window_spend, used_known, reset_at } = item as Record<string, unknown>
-    if (typeof limit !== 'number') return []
-    return [{
-      duration: typeof duration === 'string' ? duration : undefined,
-      limit,
-      remaining: typeof remaining === 'number' ? remaining : 0,
-      used_percent: typeof used_percent === 'number' ? used_percent : 0,
-      window_spend: typeof window_spend === 'number' ? window_spend : 0,
-      used_known: used_known !== false,
-      reset_at: typeof reset_at === 'string' ? reset_at : undefined
-    }]
-  })
-  return windows.length > 0 ? windows : undefined
 })
 
-const current = computed(() => {
-  if (data.value?.success) return data.value
-  if (snapshotRemaining.value != null) {
-    return {
-      provider: 'upstream_userinfo',
-      success: true,
-      remaining: snapshotRemaining.value,
-      max_budget: snapshotMaxBudget.value ?? 0,
-      spend: snapshotSpend.value,
-      unit: 'CNY',
-      valid: snapshotValid.value,
-      budget_reset_at: snapshotResetAt.value || undefined,
-      windows: snapshotWindows.value,
-      rpm_limit: snapshotUpstreamLimits.value.rpm,
-      max_parallel_requests: snapshotUpstreamLimits.value.parallel,
-      tpm_limit: snapshotUpstreamLimits.value.tpm,
-      limits_known: snapshotLimitsKnown.value,
-      fetched_at: 0,
-      persisted: true
-    } satisfies UserInfoQuotaResult
-  }
-  return null
-})
+const hasData = computed(() => source.value !== null)
+const isValid = computed(() => source.value?.valid !== false)
+const unitSymbol = computed(() => source.value?.unitSymbol ?? '¥')
 
-const hasData = computed(() => current.value != null)
-const isValid = computed(() => current.value?.valid !== false)
-const upstreamLimits = computed(() => {
-  if (data.value?.success) {
-    return {
-      rpm: data.value.rpm_limit ?? null,
-      parallel: data.value.max_parallel_requests ?? null,
-      tpm: data.value.tpm_limit ?? null
-    }
-  }
-  const quota = current.value
-  if (quota?.limits_known) {
-    return {
-      rpm: quota.rpm_limit ?? null,
-      parallel: quota.max_parallel_requests ?? null,
-      tpm: quota.tpm_limit ?? null
-    }
-  }
-  return snapshotUpstreamLimits.value
-})
-const limitsKnown = computed(() => data.value?.success ? data.value.limits_known === true : snapshotLimitsKnown.value)
-const showUpstreamLimits = computed(() =>
-  data.value?.success === true || typeof props.account.extra?.upstream_userinfo_limits_known === 'boolean'
+const windows = computed<QuotaWindow[]>(() =>
+  (source.value?.rawWindows ?? []).flatMap((raw) => normalizeQuotaWindow(raw) ?? [])
 )
+
+const scalar = computed<QuotaWindow | null>(() => {
+  const current = source.value
+  if (!current || current.rawWindows.length > 0) return null
+  return normalizeScalarBudget({
+    maxBudget: current.maxBudget,
+    spend: current.spend,
+    remaining: current.remaining,
+    resetAt: current.resetAt,
+  })
+})
+
+const allWindows = computed<QuotaWindow[]>(() => {
+  if (windows.value.length > 0) return windows.value
+  return scalar.value ? [scalar.value] : []
+})
+
+const hasBudget = computed(() => allWindows.value.length > 0)
+
+const upstreamLimits = computed(() => source.value?.limits ?? { rpm: null, parallel: null, tpm: null })
+const limitsKnown = computed(() => source.value?.limitsKnown === true)
+const showUpstreamLimits = computed(() => source.value?.showLimits === true)
 const formatUpstreamLimit = (limit: number | null, known: boolean) => {
   if (!known) return '—'
   return limit == null ? '∞' : String(limit)
 }
-// 有上限预算才画进度条；无限额只显示文字。
-const hasBudget = computed(() => (current.value?.max_budget ?? 0) > 0)
 
-const usedPercent = computed(() => {
-  const cur = current.value
-  if (!cur || cur.max_budget <= 0) return 0
-  return Math.min(100, Math.round((cur.spend / cur.max_budget) * 1000) / 10)
-})
+const keyAlias = computed(() => source.value?.keyAlias ?? null)
 
-// 多档预算窗口：优先探测结果，其次 Extra 快照；颜色按窗口序号轮转。
-// used_known=false（上游未提供用量）的窗口走 chip 降级，不画进度条。
-const barColors = ['indigo', 'emerald', 'purple'] as const
+const formatAmount = (value: number, unit: string): string => `${unit}${value.toFixed(2)}`
 
-interface WindowBar {
-  label: string
-  color: (typeof barColors)[number]
-  usedPercent: number
-  money: string
-  resetAt?: string
-}
-interface WindowChip {
-  label: string
-  limitLabel: string
-  resetLabel: string
-}
+const windowLabel = (duration: string): string => duration || t('admin.accounts.userInfoQuota.barLabel')
 
-// 固定两位小数，保证各行金额字符串等宽（¥100.00 而非 ¥100），配合
-// UsageProgressBar 金额列定宽，时间列才能纵向对齐。
-const formatMoney = (n: number): string => n.toFixed(2)
-
-const formatResetShort = (raw?: string): string => {
+const formatResetShort = (raw: string | null): string => {
   if (!raw) return ''
-  const d = new Date(raw)
-  if (Number.isNaN(d.getTime())) return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return ''
   // 距重置不足 24h 显示倒计时，否则显示时刻。
-  const ms = d.getTime() - Date.now()
+  const ms = date.getTime() - Date.now()
   if (ms > 0 && ms < 24 * 3600 * 1000) {
     const mins = Math.round(ms / 60000)
     if (mins < 60) return `${mins}m`
     return `${Math.floor(mins / 60)}h${mins % 60 ? `${mins % 60}m` : ''}`
   }
-  return d.toLocaleString()
+  return date.toLocaleString()
 }
 
-const windowLabel = (duration?: string) => duration || t('admin.accounts.userInfoQuota.barLabel')
+const resetTitleFor = (resetAt: string | null): string | undefined => {
+  if (!resetAt) return undefined
+  return t('admin.accounts.userInfoQuota.resetClock', {
+    time: formatDateTime(resetAt, {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }),
+  })
+}
+
+const updatedLabel = computed<{ label: string; title: string } | null>(() => {
+  const ms = source.value?.updatedAtMs
+  if (ms === null || ms === undefined) return null
+  const at = new Date(ms)
+  if (Number.isNaN(at.getTime())) return null
+  const sameDay = at.toDateString() === new Date().toDateString()
+  const time = formatDateTime(
+    at,
+    sameDay
+      ? { hour: '2-digit', minute: '2-digit', hour12: false }
+      : { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
+  )
+  return {
+    label: t('admin.accounts.userInfoQuota.updatedAt', { time }),
+    title: formatDateTimeToMinute(at),
+  }
+})
+
+const barColors = ['indigo', 'emerald', 'purple'] as const
+
+interface WindowBar {
+  key: string
+  label: string
+  color: (typeof barColors)[number]
+  remainingPercent: number
+  deadPercent: number
+  deadTitle?: string
+  money: string
+  resetAt: string | null
+  resetTitle?: string
+}
 
 const barWindows = computed<WindowBar[]>(() => {
-  const cur = current.value
-  if (!cur?.windows?.length) return []
-  const unit = cur.unit === 'USD' ? '$' : '¥'
+  const unit = unitSymbol.value
+  const currentWindows = allWindows.value
   const bars: WindowBar[] = []
-  cur.windows.forEach((w, i) => {
-    if (!w.used_known) return
+  currentWindows.forEach((window, index) => {
+    if (!window.usedKnown || window.remaining === null) return
+    const remainingPercent = Math.min(Math.max((window.remaining / window.limit) * 100, 0), 100)
+    const reach = windowReach(window, currentWindows, Date.now())
+    const deadPercent = deadPercentOf(remainingPercent, reach, window.limit)
+    const deadTitle =
+      deadPercent > 0 && reach !== null
+        ? t('admin.accounts.userInfoQuota.deadTitle', {
+            reachable: formatAmount(Math.max(0, reach.reachable), unit),
+            unreachable: formatAmount(reach.unreachable, unit),
+            by: reach.limitedBy
+              ? t('admin.accounts.userInfoQuota.deadBy', { duration: windowLabel(reach.limitedBy.duration) })
+              : '',
+          })
+        : undefined
+    const money =
+      window.remaining < 0
+        ? `${t('admin.accounts.userInfoQuota.over')} ${formatAmount(-window.remaining, unit)} / ${formatAmount(window.limit, unit)}`
+        : `${formatAmount(window.remaining, unit)} / ${formatAmount(window.limit, unit)}`
     bars.push({
-      label: windowLabel(w.duration),
-      color: barColors[i % barColors.length],
-      usedPercent: w.used_percent,
-      money: `${unit}${formatMoney(w.remaining)} / ${unit}${formatMoney(w.limit)}`,
-      resetAt: w.reset_at
+      key: `${window.duration || 'budget'}-${index}`,
+      label: windowLabel(window.duration),
+      color: barColors[index % barColors.length],
+      remainingPercent,
+      deadPercent,
+      deadTitle,
+      money,
+      resetAt: window.resetAt,
+      resetTitle: resetTitleFor(window.resetAt),
     })
   })
   return bars
 })
 
+interface WindowChip {
+  key: string
+  label: string
+  limitLabel: string
+  resetLabel: string
+}
+
 const chipWindows = computed<WindowChip[]>(() => {
-  const cur = current.value
-  if (!cur?.windows?.length) return []
+  const unit = unitSymbol.value
   const chips: WindowChip[] = []
-  cur.windows.forEach((w) => {
-    if (w.used_known) return
+  allWindows.value.forEach((window, index) => {
+    if (window.usedKnown && window.remaining !== null) return
     chips.push({
-      label: windowLabel(w.duration),
-      limitLabel: `${cur.unit === 'USD' ? '$' : '¥'}${formatMoney(w.limit)}`,
-      resetLabel: formatResetShort(w.reset_at)
+      key: `${window.duration || 'budget'}-${index}`,
+      label: windowLabel(window.duration),
+      limitLabel: formatAmount(window.limit, unit),
+      resetLabel: formatResetShort(window.resetAt),
     })
   })
   return chips
-})
-
-// 单窗口兜底（无 windows 数组时）的金额文本。
-const fallbackMoney = computed(() => {
-  const cur = current.value
-  if (!cur || cur.max_budget <= 0) return ''
-  const unit = cur.unit === 'USD' ? '$' : '¥'
-  return `${unit}${formatMoney(cur.remaining)} / ${unit}${formatMoney(cur.max_budget)}`
 })
 
 const extractErrorMessage = (e: unknown): string => {
@@ -355,6 +433,23 @@ const handleProbe = async () => {
     if (requestSequence === probeSequence) loading.value = false
   }
 }
+
+const snapshotIsStale = (): boolean => {
+  const ms = snapshotUpdatedAtMs.value
+  if (ms === null) return true
+  // 时间戳存在但缺少剩余额度键（部分写入/旧快照）同样需要探测补齐。
+  if (readExtraNumber('upstream_userinfo_remaining') === null) return true
+  return Date.now() - ms > SNAPSHOT_STALE_MS
+}
+
+onMounted(() => {
+  if (!visible.value) return
+  if (!snapshotIsStale()) return
+  const last = lastAutoProbeAt.get(props.account.id) ?? 0
+  if (Date.now() - last < AUTO_PROBE_DEBOUNCE_MS) return
+  lastAutoProbeAt.set(props.account.id, Date.now())
+  void handleProbe()
+})
 
 watch(
   () => buildUserInfoQuotaRefreshKey(props.account),
