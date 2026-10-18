@@ -940,6 +940,7 @@ func userInfoBudgetWindows(keyNode gjson.Result, spend float64, primaryDuration 
 		}
 		windows = append(windows, UserInfoBudgetWindow{
 			Duration:    r.duration,
+			Scope:       UserInfoWindowScopeKey,
 			Limit:       r.limit,
 			Remaining:   remain,
 			UsedPercent: usedPercent,
@@ -1098,6 +1099,7 @@ func userInfoUserBudgetWindow(userNode gjson.Result) *UserInfoBudgetWindow {
 	usedPercent := math.Round(spend/limit*1000) / 10
 	w := &UserInfoBudgetWindow{
 		Duration:    duration,
+		Scope:       UserInfoWindowScopeUser,
 		Limit:       limit,
 		Remaining:   remain,
 		UsedPercent: usedPercent,

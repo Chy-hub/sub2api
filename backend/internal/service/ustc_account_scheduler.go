@@ -144,7 +144,7 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 	})
 	// Preserve non-USTC ordering. Balance USTC only within the same priority/cost:
 	// under high concurrency keep the original live-capacity order, under low
-	// concurrency prefer the least-used budget.
+	// concurrency prefer the key with the most remaining quota.
 	highConcurrency := ustcPoolHighConcurrency(ctx, candidates, capacities)
 	state := s.defaultUSTCPoolState()
 	state.mu.Lock()
@@ -168,20 +168,37 @@ func (s *OpenAIGatewayService) selectBalancedDefaultUSTCAccount(
 			sort.SliceStable(ustc, func(i, j int) bool { return ustc[i].ID < ustc[j].ID })
 			shift := int(offset % uint64(len(ustc)))
 			ustc = append(ustc[shift:], ustc[:shift]...)
-			// High concurrency leaves every usage vector nil, so the budget
+			// High concurrency leaves every remaining slice nil, so the budget
 			// comparison below ties and the live capacity order is preserved.
-			var usage map[int64][]int
+			var remaining map[int64][]ustcQuotaRemaining
+			var trusted map[int64]bool
+			var windowOrder []string
 			if !highConcurrency {
 				now := time.Now()
-				usage = make(map[int64][]int, len(ustc))
+				remaining = make(map[int64][]ustcQuotaRemaining, len(ustc))
+				trusted = make(map[int64]bool, len(ustc))
+				allWindows := make([][]ustcQuotaRemaining, 0, len(ustc))
 				for _, account := range ustc {
-					usage[account.ID] = ustcQuotaUsageBands(account, now)
+					windows, fresh := ustcQuotaRemainingWindows(account, now)
+					remaining[account.ID] = windows
+					trusted[account.ID] = fresh
+					allWindows = append(allWindows, windows)
 				}
+				windowOrder = ustcQuotaWindowOrder(allWindows...)
 			}
 			sort.SliceStable(ustc, func(i, j int) bool {
 				a, b := capacities[ustc[i].ID], capacities[ustc[j].ID]
-				if order := compareUSTCQuotaUsageBands(usage[ustc[i].ID], usage[ustc[j].ID]); order != 0 {
-					return order < 0
+				left, right := remaining[ustc[i].ID], remaining[ustc[j].ID]
+				// A key without usable windows carries no ordering signal; let the
+				// live capacity/rotation tie-break decide instead of treating missing
+				// data as an empty budget.
+				if len(left) > 0 && len(right) > 0 {
+					if trusted[ustc[i].ID] != trusted[ustc[j].ID] {
+						return trusted[ustc[i].ID]
+					}
+					if order := compareUSTCQuotaRemaining(left, right, windowOrder); order != 0 {
+						return order < 0
+					}
 				}
 				x, y := ustcCapacityRatio(a), ustcCapacityRatio(b)
 				if x != y {
@@ -330,32 +347,158 @@ func ustcCapacityRatio(capacity USTCCapacity) float64 {
 }
 
 const (
-	// ustcQuotaUsageBandWidth 把预算窗口的用量比例量化成档位，同一档内保持原来的
-	// 轮询顺序，只有明显更闲的账号才插队。用量快照 30 秒才更新一次，不量化会让
-	// 最低用量的账号在整个快照周期独占流量。
-	ustcQuotaUsageBandWidth = 0.05
-	ustcQuotaUsageMaxBand   = 20
-	// ustcQuotaUsageBandRounding 抵消分档除法的浮点误差：0.15/0.05 在 float64 下
-	// 是 2.999…，直接截断会把正好压在整档边界上的账号算低一档。
-	ustcQuotaUsageBandRounding = 1e-9
-	// ustcQuotaUsageStaleBand 比任何可信观测都差，用于快照过期时兜底。
-	ustcQuotaUsageStaleBand = ustcQuotaUsageMaxBand + 1
-
-	// ustcQuotaUsageTrustedAge 是排序可以信任用量快照的最大年龄。调度路径每 30 秒
-	// 自动补探、失败退避 5 秒，正常流量下快照远新于此；旧到这个界限说明连续探测
-	// 失败或长时间空闲，数字不再代表当前约束，不能拿它决定给谁加权。
-	ustcQuotaUsageTrustedAge = 2 * time.Minute
+	// ustcQuotaRemainingEpsilon absorbs float parsing noise: two observations of
+	// the same shared window can differ in the last bits without representing a
+	// real imbalance.
+	ustcQuotaRemainingEpsilon = 1e-9
+	// ustcQuotaRemainingTrustedAge only guards against a probe that has been
+	// failing for a long time. A shorter limit would disable ordering exactly
+	// when traffic is sparse enough that every snapshot looks old; windows that
+	// already reset are dropped separately, so old numbers cannot survive a
+	// window boundary.
+	ustcQuotaRemainingTrustedAge = 30 * time.Minute
 )
 
-// ustcPoolHighConcurrency 报告本轮是否按「高并发」分散：空中的 USTC 请求数超过
-// 可用账号数时，平均每个账号不止一单在跑，此时按实时容量分散，预算用量让位。
-// 用量窗口是每分钟请求数，长流在窗口里只记一次却始终占着并发，因此这里数空中
-// 请求而不是数窗口用量。
+// ustcQuotaRemaining is one usable budget window's remaining quota. Windows are
+// matched by duration, never by position: a key whose probe omitted a window
+// (or whose upstream stopped reporting usage for it) must not look richer than
+// a key that reports it.
+type ustcQuotaRemaining struct {
+	key       string
+	limit     float64
+	remaining float64
+}
+
+// ustcQuotaRemainingWindows returns remaining quota (limit - window spend) for
+// every usable window. Exact remaining, not a quantized usage ratio, keeps the
+// comparison smooth: the key with the most quota left wins only until another
+// key catches up within roughly one refresh cycle, instead of monopolizing
+// traffic until it crosses the next 5% band.
+func ustcQuotaRemainingWindows(account *Account, now time.Time) ([]ustcQuotaRemaining, bool) {
+	windows := userInfoQuotaWindowsForScheduling(account.Extra)
+	remaining := make([]ustcQuotaRemaining, 0, len(windows))
+	seen := make(map[string]struct{}, len(windows))
+	for _, window := range windows {
+		// /user/info budgets are shared by every key of the same upstream user:
+		// their remaining quota is identical across accounts and cannot rank
+		// them. Exact comparison would otherwise let probe-timing noise on the
+		// shared window outrank the per-key windows. Legacy snapshots carry no
+		// scope and are treated as key-scope budget.
+		if window.Scope == UserInfoWindowScopeUser {
+			continue
+		}
+		// !(Limit > 0) also rejects 0, negative and NaN windows, which cannot
+		// express a comparable budget.
+		if !window.UsedKnown || !(window.Limit > 0) {
+			continue
+		}
+		if window.ResetAt != "" {
+			if reset, err := parseUserInfoTime(window.ResetAt); err == nil && !reset.After(now) {
+				continue
+			}
+		}
+		// Multiple windows with the same duration describe the same budget;
+		// compare them once.
+		if _, duplicate := seen[window.Duration]; duplicate {
+			continue
+		}
+		seen[window.Duration] = struct{}{}
+		remaining = append(remaining, ustcQuotaRemaining{
+			key:       window.Duration,
+			limit:     window.Limit,
+			remaining: window.Limit - window.WindowSpend,
+		})
+	}
+	if len(remaining) == 0 {
+		return nil, false
+	}
+	sort.SliceStable(remaining, func(i, j int) bool { return remaining[i].key < remaining[j].key })
+	return remaining, userInfoQuotaExtraAgeWithin(account.Extra, now, ustcQuotaRemainingTrustedAge)
+}
+
+// ustcQuotaWindowOrder ranks window durations by how tight the pool's remaining
+// fraction is: the window closest to exhaustion decides first, and windows that
+// still have plenty of headroom only break ties. Ordering by duration instead
+// would let an almost-idle 3h window hide a nearly exhausted 12h/24h window.
+func ustcQuotaWindowOrder(accounts ...[]ustcQuotaRemaining) []string {
+	tightest := make(map[string]float64)
+	for _, windows := range accounts {
+		for _, window := range windows {
+			fraction := window.remaining / window.limit
+			if current, ok := tightest[window.key]; !ok || fraction < current {
+				tightest[window.key] = fraction
+			}
+		}
+	}
+	order := make([]string, 0, len(tightest))
+	for key := range tightest {
+		order = append(order, key)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		if tightest[order[i]] != tightest[order[j]] {
+			return tightest[order[i]] < tightest[order[j]]
+		}
+		return order[i] < order[j]
+	})
+	return order
+}
+
+// compareUSTCQuotaRemaining compares absolute remaining quota on the windows
+// both keys report, in the pool's tightest-first order. Windows present on only
+// one side are skipped: missing data is not an empty budget. A zero result
+// means nothing comparable separates the keys, so the caller falls back to live
+// capacity and rotation.
+func compareUSTCQuotaRemaining(a, b []ustcQuotaRemaining, order []string) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	left := make(map[string]float64, len(a))
+	for _, window := range a {
+		left[window.key] = window.remaining
+	}
+	right := make(map[string]float64, len(b))
+	for _, window := range b {
+		right[window.key] = window.remaining
+	}
+	for _, key := range order {
+		l, lok := left[key]
+		r, rok := right[key]
+		if !lok || !rok {
+			continue
+		}
+		if l > r+ustcQuotaRemainingEpsilon {
+			return -1
+		}
+		if l < r-ustcQuotaRemainingEpsilon {
+			return 1
+		}
+	}
+	return 0
+}
+
+// ustcPoolHighConcurrency reports whether this pass is under real capacity
+// pressure: more requests are waiting for a slot than the remaining admission
+// capacity of the candidate keys. Only then does live capacity outrank
+// remaining budget.
+//
+// Counting in-flight requests against the number of keys would call a handful
+// of concurrent streams on a 20-parallel key "high concurrency" and silently
+// disable budget balancing for essentially all real traffic. Each key's
+// Available already subtracts its own in-flight leases and pending RPM
+// reservations, so summing it gives the number of requests the pool can still
+// admit right now.
 func ustcPoolHighConcurrency(ctx context.Context, candidates []*Account, capacities map[int64]USTCCapacity) bool {
-	accounts, inFlight := 0, ustcPoolDemand(ctx)
-	// 容量按物理 Key 共享：重复导入、同 Key 多分组的账号行读到同一份计数，
-	// 必须按 Key 指纹去重，否则行数会把账号数和在途数一起放大。
+	demand := ustcPoolDemand(ctx)
+	if demand <= 0 {
+		// Direct selections (previous_response_id, single-account admission) carry
+		// no queued demand; there is no pressure to trade balancing against.
+		return false
+	}
+	// Capacity is shared by physical key: duplicate imports and one key in several
+	// groups read the same counters, so counting every row would overstate the
+	// remaining capacity and hide a saturated pool.
 	seen := make(map[string]struct{}, len(candidates))
+	available := 0
 	for _, account := range candidates {
 		if !isDefaultUSTCAccount(account) {
 			continue
@@ -366,11 +509,9 @@ func ustcPoolHighConcurrency(ctx context.Context, candidates []*Account, capacit
 			}
 			seen[scope] = struct{}{}
 		}
-		accounts++
-		// InFlight 是未释放的并发租约，已包含尚未发送的预占，不能再加 Pending。
-		inFlight += capacities[account.ID].InFlight
+		available += max(0, capacities[account.ID].Available)
 	}
-	return inFlight > accounts
+	return demand > available
 }
 
 // ustcPoolDemand 是本池还没有拿到租约、仍在等待派发的请求数。一次派发共享同一份
@@ -379,80 +520,6 @@ func ustcPoolHighConcurrency(ctx context.Context, candidates []*Account, capacit
 func ustcPoolDemand(ctx context.Context) int {
 	demand, _ := ctx.Value(ustcPoolDemandKey{}).(int)
 	return demand
-}
-
-func ustcUsageBand(used float64) int {
-	// 超出满档的用量按满档处理。这个判断对 NaN 与 +Inf 同样成立，异常快照只会让
-	// 账号更靠后，不会反过来变成「最闲」的账号。
-	if !(used < float64(ustcQuotaUsageMaxBand)*ustcQuotaUsageBandWidth) {
-		return ustcQuotaUsageMaxBand
-	}
-	// used >= 0，截断即向下取整；加上舍入容差避免整档边界被浮点误差吃低一档。
-	return clampUSTCBand(int(used/ustcQuotaUsageBandWidth+ustcQuotaUsageBandRounding), ustcQuotaUsageMaxBand)
-}
-
-func clampUSTCBand(band, maximum int) int {
-	if band < 0 {
-		return 0
-	}
-	if band > maximum {
-		return maximum
-	}
-	return band
-}
-
-// ustcQuotaUsageBands 返回账号各预算窗口的已用档位，从紧张到宽松降序排列。
-// 已重置、用量未知、限额非正（上游报 `max_budget: 0` 的「无预算」快照会退化成
-// 这种窗口）的条目先被剔除；一条都不剩说明没有可均衡的额度，返回 nil 不降权。
-// 只剩过期快照可用时返回兜底档位：旧数字不代表当前约束，宁可退回容量排序，
-// 账号本身仍然可选，只是排在所有可信快照之后，直到后台补探刷回来。
-// 已知耗尽的窗口由 userInfoQuotaSchedulingFailureReason 拦截，与这里的排序无关。
-func ustcQuotaUsageBands(account *Account, now time.Time) []int {
-	var bands []int
-	for _, window := range userInfoQuotaWindowsForScheduling(account.Extra) {
-		// !(Limit > 0) 同时挡掉 0、负数与 NaN 这些算不出比例的窗口。
-		if !window.UsedKnown || !(window.Limit > 0) {
-			continue
-		}
-		if window.ResetAt != "" {
-			if reset, err := parseUserInfoTime(window.ResetAt); err == nil && !reset.After(now) {
-				continue
-			}
-		}
-		bands = append(bands, ustcUsageBand(window.WindowSpend/window.Limit))
-	}
-	if len(bands) == 0 {
-		return nil
-	}
-	if !ustcQuotaUsageSnapshotTrusted(account.Extra, now) {
-		return []int{ustcQuotaUsageStaleBand}
-	}
-	sort.Sort(sort.Reverse(sort.IntSlice(bands)))
-	return bands
-}
-
-// ustcQuotaUsageSnapshotTrusted 报告用量快照是否新到可以用于排序。这里比刷新触发
-// 的 30 秒有效期宽松：补探在途、偶发失败和短暂空闲都不该让一个健康账号掉队。
-func ustcQuotaUsageSnapshotTrusted(extra map[string]any, now time.Time) bool {
-	return userInfoQuotaExtraAgeWithin(extra, now, ustcQuotaUsageTrustedAge)
-}
-
-// compareUSTCQuotaUsageBands 按「最紧张的窗口优先」比较档位向量：先比最高档，
-// 相同再比次高档，缺失的档位按 0 补齐。
-func compareUSTCQuotaUsageBands(a, b []int) int {
-	for i := 0; i < len(a) || i < len(b); i++ {
-		x, y := 0, 0
-		if i < len(a) {
-			x = a[i]
-		}
-		if i < len(b) {
-			y = b[i]
-		}
-		if x != y {
-			return x - y
-		}
-	}
-	return 0
 }
 
 func ustcCapacityCanRecoverEarly(capacity USTCCapacity) bool {
