@@ -144,86 +144,147 @@ func setUSTCBudgetWindowAge(account *Account, age time.Duration) {
 	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixUpdated)] = time.Now().Add(-age).UTC().Format(time.RFC3339)
 }
 
-func TestUSTCQuotaUsageBandsCompareMostConstrainedWindowFirst(t *testing.T) {
+func TestUSTCQuotaRemainingComparesCommonWindowsTightestFirst(t *testing.T) {
 	now := time.Now()
 	account := &Account{Extra: map[string]any{}}
-	setUSTCBudgetWindows(account, 45, 10)
-	require.Equal(t, []int{9, 2}, ustcQuotaUsageBands(account, now))
-	// The tightest window decides; later windows only break a tie in the first.
-	require.Positive(t, compareUSTCQuotaUsageBands([]int{9, 2}, []int{4, 2}))
-	require.Negative(t, compareUSTCQuotaUsageBands([]int{4, 2}, []int{4, 3}))
-	require.Zero(t, compareUSTCQuotaUsageBands([]int{4, 2}, []int{4, 2}))
-
 	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)] = []UserInfoBudgetWindow{
-		{Limit: 100, WindowSpend: 100, UsedKnown: true, ResetAt: now.Add(-time.Minute).Format(time.RFC3339)},
-		{Limit: 100, UsedKnown: false},
-		{Limit: 100, WindowSpend: 21, UsedKnown: true},
+		{Duration: "3h", Limit: 30, WindowSpend: 1.2, UsedKnown: true},
+		{Duration: "12h", Limit: 70, WindowSpend: 9.0, UsedKnown: true},
+		{Duration: "24h", Limit: 100, WindowSpend: 50.0, UsedKnown: true},
 	}
-	require.Equal(t, []int{4}, ustcQuotaUsageBands(account, now), "reset and unknown windows are not constraints")
+	setUSTCBudgetWindowAge(account, 0)
+	remaining, trusted := ustcQuotaRemainingWindows(account, now)
+	require.True(t, trusted)
+	byKey := make(map[string]ustcQuotaRemaining, len(remaining))
+	for _, window := range remaining {
+		byKey[window.key] = window
+	}
+	require.InDelta(t, 28.8, byKey["3h"].remaining, 1e-9)
+	require.InDelta(t, 61.0, byKey["12h"].remaining, 1e-9)
+	require.InDelta(t, 50.0, byKey["24h"].remaining, 1e-9)
+	// 3h has 96% left, 12h 87%, 24h 50%: the 24h window is the binding one.
+	require.Equal(t, []string{"24h", "12h", "3h"}, ustcQuotaWindowOrder(remaining))
+
+	order := []string{"3h", "12h", "24h"}
+	// The tightest window decides first, and more remaining wins there.
+	require.Negative(t, compareUSTCQuotaRemaining(
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 29.0}},
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}},
+		order,
+	))
+	// A tie on the tightest window falls through to the next one.
+	require.Negative(t, compareUSTCQuotaRemaining(
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}, {key: "12h", limit: 70, remaining: 61.0}},
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}, {key: "12h", limit: 70, remaining: 60.0}},
+		order,
+	))
+	require.Zero(t, compareUSTCQuotaRemaining(
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}, {key: "12h", limit: 70, remaining: 61.0}},
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}, {key: "12h", limit: 70, remaining: 61.0}},
+		order,
+	))
+	// Remaining quota is the metric: 80 left outranks 20 left regardless of how
+	// much either key has already spent.
+	require.Negative(t, compareUSTCQuotaRemaining(
+		[]ustcQuotaRemaining{{key: "3h", limit: 100, remaining: 80.0}},
+		[]ustcQuotaRemaining{{key: "3h", limit: 100, remaining: 20.0}},
+		order,
+	))
+	// A window only one side reports must be skipped, not treated as empty.
+	require.Zero(t, compareUSTCQuotaRemaining(
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}, {key: "12h", limit: 70, remaining: 61.0}},
+		[]ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 28.0}},
+		order,
+	), "missing windows carry no ordering signal")
+	// No budget windows at all also carries no ordering signal.
+	require.Zero(t, compareUSTCQuotaRemaining(nil, []ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 29.0}}, order))
+
+	// A nearly exhausted 12h window must outrank a barely touched 3h window;
+	// ordering by duration would compare 3h first and never see the 12h deficit.
+	nearlyDone := []ustcQuotaRemaining{
+		{key: "3h", limit: 30, remaining: 29.9},
+		{key: "12h", limit: 70, remaining: 1.0},
+	}
+	ample := []ustcQuotaRemaining{
+		{key: "3h", limit: 30, remaining: 29.8},
+		{key: "12h", limit: 70, remaining: 80.0},
+	}
+	order = ustcQuotaWindowOrder(nearlyDone, ample)
+	require.Equal(t, "12h", order[0])
+	require.Positive(t, compareUSTCQuotaRemaining(nearlyDone, ample, order),
+		"the key about to exhaust its 12h budget must not win on a 0.1 3h difference")
+}
+
+func TestUSTCQuotaRemainingWindowsSkipUnusableEntries(t *testing.T) {
+	now := time.Now()
+	account := &Account{Extra: map[string]any{}}
+	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)] = []UserInfoBudgetWindow{
+		{Duration: "3h", Limit: 100, WindowSpend: 100, UsedKnown: true, ResetAt: now.Add(-time.Minute).Format(time.RFC3339)},
+		{Duration: "12h", Limit: 100, UsedKnown: false},
+		{Duration: "24h", Limit: 0, WindowSpend: 5, UsedKnown: true},
+		{Duration: "24h", Limit: math.NaN(), WindowSpend: 5, UsedKnown: true},
+		{Duration: "24h", Limit: 100, WindowSpend: 21, UsedKnown: true},
+	}
+	setUSTCBudgetWindowAge(account, 0)
+	remaining, trusted := ustcQuotaRemainingWindows(account, now)
+	require.True(t, trusted)
+	require.Equal(t, []ustcQuotaRemaining{{key: "24h", limit: 100, remaining: 79}}, remaining,
+		"reset, unknown usage and invalid limits are not constraints")
 
 	// Snapshots read back from the database arrive as decoded JSON, not as the
-	// typed struct: the bands must come out the same either way.
-	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)] = []any{map[string]any{"limit": 100.0, "window_spend": 30.0, "used_known": true}}
-	require.Equal(t, []int{6}, ustcQuotaUsageBands(account, now))
+	// typed struct: remaining must come out the same either way.
+	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)] = []any{map[string]any{"duration": "3h", "limit": 100.0, "window_spend": 30.0, "used_known": true}}
+	remaining, _ = ustcQuotaRemainingWindows(account, now)
+	require.Equal(t, []ustcQuotaRemaining{{key: "3h", limit: 100, remaining: 70}}, remaining)
 
-	// A key the upstream never reported a budget for has nothing to balance.
-	delete(account.Extra, UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows))
-	require.Nil(t, ustcQuotaUsageBands(account, now))
-	require.Zero(t, compareUSTCQuotaUsageBands(nil, []int{0}))
-	require.Less(t, compareUSTCQuotaUsageBands(nil, []int{1}), 0)
-}
-
-func TestUSTCUsageBandRoundsExactBoundaries(t *testing.T) {
-	// 0.15/0.05 is 2.999… in float64; truncating would rank an account sitting
-	// exactly on a band boundary one band better than it is.
-	for _, tc := range []struct {
-		used float64
-		want int
-	}{{0, 0}, {0.0499, 0}, {0.05, 1}, {0.1499, 2}, {0.15, 3}, {0.30, 6}, {0.60, 12}, {0.95, 19}, {1, 20}, {1.5, 20}} {
-		require.Equal(t, tc.want, ustcUsageBand(tc.used), "used=%v", tc.used)
-	}
-	// Malformed ratios must rank last, never first.
-	require.Equal(t, ustcQuotaUsageMaxBand, ustcUsageBand(math.NaN()))
-	require.Equal(t, ustcQuotaUsageMaxBand, ustcUsageBand(math.Inf(1)))
-	require.Equal(t, 0, ustcUsageBand(math.Inf(-1)))
-}
-
-func TestUSTCNoBudgetSnapshotIsNeverDemoted(t *testing.T) {
-	now := time.Now()
-	account := &Account{Extra: map[string]any{}}
 	// A probe that reports no budget persists max_budget: 0 and spend: 0, which
 	// the compatibility path turns into a single Limit 0 window.
+	delete(account.Extra, UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows))
 	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixBudget)] = 0.0
 	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixSpend)] = 0.0
-	require.Nil(t, ustcQuotaUsageBands(account, now))
-	setUSTCBudgetWindowAge(account, 3*time.Hour)
-	require.Nil(t, ustcQuotaUsageBands(account, now), "a key without a budget has nothing to balance, stale or not")
-
-	// A window that cannot produce a ratio is skipped, not ranked as a constraint.
-	setUSTCBudgetWindows(account, 0)
-	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)] = []UserInfoBudgetWindow{
-		{Limit: math.NaN(), WindowSpend: 5, UsedKnown: true},
-		{Limit: 100, WindowSpend: 5, UsedKnown: true},
-	}
-	require.Equal(t, []int{1}, ustcQuotaUsageBands(account, now))
+	remaining, _ = ustcQuotaRemainingWindows(account, now)
+	require.Nil(t, remaining, "a key without a budget has nothing to balance")
 }
 
-func TestUSTCStaleQuotaSnapshotIsNotUsedForOrdering(t *testing.T) {
+func TestUSTCQuotaRemainingIgnoresSharedUserWindow(t *testing.T) {
 	now := time.Now()
 	account := &Account{Extra: map[string]any{}}
-	setUSTCBudgetWindows(account, 0)
-	require.Equal(t, []int{0}, ustcQuotaUsageBands(account, now))
+	account.Extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixWindows)] = []UserInfoBudgetWindow{
+		{Duration: "3h", Scope: UserInfoWindowScopeKey, Limit: 30, WindowSpend: 1, UsedKnown: true},
+		{Duration: "24h", Scope: UserInfoWindowScopeUser, Limit: 100, WindowSpend: 99, UsedKnown: true},
+	}
+	setUSTCBudgetWindowAge(account, 0)
+	remaining, _ := ustcQuotaRemainingWindows(account, now)
+	require.Equal(t, []ustcQuotaRemaining{{key: "3h", limit: 30, remaining: 29}}, remaining,
+		"a shared user budget must not outrank per-key windows")
+}
 
-	// Observations older than the refresh cadence must not rank the key: a
-	// stale "0%" cannot outrank a freshly probed key, but the account stays
-	// selectable until its background refresh lands.
-	setUSTCBudgetWindowAge(account, ustcQuotaUsageTrustedAge+time.Second)
-	require.Equal(t, []int{ustcQuotaUsageStaleBand}, ustcQuotaUsageBands(account, now))
-	require.Positive(t, compareUSTCQuotaUsageBands(ustcQuotaUsageBands(account, now), []int{0}))
+func TestUSTCQuotaRemainingTrustOnlyGuardsLongProbeFailures(t *testing.T) {
+	now := time.Now()
+	account := &Account{Extra: map[string]any{}}
+	setUSTCBudgetWindows(account, 1)
+	_, trusted := ustcQuotaRemainingWindows(account, now)
+	require.True(t, trusted)
+
+	// Sparse traffic leaves snapshots older than the 30s refresh cadence; that
+	// must not disable ordering. Only a probe that has been failing for a long
+	// time loses trust, and even then the last known quota stays comparable.
+	setUSTCBudgetWindowAge(account, 5*time.Minute)
+	remaining, trusted := ustcQuotaRemainingWindows(account, now)
+	require.True(t, trusted, "minutes-old snapshots still rank low-load traffic")
+	require.NotEmpty(t, remaining)
+
+	setUSTCBudgetWindowAge(account, ustcQuotaRemainingTrustedAge+time.Second)
+	require.False(t, func() bool {
+		_, ok := ustcQuotaRemainingWindows(account, now)
+		return ok
+	}())
 
 	// A snapshot without any timestamp is equally untrustworthy.
+	setUSTCBudgetWindowAge(account, 0)
 	delete(account.Extra, UserInfoQuotaExtraKey(UserInfoExtraSuffixUpdated))
-	require.Equal(t, []int{ustcQuotaUsageStaleBand}, ustcQuotaUsageBands(account, now))
+	_, trusted = ustcQuotaRemainingWindows(account, now)
+	require.False(t, trusted)
 }
 
 type ustcTestQuotaRefresher struct{ used float64 }
@@ -252,14 +313,14 @@ func TestUSTCLowConcurrencyPrefersTheLessUsedKey(t *testing.T) {
 	}
 }
 
-func TestUSTCHighConcurrencySpreadsLiveRequestsInsteadOfQuotaUsage(t *testing.T) {
+func TestUSTCLowLoadBudgetOrderingSurvivesConcurrentStreams(t *testing.T) {
 	svc, cache := ustcSchedulerFixture(2, false)
 	accounts := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts
 	setUSTCBudgetWindows(&accounts[0], 45)
 	setUSTCBudgetWindows(&accounts[1], 8)
-	// Three requests are already in the air on the least-used key: spreading
-	// live concurrency now outranks its budget advantage, so the busier-by-budget
-	// key takes this one.
+	// Three long streams occupy the least-used key. That is still low load for a
+	// 20-parallel key, so budget balancing must keep working instead of falling
+	// back to capacity order merely because in-flight requests outnumber keys.
 	scope := USTCKeyScope(&accounts[1])
 	cache.mu.Lock()
 	for i := range 3 {
@@ -268,32 +329,30 @@ func TestUSTCHighConcurrencySpreadsLiveRequestsInsteadOfQuotaUsage(t *testing.T)
 	cache.mu.Unlock()
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
 	require.NoError(t, err)
-	require.Equal(t, int64(1), selection.Account.ID)
+	require.Equal(t, int64(2), selection.Account.ID)
 	selection.ReleaseFunc()
 }
 
-func TestUSTCHighConcurrencyCountsPhysicalKeysNotDuplicateRows(t *testing.T) {
-	svc, cache := ustcSchedulerFixture(6, false)
+func TestUSTCPoolHighConcurrencyCountsPhysicalKeySlotsOnce(t *testing.T) {
+	svc, _ := ustcSchedulerFixture(6, false)
 	accounts := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts
 	for i := range 4 {
 		accounts[i].Credentials["api_key"] = "shared-key"
-		setUSTCBudgetWindows(&accounts[i], 8)
 	}
-	setUSTCBudgetWindows(&accounts[4], 45)
-	setUSTCBudgetWindows(&accounts[5], 45)
-	// Three physical keys, two requests in flight on the shared one: not high
-	// concurrency. Counting its four rows separately would inflate both sides and
-	// hand this request to a 45% key instead of the least-used one.
-	scope := USTCKeyScope(&accounts[0])
-	cache.mu.Lock()
-	for i := range 2 {
-		cache.tickets[fmt.Sprintf("shared-inflight-%d", i)] = &ustcTestTicket{scope: scope, sent: true}
+	candidates := make([]*Account, 0, len(accounts))
+	capacities := make(map[int64]USTCCapacity, len(accounts))
+	for i := range accounts {
+		candidates = append(candidates, &accounts[i])
+		// Every duplicate row of the shared key reports the same single free slot.
+		capacities[accounts[i].ID] = USTCCapacity{Available: 1}
 	}
-	cache.mu.Unlock()
-	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
-	require.NoError(t, err)
-	require.Equal(t, scope, USTCKeyScope(selection.Account))
-	selection.ReleaseFunc()
+	// Three physical keys with one free slot each can absorb three waiters.
+	ctx := context.WithValue(context.Background(), ustcPoolDemandKey{}, 3)
+	require.False(t, ustcPoolHighConcurrency(ctx, candidates, capacities),
+		"counting duplicate rows would overstate capacity and hide pressure")
+	ctx = context.WithValue(context.Background(), ustcPoolDemandKey{}, 4)
+	require.True(t, ustcPoolHighConcurrency(ctx, candidates, capacities),
+		"more waiters than remaining slots is capacity pressure")
 }
 
 func TestUSTCDispatchPassDoesNotDoubleCountItsOwnReservations(t *testing.T) {
@@ -370,15 +429,30 @@ func TestUSTCDemandIgnoresWaitersThatAreAlreadyGone(t *testing.T) {
 	}
 }
 
-func TestUSTCStaleQuotaDoesNotDecideTheSelection(t *testing.T) {
+func TestUSTCModeratelyOldQuotaStillOrdersLowLoad(t *testing.T) {
 	svc, _ := ustcSchedulerFixture(2, false)
 	accounts := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts
 	setUSTCBudgetWindows(&accounts[0], 0)
-	setUSTCBudgetWindowAge(&accounts[0], ustcQuotaUsageTrustedAge+time.Minute)
+	// Sparse low-load traffic regularly leaves snapshots minutes old. Treating
+	// that as "unknown" would silently disable budget balancing exactly when it
+	// is needed, so only a long-running probe failure loses trust.
+	setUSTCBudgetWindowAge(&accounts[0], 5*time.Minute)
 	setUSTCBudgetWindows(&accounts[1], 8)
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
 	require.NoError(t, err)
-	require.Equal(t, int64(2), selection.Account.ID, "a stale snapshot must not rank its key ahead of a fresh one")
+	require.Equal(t, int64(1), selection.Account.ID, "minutes-old spend must still rank the least-used key first")
+	selection.ReleaseFunc()
+}
+
+func TestUSTCLongDeadQuotaDoesNotOverruleFreshData(t *testing.T) {
+	svc, _ := ustcSchedulerFixture(2, false)
+	accounts := svc.accountRepo.(schedulerTestOpenAIAccountRepo).accounts
+	setUSTCBudgetWindows(&accounts[0], 0)
+	setUSTCBudgetWindowAge(&accounts[0], ustcQuotaRemainingTrustedAge+time.Minute)
+	setUSTCBudgetWindows(&accounts[1], 8)
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), selection.Account.ID, "a long-dead probe must not rank its key ahead of a fresh one")
 	selection.ReleaseFunc()
 }
 

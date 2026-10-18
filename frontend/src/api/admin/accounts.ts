@@ -389,6 +389,8 @@ export async function getUsage(id: number, source?: 'passive' | 'active', force?
 export interface UserInfoBudgetWindow {
   /** 窗口周期（如 "3h" / "12h" / "24h"）。 */
   duration?: string
+  /** key = /key/info 的 Key 级窗口；user = /user/info 的用户级共享窗口。 */
+  scope?: 'key' | 'user'
   limit: number
   remaining: number
   /** 窗口内已用百分比（0-100）。 */
