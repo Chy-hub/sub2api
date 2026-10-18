@@ -123,6 +123,8 @@ func TestQueryQuotaForAccount_MergesUserLevel24h(t *testing.T) {
 	require.Equal(t, "12h", w12.Duration)
 
 	require.Equal(t, "24h", w24.Duration)
+	require.Equal(t, UserInfoWindowScopeUser, w24.Scope, "user-level budget is shared and cannot rank keys")
+	require.Equal(t, UserInfoWindowScopeKey, w3.Scope)
 	require.Equal(t, 100.0, w24.Limit)
 	// 用户级窗口必须用 user_info.spend（周期内消耗），不能用 key 的生命周期 spend。
 	require.InDelta(t, 0.390654, w24.WindowSpend, 1e-9)
