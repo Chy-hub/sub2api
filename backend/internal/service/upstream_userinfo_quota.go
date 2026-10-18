@@ -76,8 +76,9 @@ func (s *OpenAIGatewayService) refreshUSTCQuotaForScheduling(ctx context.Context
 }
 
 // A known exhausted window blocks this key until its reset; unknown usage stays
-// usable. Non-exhausted usage also orders the USTC pool (see ustcQuotaUsageBands),
-// but only ahead of the 60s window comparison at low concurrency.
+// usable. Remaining non-exhausted window quota also orders the USTC pool (see
+// ustcQuotaRemainingWindows), but only ahead of the 60s window comparison at low
+// concurrency.
 func userInfoQuotaSchedulingFailureReason(account *Account, now time.Time) string {
 	if !isDefaultUSTCAccount(account) || len(account.Extra) == 0 {
 		return ""
@@ -135,7 +136,7 @@ func userInfoQuotaWindowsForScheduling(extra map[string]any) []UserInfoBudgetWin
 		return nil
 	}
 	resetAt, _ := extra[UserInfoQuotaExtraKey(UserInfoExtraSuffixResetAt)].(string)
-	return []UserInfoBudgetWindow{{Limit: budget, WindowSpend: spend, UsedKnown: true, ResetAt: resetAt}}
+	return []UserInfoBudgetWindow{{Scope: UserInfoWindowScopeKey, Limit: budget, WindowSpend: spend, UsedKnown: true, ResetAt: resetAt}}
 }
 
 func userInfoQuotaWindowExhausted(window UserInfoBudgetWindow) bool {
@@ -229,10 +230,21 @@ func userInfoSiteURL(baseURL, suffix string) string {
 	return trimmed + suffix
 }
 
+// Budget window scopes. A key-scope window belongs to one API key and can rank
+// keys against each other; a user-scope window (from /user/info) is shared by
+// every key of the same upstream user, so its reading is identical across those
+// keys and must not drive per-key ordering.
+const (
+	UserInfoWindowScopeKey  = "key"
+	UserInfoWindowScopeUser = "user"
+)
+
 // UserInfoBudgetWindow 单档预算窗口（如 3h/12h/24h 多层预算）。
 type UserInfoBudgetWindow struct {
 	// Duration 窗口周期（如 "3h" / "12h" / "24h"），来自 budget_duration。
 	Duration string `json:"duration,omitempty"`
+	// Scope "key"（/key/info）或 "user"（/user/info）。空值按 key 处理，兼容旧快照。
+	Scope string `json:"scope,omitempty"`
 	// Limit 该窗口的预算上限。
 	Limit float64 `json:"limit"`
 	// Remaining 该窗口的剩余额度（limit - window_spend）。
