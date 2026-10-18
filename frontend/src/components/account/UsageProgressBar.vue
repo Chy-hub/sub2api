@@ -36,15 +36,26 @@
     <!-- Progress bar row -->
     <div class="flex items-center gap-1">
       <!-- Label badge (label-width: fixed = 定宽居中, auto = 限宽截断左对齐) -->
-      <span :class="[labelSizeClass, labelClass]">
+      <span data-test="usage-progress-label" :class="[labelSizeClass, labelClass]">
         {{ label }}
       </span>
 
       <!-- Progress bar container -->
-      <div class="h-1.5 w-8 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+      <div
+        data-test="usage-progress-track"
+        class="flex h-1.5 w-8 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+        :title="deadWidth > 0 ? deadTitle : undefined"
+      >
         <div
-          :class="['h-full transition-all duration-300', barClass]"
+          data-test="usage-progress-live"
+          :class="['h-full flex-none transition-all duration-300', barClass]"
           :style="{ width: barWidth }"
+        ></div>
+        <div
+          v-if="deadWidth > 0"
+          data-test="usage-progress-dead"
+          class="h-full flex-none bg-red-100 dark:bg-red-950/40"
+          :style="{ width: `${deadWidth}%`, backgroundImage: DEAD_STRIPES }"
         ></div>
       </div>
 
@@ -57,7 +68,10 @@
       <span
         v-if="money"
         data-test="usage-progress-money"
-        class="w-[112px] shrink-0 truncate whitespace-nowrap tabular-nums text-[10px] text-gray-500 dark:text-gray-400"
+        :class="[
+          'shrink-0 truncate whitespace-nowrap tabular-nums text-[10px] text-gray-500 dark:text-gray-400',
+          moneyWidthClass,
+        ]"
         :title="money"
       >
         {{ money }}
@@ -66,8 +80,9 @@
       <!-- Reset time -->
       <span
         v-if="shouldShowResetTime"
+        data-test="usage-progress-reset"
         class="w-[44px] shrink-0 truncate whitespace-nowrap text-right tabular-nums text-[10px] text-gray-400"
-        :title="formatResetTime"
+        :title="resetTitle || formatResetTime"
       >
         {{ formatResetTime }}
       </span>
@@ -96,8 +111,14 @@ const props = withDefaults(
     labelWidth?: 'fixed' | 'auto'
     /** 百分比右侧的金额文本（如 ¥25 / ¥30），可选 */
     money?: string
+    /** 剩余额度模式下，剩余部分中重置前用不完的百分比 */
+    deadPercent?: number
+    /** 废额度悬停说明 */
+    deadTitle?: string
+    /** 重置时间的悬停文案覆盖 */
+    resetTitle?: string
   }>(),
-  { labelWidth: 'fixed' }
+  { labelWidth: 'fixed', deadPercent: 0 }
 )
 
 const { t } = useI18n()
@@ -149,12 +170,25 @@ const labelSizeClass = computed(() =>
     : 'w-[32px] shrink-0 rounded px-1 text-center text-[10px] font-medium'
 )
 
+const DEAD_STRIPES =
+  'repeating-linear-gradient(45deg, rgb(239 68 68 / 0.85) 0 2px, transparent 2px 4px)'
+
+const trackPercent = computed(() => Math.min(Math.max(props.utilization, 0), 100))
+
+// 废额度段只出现在剩余额度模式，且不能超过剩余部分。
+const deadWidth = computed(() =>
+  props.remainingCapacity
+    ? Math.min(Math.max(props.deadPercent, 0), trackPercent.value)
+    : 0
+)
+
 // Progress bar color based on utilization
 const barClass = computed(() => {
   if (props.remainingCapacity) {
-    if (props.utilization <= 20) {
+    // 剩余 ≤10% / ≤25% 等价于已用 ≥90% / ≥75%。
+    if (trackPercent.value <= 10) {
       return 'bg-red-500'
-    } else if (props.utilization <= 50) {
+    } else if (trackPercent.value <= 25) {
       return 'bg-amber-500'
     }
     return 'bg-green-500'
@@ -171,9 +205,9 @@ const barClass = computed(() => {
 // Text color based on utilization
 const textClass = computed(() => {
   if (props.remainingCapacity) {
-    if (props.utilization <= 20) {
+    if (trackPercent.value <= 10) {
       return 'text-red-600 dark:text-red-400'
-    } else if (props.utilization <= 50) {
+    } else if (trackPercent.value <= 25) {
       return 'text-amber-600 dark:text-amber-400'
     }
     return 'text-gray-600 dark:text-gray-400'
@@ -189,38 +223,48 @@ const textClass = computed(() => {
 
 // Bar width (capped at 100%)
 const barWidth = computed(() => {
-  return `${Math.min(Math.max(props.utilization, 0), 100)}%`
+  const percent = props.remainingCapacity
+    ? trackPercent.value - deadWidth.value
+    : trackPercent.value
+  return `${percent}%`
 })
 
 // Display percentage (cap at 999% for readability)
 const displayPercent = computed(() => {
   const percent = Math.round(
-    props.remainingCapacity
-      ? Math.min(Math.max(props.utilization, 0), 100)
-      : props.utilization
+    props.remainingCapacity ? trackPercent.value : props.utilization
   )
   return percent > 999 ? '>999%' : `${percent}%`
 })
 
+const isIdle = computed(() =>
+  props.remainingCapacity ? trackPercent.value >= 100 : props.utilization <= 0
+)
+const isConsumed = computed(() =>
+  props.remainingCapacity ? trackPercent.value < 100 : props.utilization > 0
+)
+
 const shouldShowResetTime = computed(() => {
   if (props.resetsAt) return true
-  return Boolean(props.showNowWhenIdle && props.utilization <= 0)
+  return Boolean(props.showNowWhenIdle && isIdle.value)
 })
+
+const moneyWidthClass = computed(() => (props.remainingCapacity ? 'w-[128px]' : 'w-[112px]'))
 
 // Format reset time
 const formatResetTime = computed(() => {
   if (!props.resetsAt) {
     // Idle rolling window without a known reset time: treat as immediately available.
-    return props.showNowWhenIdle && props.utilization <= 0 ? t('usage.resetNow') : '-'
+    return props.showNowWhenIdle && isIdle.value ? t('usage.resetNow') : '-'
   }
 
   const date = new Date(props.resetsAt)
   const diffMs = date.getTime() - now.value.getTime()
 
-  // resetsAt 已过期：utilization>0 说明后端窗口数据还没刷新（active poll 没回写），
+  // resetsAt 已过期：仍有消耗说明后端窗口数据还没刷新（active poll 没回写），
   // 显示「待刷新」以区别于真正可用的「现在」。
   if (diffMs <= 0) {
-    return props.utilization > 0 ? t('usage.resetPending') : t('usage.resetNow')
+    return isConsumed.value ? t('usage.resetPending') : t('usage.resetNow')
   }
 
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60))

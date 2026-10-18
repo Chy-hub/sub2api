@@ -132,7 +132,7 @@ describe('UsageProgressBar', () => {
     expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-green-500')
   })
 
-  it('剩余容量模式在低量和耗尽时缩短并变红', async () => {
+  it('剩余容量模式按剩余 10/25 阈值分级并缩短', async () => {
     const wrapper = mount(UsageProgressBar, {
       props: {
         label: 'Req',
@@ -144,13 +144,75 @@ describe('UsageProgressBar', () => {
 
     expect(wrapper.text()).toContain('15%')
     expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 15%')
+    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-amber-500')
+
+    await wrapper.setProps({ utilization: 10 })
     expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
 
-    await wrapper.setProps({ utilization: 0 })
+    await wrapper.setProps({ utilization: 25 })
+    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-amber-500')
 
+    await wrapper.setProps({ utilization: 26 })
+    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-green-500')
+
+    await wrapper.setProps({ utilization: 0 })
     expect(wrapper.text()).toContain('0%')
     expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 0%')
     expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
+  })
+
+  it('剩余额度模式绘制废额度斜纹段', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '24h',
+        utilization: 70,
+        remainingCapacity: true,
+        deadPercent: 40,
+        deadTitle: 'dead quota hint',
+        color: 'indigo'
+      }
+    })
+
+    expect(wrapper.get('[data-test="usage-progress-live"]').attributes('style')).toContain('width: 30%')
+    const dead = wrapper.get('[data-test="usage-progress-dead"]')
+    expect(dead.attributes('style')).toContain('width: 40%')
+    expect(dead.attributes('style')).toContain('repeating-linear-gradient')
+    expect(wrapper.get('[data-test="usage-progress-track"]').attributes('title')).toBe('dead quota hint')
+    wrapper.unmount()
+  })
+
+  it('剩余额度模式加宽金额列，并允许覆盖重置时间 title', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '3h',
+        utilization: 50,
+        remainingCapacity: true,
+        color: 'indigo',
+        money: '¥15.00 / ¥30.00',
+        resetsAt: '2026-03-17T02:30:00Z',
+        resetTitle: '重置时间 03-17 10:30'
+      }
+    })
+
+    expect(wrapper.get('[data-test="usage-progress-money"]').classes()).toContain('w-[128px]')
+    expect(wrapper.get('[data-test="usage-progress-reset"]').attributes('title')).toBe(
+      '重置时间 03-17 10:30'
+    )
+    wrapper.unmount()
+  })
+
+  it('剩余额度模式重置已过期时区分待刷新与当前可用', () => {
+    const props = {
+      label: '3h',
+      remainingCapacity: true,
+      color: 'indigo' as const,
+      resetsAt: '2026-03-16T22:00:00Z'
+    }
+    const consumed = mount(UsageProgressBar, { props: { ...props, utilization: 50 } })
+    expect(consumed.text()).toContain('usage.resetPending')
+
+    const idle = mount(UsageProgressBar, { props: { ...props, utilization: 100 } })
+    expect(idle.text()).toContain('usage.resetNow')
   })
 
   it('默认利用率模式仍把超限显示为满格红色', () => {
