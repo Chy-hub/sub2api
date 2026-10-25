@@ -20,6 +20,27 @@ func newUSTCPoolWaitTestCache(t *testing.T) (*RPMCacheImpl, *redis.Client, *mini
 	return &RPMCacheImpl{rdb: client}, client, server
 }
 
+func TestUSTCSpeedWaitingGuardIncludesOtherPoolsAndIgnoresExpiredLeases(t *testing.T) {
+	cache, client, server := newUSTCPoolWaitTestCache(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
+	server.SetTime(now)
+	_, err := client.ZAdd(ctx, ustcPoolWaitKeyPrefix+"expired", redis.Z{Score: float64(now.UnixMilli()), Member: "expired-user"}).Result()
+	require.NoError(t, err)
+	waiting, err := cache.USTCHasWaiting(ctx)
+	require.NoError(t, err)
+	require.False(t, waiting)
+	_, err = client.ZAdd(ctx, ustcPoolWaitKeyPrefix+"other-instance-pool", redis.Z{Score: float64(now.Add(time.Minute).UnixMilli()), Member: "waiting-user"}).Result()
+	require.NoError(t, err)
+	waiting, err = cache.USTCHasWaiting(ctx)
+	require.NoError(t, err)
+	require.True(t, waiting, "background probes must yield to a user in any backend pool")
+	server.SetTime(now.Add(time.Minute))
+	waiting, err = cache.USTCHasWaiting(ctx)
+	require.NoError(t, err)
+	require.False(t, waiting, "expired leases must not suspend background work indefinitely")
+}
+
 func TestUSTCPoolWaitEnforcesSharedLimitAtomically(t *testing.T) {
 	cache, client, _ := newUSTCPoolWaitTestCache(t)
 	const (
