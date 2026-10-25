@@ -91,7 +91,11 @@ func ustcSpeedWhere(q service.USTCSpeedQuery) (string, []any) {
 		add("status", q.Status)
 	}
 	if q.Profile != "" {
-		add("profile", q.Profile)
+		if q.Profile == "legacy" && q.GroupBy != "profile" {
+			clauses = append(clauses, "payload->>'measurement_mode'='legacy_usage'")
+		} else {
+			add("profile", q.Profile)
+		}
 	}
 	if q.Reasoning != "" && q.Reasoning != "all" {
 		add("reasoning", q.Reasoning)
@@ -129,8 +133,22 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 	if !ustcSpeedMetrics[q.Metric] {
 		return nil, fmt.Errorf("invalid speed metric")
 	}
+	groupBy := q.GroupBy
+	if groupBy == "" {
+		groupBy = "model"
+	}
+	if groupBy != "model" && groupBy != "profile" {
+		return nil, fmt.Errorf("invalid speed group")
+	}
+	aggregate := q.Aggregate
+	if aggregate == "" {
+		aggregate = "mean"
+	}
+	if aggregate != "mean" && aggregate != "p10" && aggregate != "p50" && aggregate != "p90" {
+		return nil, fmt.Errorf("invalid speed aggregate")
+	}
 	where, args := ustcSpeedWhere(q)
-	out := &service.USTCSpeedOverview{Metric: q.Metric, Unit: "ms", Interval: q.Interval, Aggregate: q.Aggregate, Series: []service.USTCSpeedPoint{}}
+	out := &service.USTCSpeedOverview{Metric: q.Metric, Unit: "ms", Interval: q.Interval, GroupBy: groupBy, Aggregate: aggregate, Series: []service.USTCSpeedPoint{}}
 	if strings.HasSuffix(q.Metric, "tps") {
 		out.Unit = "tps"
 	}
@@ -146,23 +164,27 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 	}
 	interval := q.Interval
 	if interval == "auto" || interval == "" {
-		switch {
-		case s.Samples <= 1000:
-			interval = "raw"
-		case q.End.Sub(q.Start) <= 48*time.Hour:
+		switch duration := q.End.Sub(q.Start); {
+		case duration <= 48*time.Hour:
+			interval = "1m"
+		case duration <= 8*24*time.Hour:
 			interval = "5m"
-		case q.End.Sub(q.Start) <= 8*24*time.Hour:
-			interval = "1h"
+		case duration <= 31*24*time.Hour:
+			interval = "15m"
 		default:
-			interval = "1d"
+			interval = "1h"
 		}
 	}
 	out.Interval = interval
+	profileExpr := "profile"
+	if groupBy == "model" {
+		profileExpr = "CASE WHEN payload->>'measurement_mode'='legacy_usage' THEN 'legacy' ELSE '' END"
+	}
 	value := "(payload->>'" + q.Metric + "')::double precision"
 	// Failed/cancelled observations remain in status summaries, not healthy-speed quantiles.
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
 	if interval == "raw" {
-		rows, err := r.db.QueryContext(ctx, `SELECT id,started_at,account_id,account_name,model,source,profile,round_id,`+valid+` FROM ustc_speed_samples WHERE `+where+` ORDER BY started_at DESC,id DESC LIMIT 5001`, args...)
+		rows, err := r.db.QueryContext(ctx, `SELECT id,started_at,account_id,account_name,model,source,`+profileExpr+`,round_id,`+valid+` FROM ustc_speed_samples WHERE `+where+` ORDER BY started_at DESC,id DESC LIMIT 5001`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -198,12 +220,12 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		}
 		return out, nil
 	}
-	seconds, ok := map[string]int{"5m": 300, "15m": 900, "1h": 3600, "1d": 86400}[interval]
+	seconds, ok := map[string]int{"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}[interval]
 	if !ok {
 		return nil, fmt.Errorf("invalid speed interval")
 	}
 	bucket := fmt.Sprintf("to_timestamp(floor(extract(epoch from started_at)/%d)*%d)", seconds, seconds)
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,account_id,account_name,model,source,profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT bucket,account_id,MAX(account_name),model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,account_id,model,source,profile ORDER BY bucket,account_id,model,source,profile LIMIT 5001`, args...)
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,account_id,account_name,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT bucket,account_id,MAX(account_name),model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,account_id,model,source,profile ORDER BY bucket,account_id,model,source,profile LIMIT 5001`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -213,14 +235,14 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		if err = rows.Scan(&point.Time, &point.AccountID, &point.AccountName, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
 			return nil, err
 		}
-		switch q.Aggregate {
+		switch aggregate {
 		case "mean":
 			point.Value = point.Mean
 		case "p10":
 			point.Value = point.P10
 		case "p90":
 			point.Value = point.P90
-		default:
+		case "p50":
 			point.Value = point.P50
 		}
 		out.Series = append(out.Series, point)
@@ -449,61 +471,6 @@ func (r *ustcSpeedRepository) SaveRuntime(ctx context.Context, scope string, val
 	_, err := r.db.ExecContext(ctx, `INSERT INTO ustc_speed_runtime(key_scope,not_before,paused) VALUES($1,$2,$3) ON CONFLICT(key_scope) DO UPDATE SET not_before=$2,paused=$3,updated_at=NOW()`, scope, value.NotBefore, value.Paused)
 	return err
 }
-func (r *ustcSpeedRepository) ReserveBudget(ctx context.Context, taskID int64, requests, outputTokens, taskRequests, taskTokens, globalRequests, globalTokens int) (bool, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(801760248)`); err != nil {
-		return false, err
-	}
-	budgets := []struct {
-		key              string
-		requests, tokens int
-	}{{"global", globalRequests, globalTokens}, {fmt.Sprintf("task:%d", taskID), taskRequests, taskTokens}}
-	for _, b := range budgets {
-		var usedRequests, usedTokens int64
-		err = tx.QueryRowContext(ctx, `SELECT requests,output_tokens FROM ustc_speed_daily_budget WHERE day=(NOW() AT TIME ZONE 'UTC')::date AND budget_key=$1`, b.key).Scan(&usedRequests, &usedTokens)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, err
-		}
-		if usedRequests+int64(requests) > int64(b.requests) || usedTokens+int64(outputTokens) > int64(b.tokens) {
-			return false, nil
-		}
-	}
-	for _, b := range budgets {
-		_, err = tx.ExecContext(ctx, `INSERT INTO ustc_speed_daily_budget(day,budget_key,requests,output_tokens) VALUES((NOW() AT TIME ZONE 'UTC')::date,$1,$2,$3) ON CONFLICT(day,budget_key) DO UPDATE SET requests=ustc_speed_daily_budget.requests+$2,output_tokens=ustc_speed_daily_budget.output_tokens+$3`, b.key, requests, outputTokens)
-		if err != nil {
-			return false, err
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-func (r *ustcSpeedRepository) Cleanup(ctx context.Context, before time.Time) error {
-	// Commit bounded batches so cleanup does not hold one large transaction.
-	// Drain the backlog within the caller's deadline instead of limiting
-	// retention throughput to a single batch per scheduler tick.
-	for {
-		result, err := r.db.ExecContext(ctx, `DELETE FROM ustc_speed_samples WHERE id IN(SELECT id FROM ustc_speed_samples WHERE started_at<$1 ORDER BY started_at,id LIMIT 5000)`, before)
-		if err != nil {
-			return err
-		}
-		deleted, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if deleted < 5000 {
-			break
-		}
-	}
-	_, err := r.db.ExecContext(ctx, `DELETE FROM ustc_speed_daily_budget WHERE day<(NOW() AT TIME ZONE 'UTC')::date-7`)
-	return err
-}
-
 func (r *ustcSpeedRepository) ImportUsage(ctx context.Context, before, after time.Time, accountIDs []int64, limit int) (int64, error) {
 	if len(accountIDs) == 0 {
 		return 0, nil

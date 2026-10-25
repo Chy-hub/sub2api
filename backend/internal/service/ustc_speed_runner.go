@@ -42,9 +42,6 @@ func (s *USTCSpeedService) schedulerLoop() {
 				s.refreshSettings(ctx)
 				s.importHistory(ctx)
 			}
-			if turn%60 == 1 {
-				_ = s.repo.Cleanup(ctx, time.Now().Add(-time.Duration(s.cfg.Load().RetentionDays)*24*time.Hour))
-			}
 			tasks, err := s.repo.ListTasks(ctx)
 			if err == nil {
 				for i := range tasks {
@@ -501,16 +498,6 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 	}
 	defer selection.ReleaseUSTCAdmission()
 	account = selection.Account
-	plannedRequests, plannedOutput := 1, task.MaxTokens
-	if selection.ustcAdmission.ticket.Cold && task.Stream {
-		plannedRequests++
-		plannedOutput++
-	}
-	cfg := s.cfg.Load()
-	allowed, err := s.repo.ReserveBudget(ctx, task.ID, plannedRequests, plannedOutput, task.MaxDailyRequests, task.MaxDailyOutputTokens, cfg.DailyRequestBudget, cfg.DailyOutputTokenBudget)
-	if err != nil || !allowed {
-		return skip("daily_budget")
-	}
 	mapped := account.GetMappedModel(model)
 	body, err := speedProbeBody(task, mapped, prompt)
 	if err != nil {

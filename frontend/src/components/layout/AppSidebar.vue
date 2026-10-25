@@ -842,7 +842,6 @@ const adminNavItems = computed((): NavItem[] => {
       expandOnly: true,
       children: [
         { path: '/admin/ustc-speed', label: t('admin.ustcSpeed.nav.overview'), icon: ChartIcon },
-        { path: '/admin/ustc-speed/samples', label: t('admin.ustcSpeed.nav.samples'), icon: OrderIcon },
         { path: '/admin/ustc-speed/tasks', label: t('admin.ustcSpeed.nav.tasks'), icon: CogIcon },
       ],
     },

@@ -649,15 +649,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/admin/ustc-speed/samples',
-    name: 'AdminUSTCSpeedSamples',
-    component: () => import('@/views/admin/USTCSpeedView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'USTC Speed Samples',
-      titleKey: 'admin.ustcSpeed.samplesTitle',
-      descriptionKey: 'admin.ustcSpeed.description'
-    }
+    redirect: (to) => ({ path: '/admin/ustc-speed', query: to.query, hash: to.hash })
   },
   {
     path: '/admin/ustc-speed/tasks',

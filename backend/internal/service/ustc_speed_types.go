@@ -103,8 +103,6 @@ type USTCSpeedTask struct {
 	RealFallback              bool       `json:"real_fallback"`
 	RealFallbackMaxAgeSeconds int        `json:"real_fallback_max_age_seconds"`
 	RealFallbackMinSamples    int        `json:"real_fallback_min_samples"`
-	MaxDailyRequests          int        `json:"max_daily_requests"`
-	MaxDailyOutputTokens      int        `json:"max_daily_output_tokens"`
 	NextRunAt                 *time.Time `json:"next_run_at"`
 	LastRunAt                 *time.Time `json:"last_run_at"`
 	LastStatus                string     `json:"last_status"`
@@ -114,15 +112,13 @@ type USTCSpeedTask struct {
 
 type USTCSpeedSettings struct {
 	CaptureEnabled           bool `json:"capture_enabled"`
-	RetentionDays            int  `json:"retention_days"`
 	MaxBackgroundConcurrency int  `json:"max_background_concurrency"`
-	DailyRequestBudget       int  `json:"daily_request_budget"`
-	DailyOutputTokenBudget   int  `json:"daily_output_token_budget"`
 }
 
 type USTCSpeedQuery struct {
 	Start, End                  time.Time
 	Model, Source, Status       string
+	GroupBy                     string
 	AccountIDs                  []int64
 	TaskID                      int64
 	Reasoning, Stream, Profile  string
@@ -175,6 +171,7 @@ type USTCSpeedOverview struct {
 	Metric                string           `json:"metric"`
 	Unit                  string           `json:"unit"`
 	Interval              string           `json:"interval"`
+	GroupBy               string           `json:"group_by"`
 	Aggregate             string           `json:"aggregate"`
 	Summary               USTCSpeedSummary `json:"summary"`
 	Series                []USTCSpeedPoint `json:"series"`
@@ -230,6 +227,4 @@ type USTCSpeedRepository interface {
 	ReleaseKey(context.Context, string, string) error
 	GetRuntime(context.Context, string) (*USTCSpeedRuntime, error)
 	SaveRuntime(context.Context, string, *USTCSpeedRuntime) error
-	ReserveBudget(context.Context, int64, int, int, int, int, int, int) (bool, error)
-	Cleanup(context.Context, time.Time) error
 }

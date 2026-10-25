@@ -13,7 +13,7 @@ export type USTCSpeedMetric =
   | 'headers_ms'
   | 'tail_ms'
   | 'max_gap_ms'
-export type USTCSpeedInterval = 'raw' | '5m' | '15m' | '1h' | '1d' | 'auto'
+export type USTCSpeedInterval = 'raw' | '1m' | '5m' | '15m' | '1h' | '1d' | 'auto'
 export type USTCSpeedAggregate = 'p50' | 'mean' | 'p10' | 'p90'
 
 export interface USTCSpeedAccountDimension {
@@ -48,6 +48,7 @@ export interface USTCSpeedQuery {
   metric?: USTCSpeedMetric
   interval?: USTCSpeedInterval
   aggregate?: USTCSpeedAggregate
+  group_by?: 'model' | 'profile'
   limit?: number
   offset?: number
 }
@@ -139,6 +140,7 @@ export interface USTCSpeedSummary {
 }
 
 export interface USTCSpeedOverview {
+  group_by: 'model' | 'profile'
   metric: USTCSpeedMetric
   unit: string
   interval: USTCSpeedInterval
@@ -194,8 +196,6 @@ export interface USTCSpeedTask {
   real_fallback: boolean
   real_fallback_max_age_seconds: number
   real_fallback_min_samples: number
-  max_daily_requests: number
-  max_daily_output_tokens: number
   next_run_at: string | null
   last_run_at: string | null
   last_status: string
@@ -210,10 +210,7 @@ export type USTCSpeedTaskInput = Omit<
 
 export interface USTCSpeedSettings {
   capture_enabled: boolean
-  retention_days: number
   max_background_concurrency: number
-  daily_request_budget: number
-  daily_output_token_budget: number
 }
 
 export interface USTCSpeedRuntime {
