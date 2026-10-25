@@ -75,12 +75,8 @@ type ustcSpeedRunnerRepository struct {
 	runtime        *USTCSpeedRuntime
 	acquireAllowed bool
 	acquireErr     error
-	budgetAllowed  bool
-	budgetErr      error
 	acquireCalls   int
 	releaseCalls   int
-	budgetCalls    int
-	budgetArgs     []int
 	inserted       []USTCSpeedSample
 }
 
@@ -128,14 +124,6 @@ func (r *ustcSpeedRunnerRepository) ReleaseKey(context.Context, string, string) 
 	return nil
 }
 
-func (r *ustcSpeedRunnerRepository) ReserveBudget(_ context.Context, _ int64, requests, outputTokens, taskRequests, taskTokens, globalRequests, globalTokens int) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.budgetCalls++
-	r.budgetArgs = []int{requests, outputTokens, taskRequests, taskTokens, globalRequests, globalTokens}
-	return r.budgetAllowed, r.budgetErr
-}
-
 func (r *ustcSpeedRunnerRepository) InsertSample(_ context.Context, sample *USTCSpeedSample) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -147,10 +135,10 @@ func (r *ustcSpeedRunnerRepository) ListSamples(context.Context, USTCSpeedQuery)
 	return nil, 0, nil
 }
 
-func (r *ustcSpeedRunnerRepository) snapshot() (inserted []USTCSpeedSample, acquireCalls, releaseCalls, budgetCalls int, budgetArgs []int) {
+func (r *ustcSpeedRunnerRepository) snapshot() (inserted []USTCSpeedSample, acquireCalls, releaseCalls int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]USTCSpeedSample(nil), r.inserted...), r.acquireCalls, r.releaseCalls, r.budgetCalls, append([]int(nil), r.budgetArgs...)
+	return append([]USTCSpeedSample(nil), r.inserted...), r.acquireCalls, r.releaseCalls
 }
 
 type ustcSpeedWaitCapacityCache struct {
@@ -177,7 +165,7 @@ func (c *ustcSpeedWaitCapacityCache) USTCReserve(ctx context.Context, scope stri
 
 func newUSTCSpeedRunnerFixture() (*USTCSpeedService, *OpenAIGatewayService, *ustcSpeedRunnerRepository, *ustcTestCapacityCache, *ustcSpeedRunnerUpstream, Account) {
 	gateway, cache := ustcSchedulerFixture(1, false)
-	repo := &ustcSpeedRunnerRepository{acquireAllowed: true, budgetAllowed: true}
+	repo := &ustcSpeedRunnerRepository{acquireAllowed: true}
 	speed := &USTCSpeedService{repo: repo, gateway: gateway, queue: make(chan USTCSpeedSample, 16)}
 	settings := DefaultUSTCSpeedSettings()
 	speed.cfg.Store(&settings)
@@ -349,14 +337,12 @@ func TestUSTCSpeedManualProbeUsesSharedAdmissionAndOneRequest(t *testing.T) {
 	require.Equal(t, 1, calls, "a warm SSE probe should use one shared-admission request")
 	require.Len(t, bodies, 1)
 	require.Equal(t, 1, cache.used[USTCKeyScope(&account)], "the real probe should commit exactly one RPM ticket")
-	inserted, acquireCalls, releaseCalls, budgetCalls, budgetArgs := repo.snapshot()
+	inserted, acquireCalls, releaseCalls := repo.snapshot()
 	require.Len(t, inserted, 1)
 	require.Equal(t, "probe", inserted[0].Source)
 	require.Equal(t, "success", inserted[0].Status)
 	require.Equal(t, 1, acquireCalls)
 	require.Equal(t, 1, releaseCalls)
-	require.Equal(t, 1, budgetCalls)
-	require.Equal(t, []int{1, task.MaxTokens, task.MaxDailyRequests, task.MaxDailyOutputTokens, speed.cfg.Load().DailyRequestBudget, speed.cfg.Load().DailyOutputTokenBudget}, budgetArgs)
 }
 
 func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
@@ -365,7 +351,6 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 		setup       func(*OpenAIGatewayService, *ustcSpeedRunnerRepository, *ustcTestCapacityCache, Account)
 		wantReason  string
 		wantAcquire bool
-		wantBudget  bool
 	}{
 		{
 			name: "user queue",
@@ -397,15 +382,6 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 			wantReason:  "background_capacity",
 			wantAcquire: true,
 		},
-		{
-			name: "daily budget exhausted",
-			setup: func(_ *OpenAIGatewayService, repo *ustcSpeedRunnerRepository, _ *ustcTestCapacityCache, _ Account) {
-				repo.budgetAllowed = false
-			},
-			wantReason:  "daily_budget",
-			wantAcquire: true,
-			wantBudget:  true,
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -418,7 +394,7 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 			require.Equal(t, "skipped", status)
 			calls, _ := upstream.snapshot()
 			require.Zero(t, calls, "unsafe or contended admission must not send a probe request")
-			inserted, acquireCalls, releaseCalls, budgetCalls, _ := repo.snapshot()
+			inserted, acquireCalls, releaseCalls := repo.snapshot()
 			require.Len(t, inserted, 1)
 			require.Equal(t, "skipped", inserted[0].Status)
 			require.Equal(t, tc.wantReason, inserted[0].Reason)
@@ -426,12 +402,6 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 				require.Equal(t, 1, acquireCalls)
 			} else {
 				require.Zero(t, acquireCalls)
-			}
-			if tc.wantBudget {
-				require.Equal(t, 1, budgetCalls)
-				require.Equal(t, 1, releaseCalls, "a rejected budget must release the shared Key lease")
-			} else {
-				require.Zero(t, budgetCalls)
 			}
 			capacity, err := cache.USTCRead(context.Background(), USTCKeyScope(&account), USTCLimits{RPM: 20, Parallel: 20})
 			require.NoError(t, err)
@@ -501,9 +471,8 @@ func TestUSTCSpeedBackoffPauseExpiryStillRequiresGlobalLease(t *testing.T) {
 	require.Equal(t, "skipped", status)
 	calls, _ := upstream.snapshot()
 	require.Zero(t, calls)
-	inserted, acquireCalls, _, budgetCalls, _ := repo.snapshot()
+	inserted, acquireCalls, _ := repo.snapshot()
 	require.Equal(t, 1, acquireCalls, "expired backoff proceeds to the shared global lease gate")
-	require.Zero(t, budgetCalls)
 	require.Len(t, inserted, 1)
 	require.Equal(t, "background_capacity", inserted[0].Reason)
 }
