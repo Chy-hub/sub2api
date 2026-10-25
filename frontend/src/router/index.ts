@@ -636,6 +636,42 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/ustc-speed',
+    name: 'AdminUSTCSpeed',
+    component: () => import('@/views/admin/USTCSpeedView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'USTC Speed Observatory',
+      titleKey: 'admin.ustcSpeed.title',
+      descriptionKey: 'admin.ustcSpeed.description'
+    }
+  },
+  {
+    path: '/admin/ustc-speed/samples',
+    name: 'AdminUSTCSpeedSamples',
+    component: () => import('@/views/admin/USTCSpeedView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'USTC Speed Samples',
+      titleKey: 'admin.ustcSpeed.samplesTitle',
+      descriptionKey: 'admin.ustcSpeed.description'
+    }
+  },
+  {
+    path: '/admin/ustc-speed/tasks',
+    name: 'AdminUSTCSpeedTasks',
+    component: () => import('@/views/admin/USTCSpeedView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'USTC Speed Tasks',
+      titleKey: 'admin.ustcSpeed.tasksTitle',
+      descriptionKey: 'admin.ustcSpeed.description'
+    }
+  },
+  {
     path: '/admin/affiliates',
     redirect: '/admin/affiliates/invites'
   },

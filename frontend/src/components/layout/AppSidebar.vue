@@ -835,6 +835,17 @@ const adminNavItems = computed((): NavItem[] => {
         { path: '/admin/orders/plans', label: t('nav.paymentPlans'), icon: CreditCardIcon },
       ],
     },
+    {
+      path: '/admin/ustc-speed',
+      label: t('nav.ustcSpeed'),
+      icon: ChartIcon,
+      expandOnly: true,
+      children: [
+        { path: '/admin/ustc-speed', label: t('admin.ustcSpeed.nav.overview'), icon: ChartIcon },
+        { path: '/admin/ustc-speed/samples', label: t('admin.ustcSpeed.nav.samples'), icon: OrderIcon },
+        { path: '/admin/ustc-speed/tasks', label: t('admin.ustcSpeed.nav.tasks'), icon: CogIcon },
+      ],
+    },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true }
   ]

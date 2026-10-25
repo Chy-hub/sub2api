@@ -120,6 +120,7 @@ func RegisterAdminRoutes(
 		// 渠道监控
 		registerChannelMonitorRoutes(admin, h, settingService)
 		registerChannelMonitorV2Routes(admin, h, settingService)
+		registerUSTCSpeedRoutes(admin, h)
 
 		// 风控中心
 		registerContentModerationRoutes(admin, h)
@@ -780,6 +781,22 @@ func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAut
 		plugins.POST("/:id/test", gin.HandlerFunc(stepUpAuth), h.Admin.Plugin.Test)
 		plugins.POST("/:id/ui-session", h.Admin.Plugin.CreateUISession)
 	}
+}
+
+func registerUSTCSpeedRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	speed := admin.Group("/ustc-speed")
+	speed.GET("/dimensions", h.Admin.USTCSpeed.Dimensions)
+	speed.GET("/overview", h.Admin.USTCSpeed.Overview)
+	speed.GET("/samples", h.Admin.USTCSpeed.Samples)
+	speed.GET("/samples/:id", h.Admin.USTCSpeed.Sample)
+	speed.GET("/tasks", h.Admin.USTCSpeed.ListTasks)
+	speed.POST("/tasks", h.Admin.USTCSpeed.CreateTask)
+	speed.PUT("/tasks/:id", h.Admin.USTCSpeed.UpdateTask)
+	speed.DELETE("/tasks/:id", h.Admin.USTCSpeed.DeleteTask)
+	speed.POST("/tasks/:id/run", h.Admin.USTCSpeed.RunTask)
+	speed.GET("/settings", h.Admin.USTCSpeed.GetSettings)
+	speed.PUT("/settings", h.Admin.USTCSpeed.SaveSettings)
+	speed.GET("/runtime", h.Admin.USTCSpeed.Runtime)
 }
 
 func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

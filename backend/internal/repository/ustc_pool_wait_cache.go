@@ -96,3 +96,40 @@ func (c *RPMCacheImpl) AcquireUSTCPoolWait(ctx context.Context, poolKey string, 
 	}
 	return true, release, nil
 }
+
+// USTCHasWaiting is a conservative, read-only guard for low-priority speed
+// probes. It includes pools on other backend instances and ignores expired
+// leases using Redis time. A bounded scan fails closed if there are many pools.
+func (c *RPMCacheImpl) USTCHasWaiting(ctx context.Context) (bool, error) {
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return false, err
+	}
+	var cursor uint64
+	for page := 0; page < 16; page++ {
+		keys, next, err := c.rdb.Scan(ctx, cursor, ustcPoolWaitKeyPrefix+"*", 64).Result()
+		if err != nil {
+			return false, err
+		}
+		if len(keys) > 0 {
+			pipeline := c.rdb.Pipeline()
+			counts := make([]*redis.IntCmd, 0, len(keys))
+			for _, key := range keys {
+				counts = append(counts, pipeline.ZCount(ctx, key, fmt.Sprint(now.UnixMilli()+1), "+inf"))
+			}
+			if _, err = pipeline.Exec(ctx); err != nil {
+				return false, err
+			}
+			for _, count := range counts {
+				if count.Val() > 0 {
+					return true, nil
+				}
+			}
+		}
+		if next == 0 {
+			return false, nil
+		}
+		cursor = next
+	}
+	return true, nil
+}
