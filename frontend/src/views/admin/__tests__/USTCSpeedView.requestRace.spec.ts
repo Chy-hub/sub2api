@@ -30,8 +30,8 @@ vi.mock('vue-i18n', async () => {
   return { ...actual, useI18n: () => ({ t: (key: string) => key, locale: { value: 'zh' } }) }
 })
 vi.mock('vue-chartjs', () => ({
-  Line: defineComponent({
-    props: ['data', 'options'],
+  Chart: defineComponent({
+    props: ['type', 'data', 'options'],
     template: '<div data-testid="speed-chart">{{ options.scales.y.title.text }}|{{ JSON.stringify(data.datasets) }}</div>',
   }),
 }))
@@ -50,6 +50,8 @@ function deferred<T>() {
 
 function makeOverview(metric: string, value: number) {
   return {
+    range_start: '2026-10-25T16:00:00Z',
+    range_end: '2026-10-26T16:00:00Z',
     group_by: 'model',
     metric,
     unit: metric.endsWith('_ms') ? 'ms' : 'tps',

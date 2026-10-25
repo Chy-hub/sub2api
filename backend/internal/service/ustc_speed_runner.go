@@ -40,7 +40,6 @@ func (s *USTCSpeedService) schedulerLoop() {
 			ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
 			if turn%6 == 1 {
 				s.refreshSettings(ctx)
-				s.importHistory(ctx)
 			}
 			tasks, err := s.repo.ListTasks(ctx)
 			if err == nil {
@@ -93,7 +92,7 @@ func (s *USTCSpeedService) startTask(ctx context.Context, task USTCSpeedTask, fo
 		defer s.wg.Done()
 		defer cancel()
 		defer func() { s.jobsMu.Lock(); delete(s.jobs, task.ID); s.jobsMu.Unlock() }()
-		status := s.executeTask(jobCtx, task, owner)
+		status := s.executeTask(jobCtx, task, owner, force)
 		next := nextUSTCSpeedTask(task, time.Now())
 		finishCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
@@ -168,8 +167,10 @@ func speedTaskActive(task USTCSpeedTask, now time.Time) bool {
 	}
 	return minute >= lo || minute <= hi
 }
-func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, owner string) string {
-	if !speedTaskActive(task, time.Now()) {
+func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, owner string, force bool) string {
+	// A manual run is an explicit operator action; scheduled runs must respect
+	// the task's active window. Capacity, quota, and queue protection still apply.
+	if !force && !speedTaskActive(task, time.Now()) {
 		return "outside_active_window"
 	}
 	accounts, err := s.ustcAccounts(ctx)
@@ -270,7 +271,7 @@ func (s *USTCSpeedService) recordSkip(task USTCSpeedTask, account *Account, mode
 	sample := USTCSpeedSample{TaskID: &task.ID, RoundID: round, AccountID: account.ID, AccountName: account.Name, KeyScope: USTCKeyScope(account), Model: account.GetMappedModel(model), Source: "probe", Status: "skipped", Reason: reason, Stream: task.Stream, APIMode: task.APIMode, Profile: "probe:skipped", Reasoning: "unknown", StartedAt: now, FinishedAt: now}
 	if task.RealFallback {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		q := USTCSpeedQuery{Start: now.Add(-time.Duration(task.RealFallbackMaxAgeSeconds) * time.Second), End: now.Add(time.Nanosecond), Model: sample.Model, Source: "real", AccountIDs: []int64{account.ID}, Limit: 1}
+		q := USTCSpeedQuery{Start: now.Add(-time.Duration(task.RealFallbackMaxAgeSeconds) * time.Second), End: now.Add(time.Nanosecond), Model: model, Source: "real", AccountIDs: []int64{account.ID}, Limit: 1}
 		_, total, err := s.repo.ListSamples(ctx, q)
 		cancel()
 		if err == nil && total >= int64(task.RealFallbackMinSamples) {
@@ -293,6 +294,11 @@ func speedBackoff(task USTCSpeedTask, runtime *USTCSpeedRuntime, now time.Time) 
 		runtime.Paused = false
 		runtime.NotBefore = nil
 		return false, ""
+	}
+	// A persisted pause without a deadline would otherwise probe on every
+	// scheduled run. Keep it closed until a success streak clears the pause.
+	if runtime.Paused && runtime.NotBefore == nil {
+		return true, "429_paused"
 	}
 	if count >= task.BackoffAfter429 && runtime.Last429At != nil {
 		factor := math.Pow(task.BackoffMultiplier, float64(count-task.BackoffAfter429+1))

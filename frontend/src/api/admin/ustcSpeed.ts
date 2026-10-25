@@ -51,6 +51,7 @@ export interface USTCSpeedQuery {
   group_by?: 'model' | 'profile'
   limit?: number
   offset?: number
+  hourly?: boolean
 }
 
 export interface USTCSpeedObservation {
@@ -123,6 +124,22 @@ export interface USTCSpeedPoint {
   max: number | null
 }
 
+export interface USTCSpeedHourPoint {
+  hour: number
+  model: string
+  source: string
+  profile: string
+  count: number
+  valid_count: number
+  value: number | null
+  mean: number | null
+  p10: number | null
+  p50: number | null
+  p90: number | null
+  min: number | null
+  max: number | null
+}
+
 export interface USTCSpeedSummary {
   samples: number
   successful: number
@@ -140,6 +157,8 @@ export interface USTCSpeedSummary {
 }
 
 export interface USTCSpeedOverview {
+  range_start: string
+  range_end: string
   group_by: 'model' | 'profile'
   metric: USTCSpeedMetric
   unit: string
@@ -150,6 +169,7 @@ export interface USTCSpeedOverview {
   fallback_window_seconds: number
   summary: USTCSpeedSummary
   series: USTCSpeedPoint[]
+  hourly?: USTCSpeedHourPoint[]
   truncated: boolean
   dropped_samples: number
 }

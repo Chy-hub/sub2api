@@ -33,14 +33,12 @@ export default {
     },
     interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
     aggregate: { label: 'Statistic', p50: 'P50 median', mean: 'Mean', p10: 'P10 slow range', p90: 'P90' },
-    accountView: {
-      label: 'Account view', accounts: 'Show each account', equal: 'Equal account average',
-      aggregateRequired: 'Real call timestamps differ, so raw samples cannot represent a cross-account average at the same time. Choose an aggregation interval to view the equal average.',
-      useFiveMinutes: 'Use 5-minute aggregation'
-    },
     overview: {
       chartTitle: 'Speed and wait trends', chartHint: 'Select a raw point to inspect its speed measurement. Real-call buckets open Usage; probe buckets reveal raw observations.',
+      chartReading: 'Real-call buckets use bars; the shaded band behind a single real series is its P10–P90 spread. Raw calls use scatter points and probes use dashed trend lines. Periods without calls stay empty.',
       aggregation: '{interval} · {statistic}', bucketSamples: '{count} valid observations in this point',
+      distribution: 'P10–P90 spread', spread: 'P10 / P50 / P90: {p10} / {p50} / {p90}',
+      lowSamples: 'Fewer than 5 valid observations; treat this point as indicative only.',
       usageRecords: 'View usage records', probeDrilldown: 'Showing raw probe observations. Select a point to inspect its speed measurement.', legacyMeasurement: 'Historical approximation',
       timingBasis: 'For new samples, timing starts when the request is sent upstream and ends when the upstream response completes; Sub2API local queue time is excluded. TTFT / first-output time is the observed availability of the first output, not an exact model prefill measurement. Imported history has a separate approximate-measurement notice.',
       noSeries: 'There are no observations to chart for these filters.', noSeriesHint: 'Empty periods are not filled with zeros or interpolated. Adjust the date range or filters.',
@@ -48,14 +46,19 @@ export default {
       failed: 'Errors', skipped: 'Skipped', cancelled: 'Cancelled',
       realLatest: 'Latest real call', probeLatest: 'Latest probe',
       realAge: 'Latest real call {age}', probeAge: 'Latest probe {age}',
-      validPoints: 'Valid metric points', selectedCoverage: 'Account coverage', equalCoverage: 'Equal-view coverage {valid}/{total}',
-      sourceNote: 'Averaged by model and time bucket by default. Refine call conditions with advanced filters; real calls, probes, and historical approximations stay separate.',
-      auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by account series.', seriesBreakdown: 'Grouped by model, source, and account',
+      validPoints: 'Valid metric points',
+      sourceNote: 'Filter by model, accounts, and dates, then average the valid calls in each time bucket. Every call has equal weight.',
+      auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by model series.', seriesBreakdown: 'Grouped by model and source',
       legacyNotice: 'Includes imported historical usage. Legacy TTFT/TPS are approximate; status is unknown and is not counted as success or failure.',
       fallbackApplied: 'Probes are throttled or paused because of rate limits or capacity. Showing recent real calls from the last {minutes} minutes temporarily; the series remains labeled as real.',
       truncated: 'The backend truncated trend data to limit response size.', dropped: '{count} samples were omitted from the chart due to data limits.',
       noReal: 'No real call samples exist in this time range.', noProbe: 'No probe samples exist in this time range.',
       ageUnknown: 'Time unknown', profile: 'Profile', configuration: 'Config {number}', account: 'Account', source: 'Source', coverage: 'Valid account coverage'
+    },
+    hourly: {
+      title: 'Calls by hour of day', description: 'Valid calls in the applied range, grouped by local hour. Use it to choose when to run long work.',
+      samples: '{count} valid observations', noData: 'No valid calls in this range to compare by hour.',
+      hint: 'One line per model and source; empty hours had no valid calls. The main chart tooltip shows the P10–P90 spread for each bucket.'
     },
     samples: {
       tableTitle: 'Calls and probe samples', total: '{count} total', noData: 'No samples match these filters.',

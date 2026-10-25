@@ -247,6 +247,108 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	require.Equal(t, "mean", autoOverview.Aggregate)
 }
 
+func TestUSTCSpeedOverviewWeightsRequestsAcrossAccounts(t *testing.T) {
+	ctx := context.Background()
+	repo := NewUSTCSpeedRepository(integrationDB)
+	roundID := "ustc-weighted-it-" + uuid.NewString()
+	model := "ustc-weighted-model-" + uuid.NewString()
+	base := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	accountIDs := []int64{-time.Now().UnixNano(), -time.Now().UnixNano() - 1}
+	accountNames := []string{"weighted-account-a", "weighted-account-b"}
+	values := []float64{10, 50, 90, 250}
+	samples := make([]*service.USTCSpeedSample, 0, len(values))
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM ustc_speed_samples WHERE round_id=$1`, roundID)
+		require.NoError(t, err)
+	})
+	for i, value := range values {
+		accountIndex := 0
+		if i == len(values)-1 {
+			accountIndex = 1
+		}
+		at := base.Add(time.Duration(i) * 10 * time.Second)
+		sample := &service.USTCSpeedSample{
+			RoundID: roundID, AccountID: accountIDs[accountIndex], AccountName: accountNames[accountIndex],
+			Model: model, Source: "probe", Status: "success", Profile: "profile-a",
+			StartedAt: at, FinishedAt: at.Add(time.Second),
+			USTCSpeedObservation: service.USTCSpeedObservation{GenerationTPS: ustcSpeedFloat(value)},
+		}
+		require.NoError(t, repo.InsertSample(ctx, sample))
+		require.NotZero(t, sample.ID)
+		samples = append(samples, sample)
+	}
+
+	query := service.USTCSpeedQuery{
+		Start: base.Add(-time.Minute), End: base.Add(time.Hour), Source: "probe",
+		Metric: "generation_tps", Interval: "5m",
+	}
+	requests, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, query.Start, requests.RangeStart)
+	require.Equal(t, query.End, requests.RangeEnd)
+	require.Len(t, requests.Series, 1)
+	requestPoint := requests.Series[0]
+	require.Zero(t, requestPoint.AccountID)
+	require.Empty(t, requestPoint.AccountName)
+	require.Equal(t, int64(4), requestPoint.Count)
+	require.Equal(t, int64(4), requestPoint.ValidCount)
+	require.InDelta(t, 100, *requestPoint.Mean, 0.001, "the default mean weights all four calls equally")
+	require.InDelta(t, 100, *requestPoint.Value, 0.001)
+	require.InDelta(t, 22, *requestPoint.P10, 0.001, "quantiles are computed from the original call values")
+	require.InDelta(t, 70, *requestPoint.P50, 0.001)
+	require.InDelta(t, 202, *requestPoint.P90, 0.001)
+
+	query.AccountIDs = []int64{accountIDs[0]}
+	filteredOne, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, filteredOne.Series, 1)
+	require.Zero(t, filteredOne.Series[0].AccountID)
+	require.Empty(t, filteredOne.Series[0].AccountName)
+	require.Equal(t, int64(3), filteredOne.Series[0].Count)
+	require.InDelta(t, 50, *filteredOne.Series[0].Mean, 0.001, "a single-account filter still uses the common request-weighted metric")
+
+	query.AccountIDs = accountIDs
+	filteredBoth, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, filteredBoth.Series, 1)
+	require.Equal(t, int64(4), filteredBoth.Series[0].Count)
+	require.InDelta(t, 100, *filteredBoth.Series[0].Mean, 0.001, "a multi-account filter weights each matching call equally")
+
+	query.Interval = "raw"
+	raw, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, raw.Series, len(samples))
+	seenSamples := make(map[int64]bool, len(samples))
+	seenAccounts := make(map[int64]bool, len(samples))
+	for _, point := range raw.Series {
+		require.NotNil(t, point.SampleID)
+		seenSamples[*point.SampleID] = true
+		seenAccounts[point.AccountID] = true
+	}
+	for _, sample := range samples {
+		require.True(t, seenSamples[sample.ID], "raw output must preserve each source sample")
+	}
+	require.True(t, seenAccounts[accountIDs[0]])
+	require.True(t, seenAccounts[accountIDs[1]])
+
+	query.Hourly = true
+	query.Timezone = "UTC"
+	query.Interval = "5m"
+	byHour, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, byHour.Hourly, 1)
+	require.Equal(t, 12, byHour.Hourly[0].Hour)
+	require.Equal(t, int64(4), byHour.Hourly[0].Count)
+	require.Equal(t, int64(4), byHour.Hourly[0].ValidCount)
+	require.InDelta(t, 100, *byHour.Hourly[0].Value, 0.001)
+
+	query.Timezone = "Asia/Shanghai"
+	byLocalHour, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, byLocalHour.Hourly, 1)
+	require.Equal(t, 20, byLocalHour.Hourly[0].Hour, "hourly buckets follow the requested IANA zone")
+}
+
 func TestUSTCSpeedRepositoryKeyLeaseCapacityAndOwnerRelease(t *testing.T) {
 	ctx := context.Background()
 	repo := NewUSTCSpeedRepository(integrationDB)
