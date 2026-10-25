@@ -23,8 +23,8 @@ func TestParseUSTCSpeedQueryDefaultsToTodayInShanghai(t *testing.T) {
 	if !query.Start.Equal(wantStart) || !query.End.Equal(wantEnd) {
 		t.Fatalf("unexpected half-open range: got [%s, %s), want [%s, %s)", query.Start, query.End, wantStart, wantEnd)
 	}
-	if query.Source != "real" || query.Metric != "generation_tps" || query.Interval != "auto" || query.Aggregate != "p50" {
-		t.Fatalf("unexpected defaults: source=%q metric=%q interval=%q aggregate=%q", query.Source, query.Metric, query.Interval, query.Aggregate)
+	if query.Source != "real" || query.Metric != "generation_tps" || query.Interval != "auto" || query.GroupBy != "model" || query.Aggregate != "mean" {
+		t.Fatalf("unexpected defaults: source=%q metric=%q interval=%q group_by=%q aggregate=%q", query.Source, query.Metric, query.Interval, query.GroupBy, query.Aggregate)
 	}
 	if query.Reasoning != "all" || query.Stream != "all" || query.Limit != ustcSpeedDefaultLimit || query.Offset != 0 {
 		t.Fatalf("unexpected filter defaults: reasoning=%q stream=%q limit=%d offset=%d", query.Reasoning, query.Stream, query.Limit, query.Offset)
@@ -44,12 +44,13 @@ func TestParseUSTCSpeedQueryFilters(t *testing.T) {
 		"stream":      {"false"},
 		"status":      {"recorded"},
 		"profile":     {"legacy"},
+		"group_by":    {"profile"},
 		"input_min":   {"10"},
 		"input_max":   {"20"},
 		"output_min":  {"3"},
 		"output_max":  {"7"},
 		"metric":      {"ttft_ms"},
-		"interval":    {"15m"},
+		"interval":    {"1m"},
 		"aggregate":   {"mean"},
 		"limit":       {"100"},
 		"offset":      {"50"},
@@ -77,7 +78,7 @@ func TestParseUSTCSpeedQueryFilters(t *testing.T) {
 	if query.InputMin == nil || *query.InputMin != 10 || query.InputMax == nil || *query.InputMax != 20 || query.OutputMin == nil || *query.OutputMin != 3 || query.OutputMax == nil || *query.OutputMax != 7 {
 		t.Errorf("unexpected token ranges: %+v", query)
 	}
-	if query.Metric != "ttft_ms" || query.Interval != "15m" || query.Aggregate != "mean" || query.Limit != 100 || query.Offset != 50 {
+	if query.Metric != "ttft_ms" || query.Interval != "1m" || query.GroupBy != "profile" || query.Aggregate != "mean" || query.Limit != 100 || query.Offset != 50 {
 		t.Errorf("unexpected metric/paging filters: %+v", query)
 	}
 }
@@ -110,6 +111,7 @@ func TestParseUSTCSpeedQueryRejectsInvalidFilters(t *testing.T) {
 		{name: "metric", values: url.Values{"metric": {"unknown"}}},
 		{name: "interval", values: url.Values{"interval": {"2h"}}},
 		{name: "aggregate", values: url.Values{"aggregate": {"median"}}},
+		{name: "group_by", values: url.Values{"group_by": {"account"}}},
 		{name: "status", values: url.Values{"status": {"pending"}}},
 		{name: "reasoning", values: url.Values{"reasoning": {"maybe"}}},
 		{name: "stream", values: url.Values{"stream": {"yes"}}},

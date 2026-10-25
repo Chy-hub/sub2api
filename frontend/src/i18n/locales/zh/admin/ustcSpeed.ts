@@ -7,7 +7,7 @@ export default {
     overviewDescription: '真实工作调用是默认视图。基准探测可单独查看，也可按来源分开展示。',
     samplesDescription: '按当前条件检索已采集的调用与检测样本。',
     tasksDescription: '管理定时检测、手动运行、全局采集设置和账号冷却状态。',
-    nav: { overview: '趋势分析', samples: '调用明细', tasks: '检测任务与配置' },
+    nav: { overview: '趋势分析', tasks: '检测任务与配置' },
     action: {
       refresh: '刷新', apply: '应用筛选', exportCsv: '导出 CSV', exportJson: '导出 JSON',
       addTask: '新建任务', edit: '编辑', delete: '删除', run: '手动运行', save: '保存', cancel: '取消',
@@ -28,10 +28,10 @@ export default {
     metric: {
       view: '主图', metric: '指标', tps: 'TPS 趋势', ttft: 'TTFT 趋势', time: 'Time 耗时',
       generationTps: '生成速度', overallTps: '整体速度（含等待）',
-      ttftMs: '上游正文首字耗时', firstOutputMs: '上游首次输出耗时', totalMs: '上游请求总耗时', outputMs: '上游输出阶段',
-      headersMs: '上游响应头时间', tailMs: '上游结束拖尾', maxGapMs: '最大输出间隔', unitTps: 'token / 秒', unitMs: '毫秒'
+      ttftMs: '上游正文首字耗时', firstOutputMs: '上游首次输出耗时', totalMs: '实际任务总耗时', outputMs: '实际输出阶段时长',
+      headersMs: '上游响应头时间', tailMs: '输出结束后的等待', maxGapMs: '流内最大输出停顿', unitTps: 'token / 秒', unitMs: '毫秒'
     },
-    interval: { label: '聚合粒度', auto: '自动', raw: '原始样本', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
+    interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
     aggregate: { label: '统计口径', p50: 'P50 中位数', mean: '平均值', p10: 'P10 慢速水平', p90: 'P90' },
     accountView: {
       label: '账号视图', accounts: '各账号单独显示', equal: '账号等权平均',
@@ -39,7 +39,9 @@ export default {
       useFiveMinutes: '改用 5 分钟聚合'
     },
     overview: {
-      chartTitle: '速度与上游请求耗时', chartHint: '点击原始数据点查看样本；聚合点可跳转到匹配明细。',
+      chartTitle: '速度与等待趋势', chartHint: '点击原始点查看速度测量；真实调用聚合点打开使用记录，基准聚合点展开原始观测。',
+      aggregation: '{interval} · {statistic}', bucketSamples: '该点包含 {count} 个有效观测',
+      usageRecords: '查看使用记录', probeDrilldown: '已切换到原始基准观测，点击数据点查看速度测量。', legacyMeasurement: '历史近似口径',
       timingBasis: '新采样耗时从请求发往上游时开始，到上游响应结束时为止，不含 Sub2API 本地排队。TTFT / 首次输出表示观测到首个输出的时间，不是模型精确预填充耗时。历史导入数据另有近似口径提示。',
       noSeries: '当前条件下没有可绘制的观测数据。', noSeriesHint: '数据为空时不补零、不插值。请调整时间范围或筛选条件。',
       samples: '样本数', successful: '成功', rateLimited: '限流', realSamples: '真实调用', probeSamples: '基准检测', outputTokens: '输出 token',
@@ -47,8 +49,8 @@ export default {
       realLatest: '真实调用最新时间', probeLatest: '基准检测最新时间',
       realAge: '最新真实调用距今 {age}', probeAge: '最新基准检测距今 {age}',
       validPoints: '有效指标点', selectedCoverage: '账号覆盖', equalCoverage: '等权视图覆盖 {valid}/{total}',
-      sourceNote: '来源保持分离；TPS 只在相同模型与配置档案的系列中比较。耗时按上游请求阶段统计，不代表客户端全链路。',
-      auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各账号系列的样本数。', seriesBreakdown: '按模型、来源、配置档案与账号分组',
+      sourceNote: '默认按模型和时间桶求平均，调用条件可在高级筛选中限定；真实、基准和历史近似数据分别展示。',
+      auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各账号系列的样本数。', seriesBreakdown: '按模型、来源与账号分组',
       legacyNotice: '包含历史用量导入数据。旧 TTFT/TPS 是近似口径，状态为“结果未知”，不能当作成功或失败。',
       fallbackApplied: '基准检测因限流或资源繁忙正在缓测/暂停，当前临时显示最近 {minutes} 分钟的真实调用；图例仍标记为真实来源。',
       truncated: '后端为控制返回量截断了趋势数据。', dropped: '有 {count} 个样本因数据限制未进入图表。',
@@ -61,14 +63,14 @@ export default {
       generationTps: '生成 TPS', ttft: '上游首字耗时', duration: '上游请求耗时', tokens: '输入 / 输出',
       profile: '配置档案', reasoning: '思考', stream: '流式', action: '操作',
       loading: '正在读取样本…', exportLimit: '未能读取更多样本，已导出已获取的部分。',
-      id: '样本 ID', inputTokens: '输入 token', outputTokens: '输出 token', retentionNotice: '样本明细按全局保留策略保存 {days} 天，过期记录会自动清理。'
+      id: '样本 ID', inputTokens: '输入 token', outputTokens: '输出 token'
     },
     status: {
       success: '成功', error: '错误', rate_limited: '限流', skipped: '跳过', cancelled: '已取消',
       recorded: '已记录（结果未知）', queued: '排队中', paused: '已暂停', unknown: '未知'
     },
     detail: {
-      title: '调用详情', loading: '正在读取调用详情…', overview: '请求信息', metrics: '可观测指标',
+      title: '速度测量详情', loading: '正在读取速度测量…', overview: '测量信息', metrics: '可观测指标',
       upstreamTimingNotice: '新采样从请求发往上游时开始计时，到上游响应结束为止，不包含 Sub2API 本地排队。首字 / 首次输出是观测到首个输出的时间，不代表精确模型预填充耗时。',
       conditions: '调用条件', inputTokens: '输入 token', outputTokens: '输出 token', reasoningTokens: '思考 token',
       cachedTokens: '缓存 token', events: '有效事件数', chars: '输出字符', finishReason: '结束原因',
@@ -89,9 +91,10 @@ export default {
       modelPlaceholder: '输入模型名称', addModel: '添加模型', removeModel: '移除模型 {model}',
       manualRun: '手动运行', nextRun: '下次运行', lastRun: '上次运行', lastStatus: '上次结果',
       target: '测试目标', schedule: '计划与时段', request: '请求配置', safety: '容量与限流保护',
+      intervalUnit: { seconds: '秒', minutes: '分钟', hours: '小时' }, everyInterval: '每 {count} {unit}', editSchedule: '修改间隔',
       fallback: '真实数据替代', advanced: '高级配置', advancedSchedule: '高级调度',
       field: {
-        name: '名称', interval: '检测间隔（秒）', jitter: '轮次抖动（秒）', timezone: '时区',
+        name: '名称', interval: '检测间隔', jitter: '轮次抖动（秒）', timezone: '时区',
         cronExpression: 'Cron 表达式（5 个字段）',
         activeStart: '活动开始', activeEnd: '活动结束', days: '运行星期', apiMode: 'API 协议', stream: '流式输出',
         prompt: '合成提示词', promptHint: '检测使用合成提示，不会保存真实调用的提示或回答。', promptVariants: '提示词变体（每行一个）',
@@ -102,7 +105,6 @@ export default {
         backoffAfter429: '缓测触发 429 次数', backoffWindow: '429 观察窗口（秒）', backoffMultiplier: '间隔退避倍率',
         maxInterval: '最大检测间隔（秒）', pauseAfter429: '暂停前连续 429 次数', recoverySuccesses: '恢复所需成功数',
         realFallback: '基准暂停时使用真实调用数据', realFallbackAge: '真实数据最大年龄（秒）', realFallbackSamples: '最低真实样本数',
-        dailyRequests: '任务每日请求上限', dailyTokens: '任务每日输出 token 上限'
       },
       hint: {
         perKeyConcurrency: '每把物理 Key 的后台并发固定最多 1；全局并发还受“最高同轮账号数”和系统设置限制。',
@@ -110,8 +112,9 @@ export default {
         physicalKeyGroup: '物理 Key 分组 #{id}',
         days: '留空表示每天都可运行。',
         cronExpression: '留空时按检测间隔运行。Cron 按此任务时区解释，字段顺序为“分 时 日 月 周”。',
+        cronOverridesInterval: 'Cron 有值时按 Cron 调度，并替代检测间隔。',
         realFallback: '真实调用始终保留自己的来源与任务条件，不会并入基准成功率。',
-        zeroUnlimited: '任务上限字段填 0 表示不增加任务级限制；RPM 或并发预留填 0 表示不额外预留。'
+        zeroUnlimited: '活动请求上限填 0 表示不增加任务级限制；RPM 预留可为 0，并发至少预留 1 个。'
       },
       validation: { name: '请填写任务名称。', models: '至少选择一个模型。', accounts: '请选择账号或开启自动包含账号。', numbers: '请填写有效的数值配置。' },
       defaultPrompt: '请用简洁文字介绍一个你熟悉的科学概念。',
@@ -121,10 +124,9 @@ export default {
       weekday: { sun: '周日', mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六' }
     },
     settings: {
-      title: '全局采集与预算设置', description: '全局设置只控制记录采集和后台预算；实际探测仍由启用的任务触发。',
-      captureEnabled: '采集真实调用性能指标', retentionDays: '样本保留天数',
-      concurrency: '后台检测最大并发', requestBudget: '每日后台请求预算', tokenBudget: '每日后台输出 token 预算',
-      perKey: '每把物理 Key 的后台并发上限为 1。', budgetReset: '每日预算按 UTC 重置。', budgetCalibrations: '校准请求也会计入预留预算，实际消耗按样本累计。', saved: '全局设置已保存。',
+      title: '采集与后台并发设置', description: '速度数据长期保留。定时频率在各检测任务中配置，实际发起仍受共享 RPM、并发及 429 保护。',
+      captureEnabled: '采集真实调用性能指标', concurrency: '后台检测最大并发',
+      perKey: '每把物理 Key 的后台并发上限为 1。', saved: '全局设置已保存。',
       disableCapture: '关闭后不再采集新的真实调用性能指标。'
     },
     runtime: {

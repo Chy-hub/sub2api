@@ -8,9 +8,12 @@
           <p class="mt-1 max-w-3xl text-sm text-gray-500 dark:text-gray-400">{{ pageDescription }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
-          <template v-if="isOverview || isSamples">
-            <button type="button" class="btn btn-secondary" :disabled="isSamples ? samplesLoading : loading" @click="refreshCurrent">
-              {{ (isSamples ? samplesLoading : loading) ? t('admin.ustcSpeed.action.loading') : t('admin.ustcSpeed.action.refresh') }}
+          <template v-if="isOverview">
+            <button type="button" class="btn btn-secondary" :disabled="loading" @click="refreshCurrent">
+              {{ loading ? t('admin.ustcSpeed.action.loading') : t('admin.ustcSpeed.action.refresh') }}
+            </button>
+            <button v-if="filters.source !== 'probe' || overview?.fallback_applied" type="button" class="btn btn-secondary" @click="openUsageRecords()">
+              {{ t('admin.ustcSpeed.overview.usageRecords') }}
             </button>
             <button type="button" class="btn btn-secondary" :disabled="exporting" @click="exportSamples('csv')">
               {{ exporting ? t('admin.ustcSpeed.action.exporting') : t('admin.ustcSpeed.action.exportCsv') }}
@@ -122,17 +125,6 @@
               <input v-model.number="filters.outputMax" type="number" min="0" class="filter-input" />
             </label>
             <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.interval.label') }}</span>
-              <select v-model="filters.interval" class="filter-input">
-                <option value="auto">{{ t('admin.ustcSpeed.interval.auto') }}</option>
-                <option value="raw">{{ t('admin.ustcSpeed.interval.raw') }}</option>
-                <option value="5m">{{ t('admin.ustcSpeed.interval.m5') }}</option>
-                <option value="15m">{{ t('admin.ustcSpeed.interval.m15') }}</option>
-                <option value="1h">{{ t('admin.ustcSpeed.interval.h1') }}</option>
-                <option value="1d">{{ t('admin.ustcSpeed.interval.d1') }}</option>
-              </select>
-            </label>
-            <label class="filter-field">
               <span>{{ t('admin.ustcSpeed.aggregate.label') }}</span>
               <select v-model="filters.aggregate" class="filter-input">
                 <option value="p50">{{ t('admin.ustcSpeed.aggregate.p50') }}</option>
@@ -148,10 +140,6 @@
           </div>
         </details>
       </section>
-
-      <p v-if="!isTasks && settingsLoaded && settings.retention_days > 0" class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">
-        {{ t('admin.ustcSpeed.samples.retentionNotice', { days: settings.retention_days }) }}
-      </p>
 
       <template v-if="isOverview">
         <div v-if="hasLegacy" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
@@ -171,6 +159,7 @@
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.overview.chartTitle') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.sourceNote') }}</p>
+              <span v-if="overview" class="mt-2 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ aggregationLabel }}</span>
             </div>
             <div class="flex flex-wrap items-end gap-2">
               <label class="filter-field min-w-36">
@@ -192,6 +181,18 @@
                 <select v-model="accountView" class="filter-input">
                   <option value="accounts">{{ t('admin.ustcSpeed.accountView.accounts') }}</option>
                   <option value="equal">{{ t('admin.ustcSpeed.accountView.equal') }}</option>
+                </select>
+              </label>
+              <label class="filter-field min-w-32">
+                <span>{{ t('admin.ustcSpeed.interval.label') }}</span>
+                <select v-model="filters.interval" class="filter-input" @change="loadOverview">
+                  <option value="auto">{{ t('admin.ustcSpeed.interval.auto') }}</option>
+                  <option value="1m">{{ t('admin.ustcSpeed.interval.m1') }}</option>
+                  <option value="5m">{{ t('admin.ustcSpeed.interval.m5') }}</option>
+                  <option value="15m">{{ t('admin.ustcSpeed.interval.m15') }}</option>
+                  <option value="1h">{{ t('admin.ustcSpeed.interval.h1') }}</option>
+                  <option value="1d">{{ t('admin.ustcSpeed.interval.d1') }}</option>
+                  <option value="raw">{{ t('admin.ustcSpeed.interval.raw') }}</option>
                 </select>
               </label>
             </div>
@@ -244,11 +245,11 @@
               <div v-else class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-700">
                 <table class="min-w-full divide-y divide-gray-100 text-left text-sm dark:divide-dark-700">
                   <thead class="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-gray-400">
-                    <tr><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.model') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.overview.profile') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.overview.source') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.account') }}</th><th class="px-3 py-2">n</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.status') }}</th></tr>
+                    <tr><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.model') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.overview.source') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.account') }}</th><th class="px-3 py-2">n</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.status') }}</th></tr>
                   </thead>
                   <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
                     <tr v-for="series in seriesBreakdown" :key="series.key" class="text-gray-700 dark:text-gray-300">
-                      <td class="px-3 py-2">{{ series.model }}</td><td class="px-3 py-2">{{ series.profile || '—' }}</td><td class="px-3 py-2">{{ sourceLabel(series.source) }}</td><td class="px-3 py-2">{{ series.account }}</td><td class="px-3 py-2">{{ formatNumber(series.count) }}</td><td class="px-3 py-2">{{ formatNumber(series.valid) }} / {{ formatNumber(series.count) }}</td>
+                      <td class="px-3 py-2">{{ series.model }}<span v-if="series.profile === 'legacy'" class="ml-2 text-xs text-amber-600">{{ t('admin.ustcSpeed.overview.legacyMeasurement') }}</span></td><td class="px-3 py-2">{{ sourceLabel(series.source) }}</td><td class="px-3 py-2">{{ series.account }}</td><td class="px-3 py-2">{{ formatNumber(series.count) }}</td><td class="px-3 py-2">{{ formatNumber(series.valid) }} / {{ formatNumber(series.count) }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -258,98 +259,7 @@
         </details>
       </template>
 
-      <template v-else-if="isSamples">
-        <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
-            <div>
-              <h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.samples.tableTitle') }}</h2>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.samples.total', { count: formatNumber(sampleTotal) }) }}</p>
-            </div>
-            <label class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.ustcSpeed.action.pageSize') }}
-              <select v-model.number="pageSize" class="filter-input !w-auto" @change="changePageSize">
-                <option :value="25">25</option><option :value="50">50</option><option :value="100">100</option>
-              </select>
-            </label>
-          </div>
-          <div v-if="samplesLoading" class="flex min-h-56 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.samples.loading') }}</div>
-          <div v-else-if="!samples.length" class="flex min-h-56 items-center justify-center px-6 text-sm text-gray-500">{{ t('admin.ustcSpeed.samples.noData') }}</div>
-          <div v-else class="overflow-x-auto">
-            <table class="min-w-[1120px] w-full divide-y divide-gray-100 text-left text-sm dark:divide-dark-700">
-              <thead class="bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-gray-400">
-                <tr>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.model') }} / {{ t('admin.ustcSpeed.samples.profile') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.startedAt') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.account') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.source') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.generationTps') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.ttft') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.duration') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.tokens') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.status') }}</th>
-                  <th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-                <tr v-for="sample in samples" :key="sample.id" class="hover:bg-gray-50/80 dark:hover:bg-dark-700/40">
-                  <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ sample.model }}</span><span class="text-xs text-gray-500">{{ sample.profile || '—' }}</span></td>
-                  <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(sample.started_at) }}</td>
-                  <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ sample.account_name }}</td>
-                  <td class="px-4 py-3"><span :class="sourceClass(sample.source)">{{ sourceLabel(sample.source) }}</span></td>
-                  <td class="px-4 py-3 font-medium text-gray-800 dark:text-gray-200">{{ formatRate(sample.generation_tps) }}</td>
-                  <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ formatMilliseconds(sample.ttft_ms) }}</td>
-                  <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ formatMilliseconds(sample.total_ms) }}</td>
-                  <td class="whitespace-nowrap px-4 py-3 text-gray-700 dark:text-gray-300">{{ formatKnownTokenCount(sample.input_tokens, sample.input_tokens_known) }} / {{ formatKnownTokenCount(sample.output_tokens, sample.token_count_known) }}</td>
-                  <td class="px-4 py-3"><span :class="statusClass(sample.status)">{{ statusLabel(sample.status) }}</span></td>
-                  <td class="px-4 py-3"><button type="button" class="text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="openSample(sample.id)">{{ t('admin.ustcSpeed.action.showDetails') }}</button></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="sampleTotal > 0" class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-5 py-3 dark:border-dark-700">
-            <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.samples.total', { count: formatNumber(sampleTotal) }) }}</span>
-            <div class="flex items-center gap-2">
-              <button type="button" class="btn btn-secondary !px-3 !py-1.5" :disabled="page <= 1 || samplesLoading" @click="changePage(page - 1)">{{ t('admin.ustcSpeed.action.previous') }}</button>
-              <span class="min-w-20 text-center text-xs text-gray-500 dark:text-gray-400">{{ page }} / {{ pageCount }}</span>
-              <button type="button" class="btn btn-secondary !px-3 !py-1.5" :disabled="page >= pageCount || samplesLoading" @click="changePage(page + 1)">{{ t('admin.ustcSpeed.action.next') }}</button>
-            </div>
-          </div>
-        </section>
-      </template>
-
       <template v-else>
-        <section class="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
-          <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.settings.title') }}</h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.settings.description') }}</p>
-            </div>
-            <button type="button" class="btn btn-secondary" :disabled="settingsLoading || settingsSaving" @click="loadSettings(true)">{{ t('admin.ustcSpeed.action.refresh') }}</button>
-          </div>
-          <div v-if="settingsLoading" class="py-8 text-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
-          <div v-else-if="!settingsLoaded" class="flex items-center justify-between gap-3 py-6 text-sm text-gray-500">
-            <span>{{ t('admin.ustcSpeed.error.loadSettings') }}</span>
-            <button type="button" class="btn btn-secondary" @click="loadSettings(true)">{{ t('admin.ustcSpeed.action.refresh') }}</button>
-          </div>
-          <form v-else class="space-y-4" @submit.prevent="saveGlobalSettings">
-            <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input v-model="settings.capture_enabled" type="checkbox" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <span><span class="block font-medium">{{ t('admin.ustcSpeed.settings.captureEnabled') }}</span><span class="mt-0.5 block text-xs text-gray-500">{{ t('admin.ustcSpeed.settings.disableCapture') }}</span></span>
-            </label>
-            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label class="filter-field"><span>{{ t('admin.ustcSpeed.settings.retentionDays') }}</span><input v-model.number="settings.retention_days" type="number" min="1" class="filter-input" /></label>
-              <label class="filter-field"><span>{{ t('admin.ustcSpeed.settings.concurrency') }}</span><input v-model.number="settings.max_background_concurrency" type="number" min="1" class="filter-input" /></label>
-              <label class="filter-field"><span>{{ t('admin.ustcSpeed.settings.requestBudget') }}</span><input v-model.number="settings.daily_request_budget" type="number" min="0" class="filter-input" /></label>
-              <label class="filter-field"><span>{{ t('admin.ustcSpeed.settings.tokenBudget') }}</span><input v-model.number="settings.daily_output_token_budget" type="number" min="0" class="filter-input" /></label>
-            </div>
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.settings.perKey') }}</p>
-              <button type="submit" class="btn btn-primary" :disabled="settingsSaving">{{ settingsSaving ? t('admin.ustcSpeed.action.saving') : t('admin.ustcSpeed.action.save') }}</button>
-            </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.settings.budgetReset') }} {{ t('admin.ustcSpeed.settings.budgetCalibrations') }}</p>
-          </form>
-        </section>
-
         <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
             <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.disabledByDefault') }}</p></div>
@@ -363,7 +273,7 @@
                 <th class="px-4 py-3">{{ t('admin.ustcSpeed.task.field.name') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectModels') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectAccounts') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.nextRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastStatus') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.status') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
               </tr></thead>
               <tbody class="divide-y divide-gray-100 dark:divide-dark-700"><tr v-for="task in tasks" :key="task.id" class="hover:bg-gray-50/70 dark:hover:bg-dark-700/30">
-                <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span class="text-xs text-gray-500">{{ t('admin.ustcSpeed.task.field.interval') }}: {{ task.interval_seconds }}</span></td>
+                <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span class="mt-1 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ taskScheduleLabel(task) }}</span><button type="button" class="ml-2 text-xs font-medium text-primary-600 hover:underline dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.task.editSchedule') }}</button></td>
                 <td class="max-w-60 truncate px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.models.join(', ') }}</td>
                 <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.all_accounts ? t('admin.ustcSpeed.task.allAccounts') : accountNames(task.account_ids) }}</td>
                 <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(task.next_run_at) }}</td>
@@ -379,6 +289,29 @@
             </table>
           </div>
         </section>
+
+        <details class="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <summary class="cursor-pointer px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.settings.title') }}</summary>
+          <div class="border-t border-gray-100 p-5 dark:border-dark-700">
+            <p class="mb-4 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.settings.description') }}</p>
+            <div v-if="settingsLoading" class="py-4 text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
+            <div v-else-if="!settingsLoaded" class="flex items-center justify-between gap-3 text-sm text-gray-500">
+              <span>{{ t('admin.ustcSpeed.error.loadSettings') }}</span>
+              <button type="button" class="btn btn-secondary" @click="loadSettings(true)">{{ t('admin.ustcSpeed.action.refresh') }}</button>
+            </div>
+            <form v-else class="space-y-4" @submit.prevent="saveGlobalSettings">
+              <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input v-model="settings.capture_enabled" type="checkbox" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+                <span><span class="block font-medium">{{ t('admin.ustcSpeed.settings.captureEnabled') }}</span><span class="mt-0.5 block text-xs text-gray-500">{{ t('admin.ustcSpeed.settings.disableCapture') }}</span></span>
+              </label>
+              <label class="filter-field max-w-xs"><span>{{ t('admin.ustcSpeed.settings.concurrency') }}</span><input v-model.number="settings.max_background_concurrency" type="number" min="1" max="16" class="filter-input" /></label>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.settings.perKey') }}</p>
+                <button type="submit" class="btn btn-primary" :disabled="settingsSaving">{{ settingsSaving ? t('admin.ustcSpeed.action.saving') : t('admin.ustcSpeed.action.save') }}</button>
+              </div>
+            </form>
+          </div>
+        </details>
 
         <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
@@ -426,7 +359,7 @@
 <script setup lang="ts">
 import { Chart as ChartJS, Filler, Legend, LineElement, LinearScale, PointElement, Tooltip } from 'chart.js'
 import { Line } from 'vue-chartjs'
-import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -470,7 +403,7 @@ type SampleFilterState = {
   inputMax: number | undefined
   outputMin: number | undefined
   outputMax: number | undefined
-  interval: 'raw' | '5m' | '15m' | '1h' | '1d' | 'auto'
+  interval: 'raw' | '1m' | '5m' | '15m' | '1h' | '1d' | 'auto'
   aggregate: USTCSpeedAggregate
   timezone: string
 }
@@ -481,10 +414,9 @@ const router = useRouter()
 const appStore = useAppStore()
 
 const isOverview = computed(() => route.path === '/admin/ustc-speed')
-const isSamples = computed(() => route.path === '/admin/ustc-speed/samples')
 const isTasks = computed(() => route.path === '/admin/ustc-speed/tasks')
-const pageTitle = computed(() => isSamples.value ? t('admin.ustcSpeed.samplesTitle') : isTasks.value ? t('admin.ustcSpeed.tasksTitle') : t('admin.ustcSpeed.title'))
-const pageDescription = computed(() => isSamples.value ? t('admin.ustcSpeed.samplesDescription') : isTasks.value ? t('admin.ustcSpeed.tasksDescription') : t('admin.ustcSpeed.overviewDescription'))
+const pageTitle = computed(() => isTasks.value ? t('admin.ustcSpeed.tasksTitle') : t('admin.ustcSpeed.title'))
+const pageDescription = computed(() => isTasks.value ? t('admin.ustcSpeed.tasksDescription') : t('admin.ustcSpeed.overviewDescription'))
 
 const localDate = (date: Date): string => {
   const year = date.getFullYear()
@@ -511,21 +443,19 @@ const filters = reactive<SampleFilterState>({
   outputMin: undefined,
   outputMax: undefined,
   interval: 'auto',
-  aggregate: 'p50',
+  aggregate: 'mean',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
 })
 
 const dimensions = reactive<{ accounts: USTCSpeedAccountDimension[]; models: string[] }>({ accounts: [], models: [] })
 const overview = ref<USTCSpeedOverview | null>(null)
 const loading = ref(false)
+let overviewRequestSeq = 0
+let overviewAbortController: AbortController | null = null
+let overviewViewDisposed = false
 const chartGroup = ref<ChartGroup>('tps')
 const metric = ref<USTCSpeedMetric>('generation_tps')
 const accountView = ref<AccountView>('accounts')
-const samples = ref<USTCSpeedSample[]>([])
-const sampleTotal = ref(0)
-const samplesLoading = ref(false)
-const page = ref(1)
-const pageSize = ref(25)
 const exporting = ref(false)
 const selectedSample = ref<USTCSpeedSample | null>(null)
 const sampleDialogOpen = ref(false)
@@ -537,7 +467,7 @@ const taskListLoaded = ref(false)
 const taskDialogOpen = ref(false)
 const selectedTask = ref<USTCSpeedTask | null>(null)
 const taskSaving = ref(false)
-const settings = ref<USTCSpeedSettings>({ capture_enabled: false, retention_days: 30, max_background_concurrency: 4, daily_request_budget: 100, daily_output_token_budget: 50000 })
+const settings = ref<USTCSpeedSettings>({ capture_enabled: false, max_background_concurrency: 4 })
 const settingsLoading = ref(false)
 const settingsSaving = ref(false)
 const settingsLoaded = ref(false)
@@ -546,7 +476,6 @@ const runtimeLoading = ref(false)
 const pendingAction = ref<PendingAction>(null)
 
 const statuses = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded']
-const pageCount = computed(() => Math.max(1, Math.ceil(sampleTotal.value / pageSize.value)))
 const accountFilterLabel = computed(() => filters.accountIds.length
   ? t('admin.ustcSpeed.filter.account') + ` · ${filters.accountIds.length}`
   : t('admin.ustcSpeed.filter.allAccounts'))
@@ -554,7 +483,6 @@ const modelOptions = computed(() => [...new Set([
   ...dimensions.models,
   ...dimensions.accounts.flatMap((account) => account.models ?? []),
   ...filteredPoints.value.map((point) => point.model),
-  ...samples.value.map((sample) => sample.model),
 ].filter(Boolean))].sort((a, b) => a.localeCompare(b)))
 
 const metricOptions = computed(() => {
@@ -568,11 +496,10 @@ const metricOptions = computed(() => {
       { value: 'first_output_ms', label: t('admin.ustcSpeed.metric.firstOutputMs') },
     ],
     time: [
-      { value: 'total_ms', label: t('admin.ustcSpeed.metric.totalMs') },
-      { value: 'output_ms', label: t('admin.ustcSpeed.metric.outputMs') },
-      { value: 'headers_ms', label: t('admin.ustcSpeed.metric.headersMs') },
-      { value: 'tail_ms', label: t('admin.ustcSpeed.metric.tailMs') },
       { value: 'max_gap_ms', label: t('admin.ustcSpeed.metric.maxGapMs') },
+      { value: 'tail_ms', label: t('admin.ustcSpeed.metric.tailMs') },
+      { value: 'headers_ms', label: t('admin.ustcSpeed.metric.headersMs') },
+      { value: 'output_ms', label: t('admin.ustcSpeed.metric.outputMs') },
     ],
   }
   return options[chartGroup.value]
@@ -580,6 +507,15 @@ const metricOptions = computed(() => {
 
 const isTpsMetric = computed(() => metric.value === 'generation_tps' || metric.value === 'overall_tps')
 const chartUnit = computed(() => isTpsMetric.value ? t('admin.ustcSpeed.metric.unitTps') : t('admin.ustcSpeed.metric.unitMs'))
+const aggregationLabel = computed(() => {
+  const interval = overview.value?.interval ?? filters.interval
+  const intervalKeys = { auto: 'auto', raw: 'raw', '1m': 'm1', '5m': 'm5', '15m': 'm15', '1h': 'h1', '1d': 'd1' }
+  if (interval === 'raw') return t('admin.ustcSpeed.interval.raw')
+  return t('admin.ustcSpeed.overview.aggregation', {
+    interval: t(`admin.ustcSpeed.interval.${intervalKeys[interval]}`),
+    statistic: t(`admin.ustcSpeed.aggregate.${overview.value?.aggregate || filters.aggregate}`),
+  })
+})
 const equalAverageNeedsAggregation = computed(() => {
   if (accountView.value !== 'equal' || (overview.value?.interval ?? filters.interval) !== 'raw') return false
   if (filters.source !== 'probe') return true
@@ -632,14 +568,9 @@ function physicalKeyId(accountId: number): number {
 
 function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
   const grouped = new Map<string, { model: string; source: string; profile: string; accountName: string; accountId: number; points: USTCSpeedPoint[] }>()
-  const profilesByScope = new Map<string, Set<string>>()
   for (const point of points) {
     const base = [point.model || '', point.source || '', point.profile || ''].join('|')
     const key = accountView.value === 'equal' ? base : `${base}|${point.account_id}`
-    const scope = JSON.stringify([point.model || '', point.source || ''])
-    const profiles = profilesByScope.get(scope) ?? new Set<string>()
-    profiles.add(point.profile || '')
-    profilesByScope.set(scope, profiles)
     const entry = grouped.get(key) ?? {
       model: point.model,
       source: point.source,
@@ -652,26 +583,12 @@ function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
     grouped.set(key, entry)
   }
 
-  const profileOrdinals = new Map<string, number>()
-  for (const [scope, profiles] of profilesByScope) {
-    const orderedProfiles = [...profiles].sort((a, b) => a.localeCompare(b))
-    orderedProfiles.forEach((profile, index) => {
-      profileOrdinals.set(`${scope}|${profile}`, index + 1)
-    })
-  }
-
   const out: RenderSeries[] = []
   for (const [key, group] of grouped) {
     const name = accountView.value === 'equal'
       ? t('admin.ustcSpeed.accountView.equal')
       : group.accountName || `${t('admin.ustcSpeed.overview.account')} #${group.accountId}`
-    const scope = JSON.stringify([group.model || '', group.source || ''])
-    const ordinal = profileOrdinals.get(`${scope}|${group.profile}`) ?? 1
-    const profileLabel = !group.profile
-      ? ''
-      : group.profile.length <= 24 && !group.profile.includes(':')
-        ? group.profile
-        : t('admin.ustcSpeed.overview.configuration', { number: ordinal })
+    const profileLabel = group.profile === 'legacy' ? t('admin.ustcSpeed.overview.legacyMeasurement') : ''
     const baseLabel = [group.model, profileLabel, name].filter(Boolean).join(' · ')
     const sourceName = group.source === 'probe' ? t('admin.ustcSpeed.source.probe') : t('admin.ustcSpeed.source.real')
     const bucketed = new Map<string, USTCSpeedPoint[]>()
@@ -690,16 +607,18 @@ function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
       let value: number | null = null
       let coverage: RenderPoint['coverage']
       if (accountView.value === 'equal') {
-        const accountValues = new Map<number, number[]>()
+        const accountValues = new Map<number, { sum: number; weight: number }>()
         for (const point of entries) {
           const pointValue = readValue(point)
           if (pointValue === null) continue
           const keyAccountId = physicalKeyId(point.account_id)
-          const valuesForAccount = accountValues.get(keyAccountId) ?? []
-          valuesForAccount.push(pointValue)
+          const valuesForAccount = accountValues.get(keyAccountId) ?? { sum: 0, weight: 0 }
+          const weight = filters.aggregate === 'mean' ? Math.max(1, point.valid_count) : 1
+          valuesForAccount.sum += pointValue * weight
+          valuesForAccount.weight += weight
           accountValues.set(keyAccountId, valuesForAccount)
         }
-        const perAccount = [...accountValues.values()].map((accountPoints) => accountPoints.reduce((sum, current) => sum + current, 0) / accountPoints.length)
+        const perAccount = [...accountValues.values()].map((accountPoints) => accountPoints.sum / accountPoints.weight)
         value = perAccount.length ? perAccount.reduce((sum, current) => sum + current, 0) / perAccount.length : null
         coverage = { valid: perAccount.length, total: Math.max(perAccount.length, eligibleAccountCount(group.model, group.source)) }
       } else {
@@ -778,7 +697,8 @@ const chartOptions = computed<any>(() => {
             const point = renderSeries.value[item.datasetIndex]?.points[item.dataIndex]
             if (!point) return []
             const details: string[] = []
-            if (point.profile) details.push(`${t('admin.ustcSpeed.samples.profile')}: ${point.profile}`)
+            if (point.profile === 'legacy') details.push(t('admin.ustcSpeed.overview.legacyMeasurement'))
+            details.push(t('admin.ustcSpeed.overview.bucketSamples', { count: point.validCount }))
             if (point.coverage) details.push(t('admin.ustcSpeed.overview.equalCoverage', point.coverage))
             else if (point.accountId) details.push(`${t('admin.ustcSpeed.overview.account')}: ${accountName(point.accountId)}`)
             return details
@@ -878,6 +798,7 @@ function buildQuery(): USTCSpeedQuery {
     metric: metric.value,
     interval: filters.interval,
     aggregate: filters.aggregate,
+    group_by: 'model',
   }
 }
 
@@ -898,29 +819,25 @@ async function loadDimensions() {
 }
 
 async function loadOverview() {
+  if (overviewViewDisposed) return
+  const requestSeq = ++overviewRequestSeq
+  overviewAbortController?.abort()
+  const controller = new AbortController()
+  overviewAbortController = controller
   loading.value = true
   try {
-    overview.value = await adminUSTCSpeedAPI.getOverview(buildQuery())
+    const result = await adminUSTCSpeedAPI.getOverview(buildQuery(), { signal: controller.signal })
+    if (requestSeq !== overviewRequestSeq) return
+    overview.value = result
   } catch {
+    if (requestSeq !== overviewRequestSeq || controller.signal.aborted) return
     overview.value = null
     toastError(t('admin.ustcSpeed.error.loadOverview'))
   } finally {
-    loading.value = false
-  }
-}
-
-async function loadSamples() {
-  samplesLoading.value = true
-  try {
-    const result = await adminUSTCSpeedAPI.listSamples({ ...buildQuery(), limit: pageSize.value, offset: (page.value - 1) * pageSize.value })
-    samples.value = result.items ?? []
-    sampleTotal.value = result.total ?? 0
-  } catch {
-    samples.value = []
-    sampleTotal.value = 0
-    toastError(t('admin.ustcSpeed.error.loadSamples'))
-  } finally {
-    samplesLoading.value = false
+    if (requestSeq === overviewRequestSeq) {
+      overviewAbortController = null
+      loading.value = false
+    }
   }
 }
 
@@ -971,26 +888,16 @@ async function loadCurrentSection() {
       : Promise.resolve()
     await Promise.all([loadOverview(), loadTaskAccounts])
   }
-  else if (isSamples.value) await loadSamples()
   else if (isTasks.value) await Promise.all([loadTasks(), loadSettings(), loadRuntime()])
 }
 
 function refreshCurrent() { void loadCurrentSection() }
 function applyFilters() {
-  page.value = 1
   void loadCurrentSection()
 }
 function useFiveMinuteAggregation() {
   filters.interval = '5m'
   applyFilters()
-}
-function changePage(value: number) {
-  page.value = Math.min(pageCount.value, Math.max(1, value))
-  void loadSamples()
-}
-function changePageSize() {
-  page.value = 1
-  void loadSamples()
 }
 function handleChartGroupChange() {
   metric.value = metricOptions.value[0].value
@@ -1000,10 +907,6 @@ function handleChartGroupChange() {
 function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
   return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(value)
-}
-
-function formatKnownTokenCount(value: number | null | undefined, known: boolean | undefined): string {
-  return known === true ? formatNumber(value) : t('admin.ustcSpeed.detail.notObserved')
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -1024,14 +927,6 @@ function formatAge(value: string | null | undefined): string {
   return t('admin.ustcSpeed.age.days', { count: Math.floor(hours / 24) })
 }
 
-function formatMilliseconds(value: number | null): string {
-  return value === null || !Number.isFinite(value) ? '—' : `${value.toFixed(1)} ${t('admin.ustcSpeed.unit.milliseconds')}`
-}
-
-function formatRate(value: number | null): string {
-  return value === null || !Number.isFinite(value) ? '—' : `${value.toFixed(2)} ${t('admin.ustcSpeed.unit.tokensPerSecond')}`
-}
-
 function sourceLabel(source: string): string {
   if (source === 'real') return t('admin.ustcSpeed.source.real')
   if (source === 'probe') return t('admin.ustcSpeed.source.probe')
@@ -1043,19 +938,6 @@ function statusLabel(status: string): string {
   return supported.includes(status) ? t(`admin.ustcSpeed.status.${status}`) : status || t('admin.ustcSpeed.status.unknown')
 }
 
-function sourceClass(source: string): string {
-  return source === 'probe'
-    ? 'status-pill status-probe'
-    : 'status-pill status-real'
-}
-
-function statusClass(status: string): string {
-  if (status === 'success') return 'status-pill status-success'
-  if (status === 'rate_limited') return 'status-pill status-warning'
-  if (status === 'recorded' || status === 'skipped' || status === 'cancelled') return 'status-pill status-muted'
-  return 'status-pill status-error'
-}
-
 function accountName(id: number): string {
   return dimensions.accounts.find((account) => account.id === id)?.name || `#${id}`
 }
@@ -1063,6 +945,14 @@ function accountName(id: number): string {
 function accountNames(ids: number[]): string {
   if (!ids?.length) return '—'
   return ids.map(accountName).join(', ')
+}
+
+function taskScheduleLabel(task: USTCSpeedTask): string {
+  if (task.cron_expression) return `Cron · ${task.cron_expression}`
+  const seconds = task.interval_seconds
+  const unit = seconds % 3600 === 0 ? 'hours' : seconds % 60 === 0 ? 'minutes' : 'seconds'
+  const value = unit === 'hours' ? seconds / 3600 : unit === 'minutes' ? seconds / 60 : seconds
+  return t('admin.ustcSpeed.task.everyInterval', { count: value, unit: t(`admin.ustcSpeed.task.intervalUnit.${unit}`) })
 }
 
 function openTaskDialog(task: USTCSpeedTask | null = null) {
@@ -1147,17 +1037,35 @@ async function openSample(id: number) {
   }
 }
 
+function openUsageRecords(point?: RenderPoint) {
+  void router.push({
+    path: '/admin/usage',
+    query: {
+      start_date: startDate.value,
+      end_date: endDate.value,
+      model: point?.model || filters.model || undefined,
+      account_id: point?.accountId || (filters.accountIds.length === 1 ? filters.accountIds[0] : undefined),
+    },
+  })
+}
+
 async function openPoint(point: RenderPoint) {
   if (point.sampleId) {
     await openSample(point.sampleId)
     return
   }
+  if (point.source === 'real') {
+    openUsageRecords(point)
+    return
+  }
+  // Probe measurements remain inside the trend page; real requests have a
+  // single record page under Usage.
   filters.model = point.model
-  filters.source = point.source === 'probe' ? 'probe' : 'real'
-  filters.profile = point.profile
-  filters.accountIds = point.accountId ? [point.accountId] : []
-  page.value = 1
-  await router.push('/admin/ustc-speed/samples')
+  filters.source = 'probe'
+  if (point.accountId) filters.accountIds = [point.accountId]
+  filters.interval = 'raw'
+  await loadOverview()
+  appStore.showToast('info', t('admin.ustcSpeed.overview.probeDrilldown'))
 }
 
 function escapeCsv(value: unknown): string {
@@ -1199,7 +1107,7 @@ async function exportSamples(format: ExportFormat) {
   exporting.value = true
   try {
     const query = buildQuery()
-    const limit = 500
+    const limit = 200
     let offset = 0
     let total = Number.POSITIVE_INFINITY
     const items: USTCSpeedSample[] = []
@@ -1227,11 +1135,18 @@ async function exportSamples(format: ExportFormat) {
 
 watch(() => route.path, () => { void loadCurrentSection() })
 watch(() => filters.aggregate, () => {
-  if (isOverview.value && !loading.value) void loadOverview()
+  if (isOverview.value) void loadOverview()
 })
 onMounted(async () => {
   await Promise.all([loadDimensions(), loadSettings()])
+  if (overviewViewDisposed) return
   await loadCurrentSection()
+})
+onUnmounted(() => {
+  overviewViewDisposed = true
+  overviewRequestSeq += 1
+  overviewAbortController?.abort()
+  overviewAbortController = null
 })
 
 const SummaryValue = defineComponent({

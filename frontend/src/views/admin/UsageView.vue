@@ -317,10 +317,17 @@ const getNumericQueryValue = (value: string | null | Array<string | null> | unde
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+const getPositiveIntegerQueryValue = (value: string | null | Array<string | null> | undefined): number | undefined => {
+  const parsed = getNumericQueryValue(value)
+  return parsed !== undefined && Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
 const applyRouteQueryFilters = () => {
   const queryStartDate = getSingleQueryValue(route.query.start_date)
   const queryEndDate = getSingleQueryValue(route.query.end_date)
   const queryUserId = getNumericQueryValue(route.query.user_id)
+  const queryModel = getSingleQueryValue(route.query.model)
+  const queryAccountId = getPositiveIntegerQueryValue(route.query.account_id)
 
   if (queryStartDate) {
     startDate.value = queryStartDate
@@ -332,6 +339,8 @@ const applyRouteQueryFilters = () => {
   filters.value = {
     ...filters.value,
     user_id: queryUserId,
+    model: queryModel,
+    account_id: queryAccountId,
     start_date: startDate.value,
     end_date: endDate.value
   }

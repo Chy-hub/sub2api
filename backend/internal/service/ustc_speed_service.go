@@ -26,17 +26,17 @@ func speedBadRequest(message string) error {
 	return infraerrors.BadRequest("USTC_SPEED_INVALID", message)
 }
 func DefaultUSTCSpeedSettings() USTCSpeedSettings {
-	return USTCSpeedSettings{CaptureEnabled: true, RetentionDays: 30, MaxBackgroundConcurrency: 4, DailyRequestBudget: 200, DailyOutputTokenBudget: 100000}
+	return USTCSpeedSettings{CaptureEnabled: true, MaxBackgroundConcurrency: 4}
 }
 func DefaultUSTCSpeedTask() USTCSpeedTask {
 	return USTCSpeedTask{
 		AccountIDs: []int64{}, Models: []string{}, IntervalSeconds: 1800, JitterSeconds: 180, Timezone: "Asia/Shanghai", ActiveStart: "00:00", ActiveEnd: "23:59", DaysOfWeek: []int{}, APIMode: "chat_completions", Stream: true,
-		Prompt: "Generate a numbered list of 120 practical suggestions for keeping a personal research notebook. Each item must be one short English sentence. Start immediately with item 1; do not add an introduction or conclusion.", PromptVariants: []string{}, MaxTokens: 512, Temperature: 0, Stop: []string{}, ThinkingMode: "off", TimeoutSeconds: 60, FirstOutputTimeoutSeconds: 30, MaxParallelAccounts: 4, MaxStartSkewSeconds: 5, ReserveRPM: 4, ReserveConcurrency: 2, MaxActiveRequests: 16, SkipIfUserWaiting: true, BackoffAfter429: 3, BackoffWindowSeconds: 900, BackoffMultiplier: 2, MaxIntervalSeconds: 7200, PauseAfter429: 6, RecoverySuccesses: 2, RealFallback: true, RealFallbackMaxAgeSeconds: 900, RealFallbackMinSamples: 1, MaxDailyRequests: 100, MaxDailyOutputTokens: 50000,
+		Prompt: "Generate a numbered list of 120 practical suggestions for keeping a personal research notebook. Each item must be one short English sentence. Start immediately with item 1; do not add an introduction or conclusion.", PromptVariants: []string{}, MaxTokens: 512, Temperature: 0, Stop: []string{}, ThinkingMode: "off", TimeoutSeconds: 60, FirstOutputTimeoutSeconds: 30, MaxParallelAccounts: 4, MaxStartSkewSeconds: 5, ReserveRPM: 4, ReserveConcurrency: 2, MaxActiveRequests: 16, SkipIfUserWaiting: true, BackoffAfter429: 3, BackoffWindowSeconds: 900, BackoffMultiplier: 2, MaxIntervalSeconds: 7200, PauseAfter429: 6, RecoverySuccesses: 2, RealFallback: true, RealFallbackMaxAgeSeconds: 900, RealFallbackMinSamples: 1,
 	}
 }
 func ValidateUSTCSpeedSettings(s USTCSpeedSettings) error {
-	if s.RetentionDays < 1 || s.RetentionDays > 180 || s.MaxBackgroundConcurrency < 1 || s.MaxBackgroundConcurrency > 16 || s.DailyRequestBudget < 1 || s.DailyRequestBudget > 100000 || s.DailyOutputTokenBudget < 1 || s.DailyOutputTokenBudget > 100000000 {
-		return speedBadRequest("invalid retention, concurrency, or daily budget")
+	if s.MaxBackgroundConcurrency < 1 || s.MaxBackgroundConcurrency > 16 {
+		return speedBadRequest("invalid background concurrency")
 	}
 	return nil
 }
@@ -145,9 +145,6 @@ func ValidateUSTCSpeedTask(t *USTCSpeedTask) error {
 	}
 	if t.RealFallbackMaxAgeSeconds < 60 || t.RealFallbackMaxAgeSeconds > 86400 || t.RealFallbackMinSamples < 1 || t.RealFallbackMinSamples > 1000 {
 		return speedBadRequest("invalid real data fallback settings")
-	}
-	if t.MaxDailyRequests < 1 || t.MaxDailyRequests > 100000 || t.MaxDailyOutputTokens < t.MaxTokens || t.MaxDailyOutputTokens > 100000000 {
-		return speedBadRequest("invalid task daily budget")
 	}
 	return nil
 }
@@ -509,7 +506,7 @@ func (s *USTCSpeedService) importHistory(ctx context.Context) {
 	for _, a := range accounts {
 		ids = append(ids, a.ID)
 	}
-	scope := fmt.Sprint(ids, s.cfg.Load().RetentionDays)
+	scope := fmt.Sprint(ids)
 	if scope != s.historyScope {
 		s.historyScope = scope
 		s.historyDone = false
@@ -517,7 +514,7 @@ func (s *USTCSpeedService) importHistory(ctx context.Context) {
 	if s.historyDone {
 		return
 	}
-	count, err := s.repo.ImportUsage(ctx, s.captureSince, time.Now().Add(-time.Duration(s.cfg.Load().RetentionDays)*24*time.Hour), ids, 2000)
+	count, err := s.repo.ImportUsage(ctx, s.captureSince, time.Time{}, ids, 2000)
 	if err != nil {
 		slog.Warn("ustc_speed_history_import_failed", "error", err)
 		return
