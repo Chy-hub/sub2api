@@ -556,11 +556,12 @@ func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	claimed, err = repo.ClaimTask(ctx, task.ID, "new-run", time.Minute, true, task.Revision)
 	require.NoError(t, err)
 	require.False(t, claimed, "an edit must not allow overlapping old and new runs")
-	require.NoError(t, repo.FinishTask(ctx, task.ID, "old-run", time.Now().Add(time.Minute), "completed"))
+	require.NoError(t, repo.FinishTask(ctx, task.ID, "old-run", time.Now().Add(time.Minute), "completed", "stale_detail"))
 	got, err := repo.GetTask(ctx, task.ID)
 	require.NoError(t, err)
 	require.True(t, newSchedule.Equal(*got.NextRunAt))
 	require.Equal(t, "cancelled", got.LastStatus)
+	require.Empty(t, got.LastDetail, "a stale run must not overwrite the newer revision detail")
 	require.Equal(t, task.CronExpression, got.CronExpression)
 
 	claimed, err = repo.ClaimTask(ctx, task.ID, "stale-reader", time.Minute, true, originalRevision)
@@ -569,16 +570,17 @@ func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	claimed, err = repo.ClaimTask(ctx, task.ID, "new-run", time.Minute, true, got.Revision)
 	require.NoError(t, err)
 	require.True(t, claimed)
-	require.NoError(t, repo.FinishTask(ctx, task.ID, "old-run", time.Now(), "failed"))
+	require.NoError(t, repo.FinishTask(ctx, task.ID, "old-run", time.Now(), "failed", "stale_detail"))
 	claimed, err = repo.ClaimTask(ctx, task.ID, "other-run", time.Minute, true, got.Revision)
 	require.NoError(t, err)
 	require.False(t, claimed, "an old owner cannot release the new owner's lease")
 	next := newSchedule.Add(time.Hour)
-	require.NoError(t, repo.FinishTask(ctx, task.ID, "new-run", next, "completed"))
+	require.NoError(t, repo.FinishTask(ctx, task.ID, "new-run", next, "completed", "user_load_or_capacity×2"))
 	got, err = repo.GetTask(ctx, task.ID)
 	require.NoError(t, err)
 	require.True(t, next.Equal(*got.NextRunAt))
 	require.Equal(t, "completed", got.LastStatus)
+	require.Equal(t, "user_load_or_capacity×2", got.LastDetail)
 }
 
 func ustcSpeedFloat(value float64) *float64 {

@@ -95,8 +95,12 @@ function makePoint(overrides: Record<string, unknown> = {}) {
 }
 
 function makeOverview(query: any) {
-  const rangeStart = atShanghaiStart(query.start_date)
-  const endExclusive = atShanghaiStart(shiftDate(query.end_date, 1))
+  let rangeStart = atShanghaiStart(query.start_date)
+  let endExclusive = atShanghaiStart(shiftDate(query.end_date, 1))
+  if (query.last_hours) {
+    endExclusive = Date.now() + 1
+    rangeStart = endExclusive - Number(query.last_hours) * 60 * 60 * 1000
+  }
   const startISO = new Date(rangeStart).toISOString()
   const endISO = new Date(endExclusive).toISOString()
   const today = localDate(new Date())
@@ -296,6 +300,49 @@ describe('USTCSpeedView mixed chart and applied date range', () => {
     expect(updatedBounds).not.toEqual(initialBounds)
     expect(datasets(wrapper)).toEqual(initialData)
     expect(updatedChart.attributes('data-y-unit')).toBe('admin.ustcSpeed.metric.unitTps')
+    wrapper.unmount()
+  })
+
+  it('commits a pending picker date when the main Apply button is used', async () => {
+    const wrapper = mountView()
+    await waitForChart(wrapper)
+
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    const yesterday = picker.findAll('.date-picker-preset').find((button) => button.text() === 'Yesterday')!
+    await yesterday.trigger('click')
+
+    // Use the page-level Apply, not the picker's own Apply.
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+
+    const query = getOverview.mock.calls.at(-1)?.[0]
+    const expected = shiftDate(localDate(new Date()), -1)
+    expect(query).toMatchObject({ start_date: expected, end_date: expected })
+    expect(query.last_hours).toBeUndefined()
+    expect(picker.get('.date-picker-value').text()).toBe('Yesterday')
+    wrapper.unmount()
+  })
+
+  it('applies the last-24-hour preset as an exact rolling window', async () => {
+    const wrapper = mountView()
+    await waitForChart(wrapper)
+
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    const preset = picker.findAll('.date-picker-preset').find((button) => button.text() === 'Last 24 hours')!
+    expect(preset).toBeTruthy()
+    await preset.trigger('click')
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+
+    const query = getOverview.mock.calls.at(-1)?.[0]
+    const today = localDate(new Date())
+    expect(query).toMatchObject({ last_hours: 24, start_date: shiftDate(today, -1), end_date: today })
+    const chart = mainChart(wrapper)
+    const span = Number(chart.attributes('data-x-max')) - Number(chart.attributes('data-x-min'))
+    expect(span).toBe(24 * 60 * 60 * 1000)
+    expect(wrapper.text()).toContain('admin.ustcSpeed.overview.lastHours')
     wrapper.unmount()
   })
 })

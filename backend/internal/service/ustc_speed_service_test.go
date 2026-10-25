@@ -32,6 +32,63 @@ func (r *ustcSpeedFallbackRepo) Overview(_ context.Context, q USTCSpeedQuery) (*
 func (r *ustcSpeedFallbackRepo) ListTasks(context.Context) ([]USTCSpeedTask, error) {
 	return r.tasks, nil
 }
+
+type ustcSpeedSaveTaskRepo struct {
+	USTCSpeedRepository
+	existing *USTCSpeedTask
+	saved    *USTCSpeedTask
+}
+
+func (r *ustcSpeedSaveTaskRepo) GetTask(context.Context, int64) (*USTCSpeedTask, error) {
+	if r.existing == nil {
+		return nil, ErrUSTCSpeedNotFound
+	}
+	return r.existing, nil
+}
+
+func (r *ustcSpeedSaveTaskRepo) SaveTask(_ context.Context, task *USTCSpeedTask) error {
+	copy := *task
+	r.saved = &copy
+	return nil
+}
+
+func TestUSTCSpeedSaveTaskStartsNewlyEnabledTaskPromptly(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		id        int64
+		existing  *USTCSpeedTask
+		enabled   bool
+		immediate bool
+	}{
+		{name: "new enabled task", enabled: true, immediate: true},
+		{name: "new disabled task", enabled: false},
+		{name: "re-enabled task", id: 1, existing: &USTCSpeedTask{ID: 1, Enabled: false}, enabled: true, immediate: true},
+		{name: "already enabled task", id: 1, existing: &USTCSpeedTask{ID: 1, Enabled: true}, enabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &ustcSpeedSaveTaskRepo{existing: tc.existing}
+			svc := NewUSTCSpeedService(repo, nil, nil)
+			task := DefaultUSTCSpeedTask()
+			task.ID = tc.id
+			task.Name = "scheduled probe"
+			task.Models = []string{"deepseek-flash"}
+			task.AllAccounts = true
+			task.Enabled = tc.enabled
+			task.JitterSeconds = 0
+			before := time.Now()
+			require.NoError(t, svc.SaveTask(context.Background(), &task))
+			require.NotNil(t, repo.saved)
+			require.NotNil(t, repo.saved.NextRunAt)
+			delay := repo.saved.NextRunAt.Sub(before)
+			if tc.immediate {
+				require.LessOrEqual(t, delay, 5*time.Second, "enabling must not wait for a full interval")
+			} else {
+				require.GreaterOrEqual(t, delay, time.Duration(task.IntervalSeconds)*time.Second-time.Second)
+			}
+		})
+	}
+}
+
 func TestUSTCSpeedFallbackKeepsRealSourceAndFreshness(t *testing.T) {
 	now := time.Now()
 	value := 45.0

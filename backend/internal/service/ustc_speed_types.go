@@ -106,6 +106,7 @@ type USTCSpeedTask struct {
 	NextRunAt                 *time.Time `json:"next_run_at"`
 	LastRunAt                 *time.Time `json:"last_run_at"`
 	LastStatus                string     `json:"last_status"`
+	LastDetail                string     `json:"last_detail,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
 }
@@ -130,6 +131,9 @@ type USTCSpeedQuery struct {
 	// by local hour of day so users can pick a faster time to run work.
 	Timezone string
 	Hourly   bool
+	// LastHours switches the range from calendar days to an exact rolling
+	// window ending now. Zero keeps the date-based Start/End range.
+	LastHours int
 }
 
 type USTCSpeedSummary struct {
@@ -245,7 +249,7 @@ type USTCSpeedRepository interface {
 	SaveTask(context.Context, *USTCSpeedTask) error
 	DeleteTask(context.Context, int64) error
 	ClaimTask(context.Context, int64, string, time.Duration, bool, int64) (bool, error)
-	FinishTask(context.Context, int64, string, time.Time, string) error
+	FinishTask(context.Context, int64, string, time.Time, string, string) error
 	AcquireKey(context.Context, string, string, time.Duration, int) (bool, error)
 	ReleaseKey(context.Context, string, string) error
 	GetRuntime(context.Context, string) (*USTCSpeedRuntime, error)
