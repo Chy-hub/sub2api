@@ -331,7 +331,7 @@ func TestUSTCSpeedManualProbeUsesSharedAdmissionAndOneRequest(t *testing.T) {
 	task := DefaultUSTCSpeedTask()
 	task.ID = 71
 	task.RealFallback = false
-	status := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-1", time.Now())
+	status, _ := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-1", time.Now())
 	require.Equal(t, "success", status)
 	calls, bodies := upstream.snapshot()
 	require.Equal(t, 1, calls, "a warm SSE probe should use one shared-admission request")
@@ -390,7 +390,7 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 			task := DefaultUSTCSpeedTask()
 			task.ID = 72
 			task.RealFallback = false
-			status := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-2", time.Now())
+			status, _ := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-2", time.Now())
 			require.Equal(t, "skipped", status)
 			calls, _ := upstream.snapshot()
 			require.Zero(t, calls, "unsafe or contended admission must not send a probe request")
@@ -467,7 +467,7 @@ func TestUSTCSpeedBackoffPauseExpiryStillRequiresGlobalLease(t *testing.T) {
 	// The local backoff deadline expired, but the shared Key lease is held by
 	// another probe. The half-open request must stop at the global lease gate.
 	repo.acquireAllowed = false
-	status := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-3", now)
+	status, _ := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-3", now)
 	require.Equal(t, "skipped", status)
 	calls, _ := upstream.snapshot()
 	require.Zero(t, calls)
@@ -504,6 +504,20 @@ func TestUSTCSpeedActiveWindowUsesTimezoneAndSupportsCrossMidnight(t *testing.T)
 	task.DaysOfWeek = []int{int(time.Tuesday)}
 	tuesdayAt00Shanghai := time.Date(2026, 10, 26, 16, 0, 0, 0, time.UTC)
 	require.True(t, speedTaskActive(task, tuesdayAt00Shanghai))
+}
+
+func TestUSTCSpeedSummarizeSkipReasons(t *testing.T) {
+	require.Empty(t, summarizeSpeedReasons(nil))
+	require.Equal(t,
+		"user_load_or_capacity×3, 429_paused×2, background_capacity×1",
+		summarizeSpeedReasons(map[string]int{
+			"user_load_or_capacity": 3,
+			"429_paused":            2,
+			"background_capacity":   1,
+			"limited_endpoint":      1,
+		}),
+		"the most frequent causes stay first and ties are deterministic",
+	)
 }
 
 func TestUSTCSpeedBackoffPausedWithoutDeadlineBlocks(t *testing.T) {
@@ -543,11 +557,13 @@ func TestUSTCSpeedManualRunBypassesActiveWindow(t *testing.T) {
 	task.ActiveEnd = fmt.Sprintf("%02d:%02d", end/60, end%60)
 	require.NotEqual(t, task.ActiveStart, task.ActiveEnd)
 
-	require.Equal(t, "outside_active_window", speed.executeTask(context.Background(), task, "scheduled", false))
+	scheduledStatus, scheduledDetail := speed.executeTask(context.Background(), task, "scheduled", false)
+	require.Equal(t, "outside_active_window", scheduledStatus)
+	require.Equal(t, "outside_active_window", scheduledDetail)
 	calls, _ := upstream.snapshot()
 	require.Zero(t, calls, "a scheduled run outside the window must not spend upstream quota")
 
-	status := speed.executeTask(context.Background(), task, "manual", true)
+	status, _ := speed.executeTask(context.Background(), task, "manual", true)
 	require.NotEqual(t, "outside_active_window", status)
 	calls, _ = upstream.snapshot()
 	require.Equal(t, 1, calls, "a manual run should proceed despite the active window")
