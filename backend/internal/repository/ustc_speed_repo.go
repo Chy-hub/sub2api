@@ -148,7 +148,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		return nil, fmt.Errorf("invalid speed aggregate")
 	}
 	where, args := ustcSpeedWhere(q)
-	out := &service.USTCSpeedOverview{Metric: q.Metric, Unit: "ms", Interval: q.Interval, GroupBy: groupBy, Aggregate: aggregate, Series: []service.USTCSpeedPoint{}}
+	out := &service.USTCSpeedOverview{RangeStart: q.Start, RangeEnd: q.End, Metric: q.Metric, Unit: "ms", Interval: q.Interval, GroupBy: groupBy, Aggregate: aggregate, Series: []service.USTCSpeedPoint{}}
 	if strings.HasSuffix(q.Metric, "tps") {
 		out.Unit = "tps"
 	}
@@ -218,6 +218,11 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		for i, j := 0, len(out.Series)-1; i < j; i, j = i+1, j-1 {
 			out.Series[i], out.Series[j] = out.Series[j], out.Series[i]
 		}
+		if q.Hourly {
+			if out.Hourly, err = r.ustcSpeedHourly(ctx, q, aggregate, where, args, profileExpr); err != nil {
+				return nil, err
+			}
+		}
 		return out, nil
 	}
 	seconds, ok := map[string]int{"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}[interval]
@@ -225,7 +230,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		return nil, fmt.Errorf("invalid speed interval")
 	}
 	bucket := fmt.Sprintf("to_timestamp(floor(extract(epoch from started_at)/%d)*%d)", seconds, seconds)
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,account_id,account_name,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT bucket,account_id,MAX(account_name),model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,account_id,model,source,profile ORDER BY bucket,account_id,model,source,profile LIMIT 5001`, args...)
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT bucket,0::bigint,''::text,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,model,source,profile ORDER BY bucket,model,source,profile LIMIT 5001`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +259,53 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		out.Truncated = true
 		out.Series = out.Series[:5000]
 	}
+	if q.Hourly {
+		if out.Hourly, err = r.ustcSpeedHourly(ctx, q, aggregate, where, args, profileExpr); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+// ustcSpeedHourly aggregates the same filtered calls by local hour of day. The
+// caller's IANA zone decides the bucket, so a "best time to run work" answer
+// follows the user's clock rather than the database session timezone.
+func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.USTCSpeedQuery, aggregate, where string, args []any, profileExpr string) ([]service.USTCSpeedHourPoint, error) {
+	timezone := strings.TrimSpace(q.Timezone)
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		timezone = "UTC"
+	}
+	hourArgs := append(append([]any(nil), args...), timezone)
+	timezoneParam := len(hourArgs)
+	value := "(payload->>'" + q.Metric + "')::double precision"
+	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY hour,model,source,profile LIMIT 2000`, hourArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []service.USTCSpeedHourPoint{}
+	for rows.Next() {
+		var point service.USTCSpeedHourPoint
+		if err = rows.Scan(&point.Hour, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
+			return nil, err
+		}
+		switch aggregate {
+		case "mean":
+			point.Value = point.Mean
+		case "p10":
+			point.Value = point.P10
+		case "p90":
+			point.Value = point.P90
+		case "p50":
+			point.Value = point.P50
+		}
+		out = append(out, point)
+	}
+	return out, rows.Err()
 }
 
 type ustcSpeedScanner interface{ Scan(...any) error }

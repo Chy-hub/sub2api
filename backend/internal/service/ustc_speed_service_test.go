@@ -51,6 +51,8 @@ func TestUSTCSpeedFallbackKeepsRealSourceAndFreshness(t *testing.T) {
 	require.Equal(t, "probe", result.RequestedSource)
 	require.Equal(t, "real", result.Series[0].Source)
 	require.Equal(t, 600, result.FallbackWindowSeconds)
+	require.Equal(t, query.Start, result.RangeStart, "fallback metadata retains the user's selected range")
+	require.Equal(t, query.End, result.RangeEnd, "fallback metadata retains the user's selected range")
 	require.Len(t, repo.queries, 2)
 	realQuery := repo.queries[1]
 	require.Equal(t, "real", realQuery.Source)
@@ -94,9 +96,12 @@ func TestUSTCSpeedFallbackNeverSubstitutesHistoricalOrUnusableData(t *testing.T)
 			}
 			repo := &ustcSpeedFallbackRepo{probe: probe, real: &USTCSpeedOverview{Summary: USTCSpeedSummary{RealSamples: tc.realCount}, Series: []USTCSpeedPoint{{Source: "real", Value: tc.realValue, ValidCount: tc.validCount}}}, tasks: []USTCSpeedTask{task}}
 			svc := NewUSTCSpeedService(repo, nil, nil)
-			out, err := svc.Overview(context.Background(), USTCSpeedQuery{Start: now.Add(-24 * time.Hour), End: tc.end, Source: "probe", Model: "m", Metric: "generation_tps"})
+			query := USTCSpeedQuery{Start: now.Add(-24 * time.Hour), End: tc.end, Source: "probe", Model: "m", Metric: "generation_tps"}
+			out, err := svc.Overview(context.Background(), query)
 			require.NoError(t, err)
 			require.False(t, out.FallbackApplied)
+			require.Equal(t, query.Start, out.RangeStart)
+			require.Equal(t, query.End, out.RangeEnd)
 		})
 	}
 }

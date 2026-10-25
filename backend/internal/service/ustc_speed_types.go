@@ -126,6 +126,10 @@ type USTCSpeedQuery struct {
 	OutputMin, OutputMax        *int
 	Metric, Interval, Aggregate string
 	Limit, Offset               int
+	// Timezone is the caller's IANA zone. Hourly groups the same filtered calls
+	// by local hour of day so users can pick a faster time to run work.
+	Timezone string
+	Hourly   bool
 }
 
 type USTCSpeedSummary struct {
@@ -164,19 +168,38 @@ type USTCSpeedPoint struct {
 	Max         *float64  `json:"max"`
 }
 
+type USTCSpeedHourPoint struct {
+	Hour       int      `json:"hour"`
+	Model      string   `json:"model"`
+	Source     string   `json:"source"`
+	Profile    string   `json:"profile"`
+	Count      int64    `json:"count"`
+	ValidCount int64    `json:"valid_count"`
+	Value      *float64 `json:"value"`
+	Mean       *float64 `json:"mean"`
+	P10        *float64 `json:"p10"`
+	P50        *float64 `json:"p50"`
+	P90        *float64 `json:"p90"`
+	Min        *float64 `json:"min"`
+	Max        *float64 `json:"max"`
+}
+
 type USTCSpeedOverview struct {
-	RequestedSource       string           `json:"requested_source"`
-	FallbackApplied       bool             `json:"fallback_applied"`
-	FallbackWindowSeconds int              `json:"fallback_window_seconds"`
-	Metric                string           `json:"metric"`
-	Unit                  string           `json:"unit"`
-	Interval              string           `json:"interval"`
-	GroupBy               string           `json:"group_by"`
-	Aggregate             string           `json:"aggregate"`
-	Summary               USTCSpeedSummary `json:"summary"`
-	Series                []USTCSpeedPoint `json:"series"`
-	Truncated             bool             `json:"truncated"`
-	DroppedSamples        uint64           `json:"dropped_samples"`
+	RequestedSource       string               `json:"requested_source"`
+	FallbackApplied       bool                 `json:"fallback_applied"`
+	FallbackWindowSeconds int                  `json:"fallback_window_seconds"`
+	RangeStart            time.Time            `json:"range_start"`
+	RangeEnd              time.Time            `json:"range_end"`
+	Metric                string               `json:"metric"`
+	Unit                  string               `json:"unit"`
+	Interval              string               `json:"interval"`
+	GroupBy               string               `json:"group_by"`
+	Aggregate             string               `json:"aggregate"`
+	Summary               USTCSpeedSummary     `json:"summary"`
+	Series                []USTCSpeedPoint     `json:"series"`
+	Hourly                []USTCSpeedHourPoint `json:"hourly,omitempty"`
+	Truncated             bool                 `json:"truncated"`
+	DroppedSamples        uint64               `json:"dropped_samples"`
 }
 
 type USTCSpeedRuntime struct {

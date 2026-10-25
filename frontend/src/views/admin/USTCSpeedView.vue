@@ -65,7 +65,7 @@
           </div>
           <div class="min-w-[235px] space-y-1.5">
             <span class="block text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.filter.timeRange') }}</span>
-            <DateRangePicker v-model:start-date="startDate" v-model:end-date="endDate" @change="applyFilters" />
+            <DateRangePicker v-model:start-date="startDate" v-model:end-date="endDate" @change="applyDateRange" />
           </div>
           <button type="button" class="btn btn-primary h-[42px]" :disabled="loading" @click="applyFilters">
             {{ t('admin.ustcSpeed.action.apply') }}
@@ -160,6 +160,7 @@
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.overview.chartTitle') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.sourceNote') }}</p>
               <span v-if="overview" class="mt-2 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ aggregationLabel }}</span>
+              <p v-if="appliedQuery" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ appliedQuery.start_date }} — {{ appliedQuery.end_date }} · {{ appliedQuery.timezone }}</p>
             </div>
             <div class="flex flex-wrap items-end gap-2">
               <label class="filter-field min-w-36">
@@ -174,13 +175,6 @@
                 <span>{{ t('admin.ustcSpeed.metric.metric') }}</span>
                 <select v-model="metric" class="filter-input" @change="loadOverview">
                   <option v-for="option in metricOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                </select>
-              </label>
-              <label class="filter-field min-w-44">
-                <span>{{ t('admin.ustcSpeed.accountView.label') }}</span>
-                <select v-model="accountView" class="filter-input">
-                  <option value="accounts">{{ t('admin.ustcSpeed.accountView.accounts') }}</option>
-                  <option value="equal">{{ t('admin.ustcSpeed.accountView.equal') }}</option>
                 </select>
               </label>
               <label class="filter-field min-w-32">
@@ -199,19 +193,16 @@
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="loading" class="flex h-[420px] items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
-            <div v-else-if="equalAverageNeedsAggregation" class="flex min-h-[340px] flex-col items-center justify-center px-6 text-center">
-              <p class="max-w-xl text-sm text-amber-800 dark:text-amber-200">{{ t('admin.ustcSpeed.accountView.aggregateRequired') }}</p>
-              <button type="button" class="btn btn-secondary mt-3" @click="useFiveMinuteAggregation">{{ t('admin.ustcSpeed.accountView.useFiveMinutes') }}</button>
-            </div>
             <div v-else-if="!chartData || !chartData.datasets.length" class="flex min-h-[340px] flex-col items-center justify-center px-6 text-center">
               <div class="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-xl text-gray-400 dark:bg-dark-700">∅</div>
               <p class="font-medium text-gray-700 dark:text-gray-200">{{ t('admin.ustcSpeed.overview.noSeries') }}</p>
               <p class="mt-1 max-w-lg text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.noSeriesHint') }}</p>
             </div>
             <div v-else class="h-[420px] min-w-0">
-              <Line :data="chartData" :options="chartOptions" />
+              <SpeedChart type="bar" :data="chartData" :options="chartOptions" />
             </div>
             <p class="mt-2 text-xs text-gray-400 dark:text-gray-500">{{ t('admin.ustcSpeed.overview.chartHint') }}</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.chartReading') }}</p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.timingBasis') }}</p>
           </div>
           <div class="grid gap-3 border-t border-gray-100 bg-gray-50/70 px-5 py-3 text-sm dark:border-dark-700 dark:bg-dark-900/30 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
@@ -221,6 +212,23 @@
             <SummaryValue :label="t('admin.ustcSpeed.overview.realSamples')" :value="formatNumber(overview?.summary.real_samples)" />
             <SummaryValue :label="t('admin.ustcSpeed.overview.probeSamples')" :value="formatNumber(overview?.summary.probe_samples)" />
             <SummaryValue :label="t('admin.ustcSpeed.overview.outputTokens')" :value="formatNumber(overview?.summary.output_tokens)" />
+          </div>
+        </section>
+
+        <section v-if="overview" class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <div class="flex flex-wrap items-end justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
+            <div>
+              <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.hourly.title') }}</h2>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.description') }}</p>
+            </div>
+            <span v-if="appliedQuery" class="text-xs text-gray-500 dark:text-gray-400">{{ appliedQuery.timezone }}</span>
+          </div>
+          <div class="px-3 py-3 sm:px-5 sm:py-4">
+            <div v-if="!hourlySeries.length" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
+            <div v-else class="h-[260px] min-w-0">
+              <SpeedChart type="line" :data="hourlyChartData" :options="hourlyChartOptions" />
+            </div>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.hint') }}</p>
           </div>
         </section>
 
@@ -245,11 +253,11 @@
               <div v-else class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-700">
                 <table class="min-w-full divide-y divide-gray-100 text-left text-sm dark:divide-dark-700">
                   <thead class="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-gray-400">
-                    <tr><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.model') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.overview.source') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.account') }}</th><th class="px-3 py-2">n</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.status') }}</th></tr>
+                    <tr><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.model') }}</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.overview.source') }}</th><th class="px-3 py-2">n</th><th class="px-3 py-2">{{ t('admin.ustcSpeed.samples.status') }}</th></tr>
                   </thead>
                   <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
                     <tr v-for="series in seriesBreakdown" :key="series.key" class="text-gray-700 dark:text-gray-300">
-                      <td class="px-3 py-2">{{ series.model }}<span v-if="series.profile === 'legacy'" class="ml-2 text-xs text-amber-600">{{ t('admin.ustcSpeed.overview.legacyMeasurement') }}</span></td><td class="px-3 py-2">{{ sourceLabel(series.source) }}</td><td class="px-3 py-2">{{ series.account }}</td><td class="px-3 py-2">{{ formatNumber(series.count) }}</td><td class="px-3 py-2">{{ formatNumber(series.valid) }} / {{ formatNumber(series.count) }}</td>
+                      <td class="px-3 py-2">{{ series.model }}<span v-if="series.profile === 'legacy'" class="ml-2 text-xs text-amber-600">{{ t('admin.ustcSpeed.overview.legacyMeasurement') }}</span></td><td class="px-3 py-2">{{ sourceLabel(series.source) }}</td><td class="px-3 py-2">{{ formatNumber(series.count) }}</td><td class="px-3 py-2">{{ formatNumber(series.valid) }} / {{ formatNumber(series.count) }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -357,8 +365,8 @@
 </template>
 
 <script setup lang="ts">
-import { Chart as ChartJS, Filler, Legend, LineElement, LinearScale, PointElement, Tooltip } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import { Chart as ChartJS, BarController, BarElement, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip } from 'chart.js'
+import { Chart as SpeedChart } from 'vue-chartjs'
 import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -371,6 +379,7 @@ import { adminUSTCSpeedAPI } from '@/api/admin/ustcSpeed'
 import type {
   USTCSpeedAccountDimension,
   USTCSpeedAggregate,
+  USTCSpeedHourPoint,
   USTCSpeedMetric,
   USTCSpeedOverview,
   USTCSpeedPoint,
@@ -384,10 +393,9 @@ import type {
 } from '@/api/admin/ustcSpeed'
 import { useAppStore } from '@/stores/app'
 
-ChartJS.register(Filler, Legend, LineElement, LinearScale, PointElement, Tooltip)
+ChartJS.register(BarController, BarElement, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip)
 
 type ChartGroup = 'tps' | 'ttft' | 'time'
-type AccountView = 'accounts' | 'equal'
 type ExportFormat = 'csv' | 'json'
 type PendingAction = { kind: 'delete' | 'run'; task: USTCSpeedTask } | null
 type SampleFilterState = {
@@ -449,13 +457,13 @@ const filters = reactive<SampleFilterState>({
 
 const dimensions = reactive<{ accounts: USTCSpeedAccountDimension[]; models: string[] }>({ accounts: [], models: [] })
 const overview = ref<USTCSpeedOverview | null>(null)
+const appliedQuery = ref<USTCSpeedQuery | null>(null)
 const loading = ref(false)
 let overviewRequestSeq = 0
 let overviewAbortController: AbortController | null = null
 let overviewViewDisposed = false
 const chartGroup = ref<ChartGroup>('tps')
 const metric = ref<USTCSpeedMetric>('generation_tps')
-const accountView = ref<AccountView>('accounts')
 const exporting = ref(false)
 const selectedSample = ref<USTCSpeedSample | null>(null)
 const sampleDialogOpen = ref(false)
@@ -463,7 +471,6 @@ const sampleDetailLoading = ref(false)
 
 const tasks = ref<USTCSpeedTask[]>([])
 const tasksLoading = ref(false)
-const taskListLoaded = ref(false)
 const taskDialogOpen = ref(false)
 const selectedTask = ref<USTCSpeedTask | null>(null)
 const taskSaving = ref(false)
@@ -505,7 +512,7 @@ const metricOptions = computed(() => {
   return options[chartGroup.value]
 })
 
-const isTpsMetric = computed(() => metric.value === 'generation_tps' || metric.value === 'overall_tps')
+const isTpsMetric = computed(() => (overview.value?.metric ?? metric.value).endsWith('tps'))
 const chartUnit = computed(() => isTpsMetric.value ? t('admin.ustcSpeed.metric.unitTps') : t('admin.ustcSpeed.metric.unitMs'))
 const aggregationLabel = computed(() => {
   const interval = overview.value?.interval ?? filters.interval
@@ -516,25 +523,22 @@ const aggregationLabel = computed(() => {
     statistic: t(`admin.ustcSpeed.aggregate.${overview.value?.aggregate || filters.aggregate}`),
   })
 })
-const equalAverageNeedsAggregation = computed(() => {
-  if (accountView.value !== 'equal' || (overview.value?.interval ?? filters.interval) !== 'raw') return false
-  if (filters.source !== 'probe') return true
-  return (overview.value?.series ?? []).some((point) => !point.round_id)
-})
-
 const filteredPoints = computed(() => overview.value?.series ?? [])
 const validMetricPointCount = computed(() => filteredPoints.value.filter((point) => readValue(point) !== null).reduce((sum, point) => sum + Math.max(1, point.valid_count || 0), 0))
 const hasLegacy = computed(() => filteredPoints.value.some((point) => point.profile.toLowerCase().startsWith('legacy')))
 
 function readValue(point: USTCSpeedPoint): number | null {
-  const aggregateValue = point[filters.aggregate]
-  const value = point.value ?? (filters.interval === 'raw' ? null : aggregateValue)
+  const aggregateValue = point[overview.value?.aggregate ?? filters.aggregate]
+  const value = point.value ?? (overview.value?.interval === 'raw' ? null : aggregateValue)
   return value !== null && Number.isFinite(value) ? value : null
 }
 
 interface RenderPoint {
   time: string
   value: number | null
+  p10: number | null
+  p50: number | null
+  p90: number | null
   sampleId?: number
   count: number
   validCount: number
@@ -542,165 +546,203 @@ interface RenderPoint {
   model: string
   source: string
   profile: string
-  coverage?: { valid: number; total: number }
 }
 
 interface RenderSeries { key: string; label: string; model: string; source: string; profile: string; points: RenderPoint[] }
 
-function eligibleAccountCount(model: string, source: string): number {
-  const selected = filters.accountIds.length
-    ? dimensions.accounts.filter((account) => filters.accountIds.includes(account.id))
-    : dimensions.accounts
-  const task = source === 'probe' && filters.taskId
-    ? tasks.value.find((item) => item.id === filters.taskId)
-    : undefined
-  const taskAccountIds = task && !task.all_accounts ? new Set(task.account_ids) : undefined
-  const capable = selected.filter((account) =>
-    (!taskAccountIds || taskAccountIds.has(account.id)) &&
-    (!account.models.length || account.models.includes(model)),
-  )
-  return Math.max(1, new Set(capable.map((account) => account.key_account_id || account.id)).size)
-}
-
-function physicalKeyId(accountId: number): number {
-  return dimensions.accounts.find((account) => account.id === accountId)?.key_account_id || accountId
-}
-
 function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
-  const grouped = new Map<string, { model: string; source: string; profile: string; accountName: string; accountId: number; points: USTCSpeedPoint[] }>()
+  const grouped = new Map<string, RenderSeries>()
   for (const point of points) {
-    const base = [point.model || '', point.source || '', point.profile || ''].join('|')
-    const key = accountView.value === 'equal' ? base : `${base}|${point.account_id}`
-    const entry = grouped.get(key) ?? {
+    const key = JSON.stringify([point.model, point.source, point.profile])
+    const series = grouped.get(key) ?? {
+      key,
       model: point.model,
       source: point.source,
       profile: point.profile,
-      accountName: point.account_name,
-      accountId: point.account_id,
+      label: seriesLabel(point.model, point.profile, point.source),
       points: [],
     }
-    entry.points.push(point)
-    grouped.set(key, entry)
+    series.points.push({
+      time: point.time,
+      value: readValue(point),
+      p10: point.p10,
+      p50: point.p50,
+      p90: point.p90,
+      sampleId: point.sample_id,
+      count: point.count,
+      validCount: point.valid_count,
+      accountId: point.account_id > 0 ? point.account_id : undefined,
+      model: point.model,
+      source: point.source,
+      profile: point.profile,
+    })
+    grouped.set(key, series)
   }
-
-  const out: RenderSeries[] = []
-  for (const [key, group] of grouped) {
-    const name = accountView.value === 'equal'
-      ? t('admin.ustcSpeed.accountView.equal')
-      : group.accountName || `${t('admin.ustcSpeed.overview.account')} #${group.accountId}`
-    const profileLabel = group.profile === 'legacy' ? t('admin.ustcSpeed.overview.legacyMeasurement') : ''
-    const baseLabel = [group.model, profileLabel, name].filter(Boolean).join(' · ')
-    const sourceName = group.source === 'probe' ? t('admin.ustcSpeed.source.probe') : t('admin.ustcSpeed.source.real')
-    const bucketed = new Map<string, USTCSpeedPoint[]>()
-    for (const point of group.points) {
-      const bucket = accountView.value === 'equal' && group.source === 'probe' && point.round_id
-        ? `round:${point.round_id}`
-        : `time:${point.time}`
-      const items = bucketed.get(bucket) ?? []
-      items.push(point)
-      bucketed.set(bucket, items)
-    }
-
-    const renderPoints: RenderPoint[] = []
-    for (const entries of bucketed.values()) {
-      const values = entries.map(readValue).filter((value): value is number => value !== null)
-      let value: number | null = null
-      let coverage: RenderPoint['coverage']
-      if (accountView.value === 'equal') {
-        const accountValues = new Map<number, { sum: number; weight: number }>()
-        for (const point of entries) {
-          const pointValue = readValue(point)
-          if (pointValue === null) continue
-          const keyAccountId = physicalKeyId(point.account_id)
-          const valuesForAccount = accountValues.get(keyAccountId) ?? { sum: 0, weight: 0 }
-          const weight = filters.aggregate === 'mean' ? Math.max(1, point.valid_count) : 1
-          valuesForAccount.sum += pointValue * weight
-          valuesForAccount.weight += weight
-          accountValues.set(keyAccountId, valuesForAccount)
-        }
-        const perAccount = [...accountValues.values()].map((accountPoints) => accountPoints.sum / accountPoints.weight)
-        value = perAccount.length ? perAccount.reduce((sum, current) => sum + current, 0) / perAccount.length : null
-        coverage = { valid: perAccount.length, total: Math.max(perAccount.length, eligibleAccountCount(group.model, group.source)) }
-      } else {
-        value = values.length ? values[values.length - 1] : null
-      }
-      const timestamp = entries.reduce((earliest, point) => point.time < earliest ? point.time : earliest, entries[0].time)
-      renderPoints.push({
-        time: timestamp,
-        value,
-        sampleId: accountView.value === 'accounts' && entries.length === 1 ? entries[0].sample_id : undefined,
-        count: entries.reduce((sum, point) => sum + (point.count || 0), 0),
-        validCount: entries.reduce((sum, point) => sum + (point.valid_count || 0), 0),
-        accountId: accountView.value === 'accounts' ? group.accountId : undefined,
-        model: group.model,
-        source: group.source,
-        profile: group.profile,
-        coverage,
-      })
-    }
-    renderPoints.sort((a, b) => a.time.localeCompare(b.time))
-    out.push({ key, label: `${baseLabel} · ${sourceName}`, model: group.model, source: group.source, profile: group.profile, points: renderPoints })
-  }
-  return out
+  for (const series of grouped.values()) series.points.sort((a, b) => a.time.localeCompare(b.time))
+  return [...grouped.values()]
 }
 
 const renderSeries = computed(() => makeRenderSeries(filteredPoints.value))
+const chartTimeBounds = computed(() => {
+  const query = appliedQuery.value
+  const start = Date.parse(overview.value?.range_start || (query ? `${query.start_date}T00:00:00` : ''))
+  const nextDay = query ? new Date(`${query.end_date}T00:00:00`) : new Date(NaN)
+  nextDay.setDate(nextDay.getDate() + 1)
+  const end = overview.value?.range_end ? Date.parse(overview.value.range_end) : nextDay.getTime()
+  return Number.isFinite(start) && Number.isFinite(end) && end > start ? { start, end } : null
+})
+const bucketDurations: Record<string, number> = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '1d': 86400000 }
+const bucketMilliseconds = computed(() => bucketDurations[overview.value?.interval ?? ''] || 0)
+function plottedTime(point: RenderPoint): number {
+  const time = Date.parse(point.time)
+  if (!bucketMilliseconds.value) return time
+  const start = Math.max(time, chartTimeBounds.value?.start ?? time)
+  const end = Math.min(time + bucketMilliseconds.value, chartTimeBounds.value?.end ?? Infinity)
+  return start + Math.max(0, end - start) / 2
+}
+const chartPalette = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#ef4444', '#6366f1', '#14b8a6']
+
+function tint(hex: string, alpha: string): string {
+  return `${hex}${alpha}`
+}
+
+function seriesLabel(model: string, profile: string, source: string): string {
+  return [model, profile === 'legacy' ? t('admin.ustcSpeed.overview.legacyMeasurement') : '', sourceLabel(source)].filter(Boolean).join(' · ')
+}
+
+const chartTheme = computed(() => {
+  const dark = document.documentElement.classList.contains('dark')
+  return {
+    dark,
+    text: dark ? '#9ca3af' : '#6b7280',
+    grid: dark ? '#374151' : '#f3f4f6',
+    tooltipBg: dark ? '#171b20' : '#ffffff',
+    tooltipTitle: dark ? '#f3f4f6' : '#111827',
+    tooltipBody: dark ? '#d1d5db' : '#4b5563',
+  }
+})
+
 const chartData = computed<any>(() => {
-  if (!renderSeries.value.length) return null
   if (!renderSeries.value.some((series) => series.points.length)) return null
-  const palette = ['#4677d5', '#13a789', '#b461d1', '#e49727', '#4287a4', '#d35e77', '#7783d4', '#7c9b44']
-  const datasets = renderSeries.value.map((series, index) => {
-    return {
+  const raw = overview.value?.interval === 'raw'
+  const realSeriesCount = renderSeries.value.filter((series) => series.source === 'real').length
+  const datasets: any[] = []
+  renderSeries.value.forEach((series, index) => {
+    const color = chartPalette[index % chartPalette.length]
+    const bar = !raw && series.source === 'real'
+    // The P10-P90 spread sits behind the average bar. It is shown only for a
+    // single real series so overlapping bands cannot mislead comparisons.
+    if (bar && realSeriesCount === 1) {
+      const ranges = series.points
+        .filter((point) => Number.isFinite(point.p10) && Number.isFinite(point.p90))
+        .map((point) => ({ x: plottedTime(point), y: [point.p10, point.p90] }))
+      if (ranges.length) {
+        datasets.push({
+          type: 'bar',
+          label: t('admin.ustcSpeed.overview.distribution'),
+          data: ranges,
+          backgroundColor: tint(color, '26'),
+          borderColor: tint(color, '4d'),
+          borderWidth: 1,
+          borderRadius: 3,
+          grouped: false,
+          order: 2,
+          maxBarThickness: 18,
+          categoryPercentage: 1,
+          barPercentage: 1,
+          distribution: true,
+          seriesIndex: index,
+        })
+      }
+    }
+    datasets.push({
+      type: raw ? 'scatter' : bar ? 'bar' : 'line',
       label: series.label,
-      data: series.points.map((point) => ({ x: new Date(point.time).getTime(), y: point.value })),
-      borderColor: palette[index % palette.length],
-      backgroundColor: palette[index % palette.length],
+      data: series.points.map((point) => ({ x: plottedTime(point), y: point.value })),
+      borderColor: color,
+      backgroundColor: bar ? tint(color, 'cc') : color,
       borderDash: series.source === 'probe' ? [6, 4] : [],
-      borderWidth: 2,
-      pointRadius: accountView.value === 'equal' ? 2 : 2.5,
+      borderWidth: bar ? 0 : 2,
+      borderRadius: bar ? 3 : 0,
+      maxBarThickness: 14,
+      categoryPercentage: 0.85,
+      barPercentage: 0.8,
+      pointRadius: raw ? 3 : 2.5,
       pointHoverRadius: 5,
       pointHitRadius: 8,
-      tension: 0.22,
+      showLine: !raw && !bar,
+      tension: series.source === 'probe' ? 0.18 : 0,
       fill: false,
       spanGaps: false,
-    }
+      order: 1,
+      seriesIndex: index,
+    })
   })
   return { datasets }
 })
 
+function pointAt(datasetIndex: number, dataIndex: number): RenderPoint | undefined {
+  const dataset = chartData.value?.datasets?.[datasetIndex]
+  if (!dataset || dataset.distribution) return undefined
+  return renderSeries.value[dataset.seriesIndex]?.points[dataIndex]
+}
+
 const chartOptions = computed<any>(() => {
-  const dark = document.documentElement.classList.contains('dark')
-  const text = dark ? '#a1a1aa' : '#6b7280'
-  const grid = dark ? '#303741' : '#edf0f4'
+  const theme = chartTheme.value
   return {
     responsive: true,
     maintainAspectRatio: false,
     interaction: { mode: 'nearest' as const, intersect: false },
     plugins: {
-      legend: { position: 'bottom' as const, labels: { color: text, usePointStyle: true, boxWidth: 7, padding: 16, font: { size: 11 } } },
+      legend: {
+        position: 'bottom' as const,
+        labels: {
+          color: theme.text,
+          usePointStyle: true,
+          pointStyle: 'circle' as const,
+          boxWidth: 7,
+          padding: 16,
+          font: { size: 11 },
+          filter: (item: { datasetIndex: number }, data: { datasets: any[] }) => !data.datasets[item.datasetIndex]?.distribution,
+        },
+      },
       tooltip: {
-        backgroundColor: dark ? '#171b20' : '#ffffff',
-        titleColor: dark ? '#f3f4f6' : '#111827',
-        bodyColor: dark ? '#d1d5db' : '#4b5563',
-        borderColor: grid,
+        backgroundColor: theme.tooltipBg,
+        titleColor: theme.tooltipTitle,
+        bodyColor: theme.tooltipBody,
+        borderColor: theme.grid,
         borderWidth: 1,
         padding: 10,
+        filter: (item: { dataset: any }) => !item.dataset.distribution,
         callbacks: {
-          title: (items: Array<{ parsed: { x: number } }>) => {
-            const timestamp = items[0]?.parsed?.x
-            return Number.isFinite(timestamp) ? formatChartTooltipLabel(timestamp) : ''
+          title: (items: Array<{ parsed: { x: number }; datasetIndex: number; dataIndex: number }>) => {
+            const item = items[0]
+            const point = item && pointAt(item.datasetIndex, item.dataIndex)
+            if (!point) return ''
+            const timestamp = Date.parse(point.time)
+            if (!bucketMilliseconds.value) return formatChartTooltipLabel(timestamp)
+            const start = Math.max(timestamp, chartTimeBounds.value?.start ?? timestamp)
+            const end = Math.min(timestamp + bucketMilliseconds.value, chartTimeBounds.value?.end ?? Infinity)
+            return `${formatChartTooltipLabel(start)} — ${formatChartTooltipLabel(end)}`
           },
           label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) => `${context.dataset.label ?? ''}: ${formatChartValue(context.parsed.y)}`,
           afterBody: (items: Array<{ datasetIndex: number; dataIndex: number }>) => {
             const item = items[0]
             if (!item) return []
-            const point = renderSeries.value[item.datasetIndex]?.points[item.dataIndex]
+            const point = pointAt(item.datasetIndex, item.dataIndex)
             if (!point) return []
             const details: string[] = []
             if (point.profile === 'legacy') details.push(t('admin.ustcSpeed.overview.legacyMeasurement'))
             details.push(t('admin.ustcSpeed.overview.bucketSamples', { count: point.validCount }))
-            if (point.coverage) details.push(t('admin.ustcSpeed.overview.equalCoverage', point.coverage))
-            else if (point.accountId) details.push(`${t('admin.ustcSpeed.overview.account')}: ${accountName(point.accountId)}`)
+            if (bucketMilliseconds.value > 0 && Number.isFinite(point.p10) && Number.isFinite(point.p50) && Number.isFinite(point.p90)) {
+              details.push(t('admin.ustcSpeed.overview.spread', {
+                p10: formatChartValue(point.p10),
+                p50: formatChartValue(point.p50),
+                p90: formatChartValue(point.p90),
+              }))
+            }
+            if (bucketMilliseconds.value > 0 && point.validCount < 5) details.push(t('admin.ustcSpeed.overview.lowSamples'))
+            if (point.accountId) details.push(`${t('admin.ustcSpeed.overview.account')}: ${accountName(point.accountId)}`)
             return details
           },
         },
@@ -709,36 +751,137 @@ const chartOptions = computed<any>(() => {
     scales: {
       x: {
         type: 'linear',
+        min: chartTimeBounds.value?.start,
+        max: chartTimeBounds.value?.end,
+        offset: false,
         grid: { display: false },
         ticks: {
-          color: text,
+          color: theme.text,
           maxTicksLimit: 10,
           autoSkip: true,
           maxRotation: 0,
+          font: { size: 10 },
           callback: (value: string | number) => formatChartLabel(Number(value)),
         },
       },
-      y: { grid: { color: grid, borderDash: [4, 4] }, ticks: { color: text, callback: (value: string | number) => Number(value).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US') }, title: { display: true, text: chartUnit.value, color: text } },
+      y: {
+        beginAtZero: true,
+        grid: { color: theme.grid, borderDash: [4, 4] },
+        ticks: { color: theme.text, font: { size: 10 }, callback: (value: string | number) => Number(value).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US') },
+        title: { display: true, text: chartUnit.value, color: theme.text },
+      },
     },
     onClick: (_event: unknown, active: Array<{ datasetIndex: number; index: number }>) => {
-      const hit = active[0]
+      const hit = active.find((item) => !chartData.value?.datasets?.[item.datasetIndex]?.distribution)
       if (!hit) return
-      const point = renderSeries.value[hit.datasetIndex]?.points[hit.index]
+      const point = pointAt(hit.datasetIndex, hit.index)
       if (point) void openPoint(point)
     },
   }
 })
 
+interface HourlySeries { key: string; label: string; source: string; hours: Array<USTCSpeedHourPoint | undefined> }
+
+const hourlySeries = computed<HourlySeries[]>(() => {
+  const grouped = new Map<string, HourlySeries>()
+  for (const point of overview.value?.hourly ?? []) {
+    if (point.hour < 0 || point.hour > 23) continue
+    const key = JSON.stringify([point.model, point.source, point.profile])
+    const series = grouped.get(key) ?? {
+      key,
+      label: seriesLabel(point.model, point.profile, point.source),
+      source: point.source,
+      hours: Array.from({ length: 24 }, () => undefined),
+    }
+    series.hours[point.hour] = point
+    grouped.set(key, series)
+  }
+  return [...grouped.values()]
+})
+
+function hourlyValue(point: USTCSpeedHourPoint | undefined): number | null {
+  if (!point) return null
+  const aggregate = overview.value?.aggregate ?? filters.aggregate
+  const value = point[aggregate] ?? point.value
+  return value !== null && Number.isFinite(value) ? value : null
+}
+
+const hourlyChartData = computed<any>(() => {
+  if (!hourlySeries.value.length) return null
+  return {
+    labels: Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`),
+    datasets: hourlySeries.value.map((series, index) => {
+      const color = chartPalette[index % chartPalette.length]
+      return {
+        label: series.label,
+        data: series.hours.map(hourlyValue),
+        borderColor: color,
+        backgroundColor: tint(color, '33'),
+        borderDash: series.source === 'probe' ? [6, 4] : [],
+        borderWidth: 2,
+        pointRadius: 2.5,
+        pointHoverRadius: 5,
+        pointHitRadius: 8,
+        tension: 0.2,
+        fill: false,
+        spanGaps: false,
+      }
+    }),
+  }
+})
+
+const hourlyChartOptions = computed<any>(() => {
+  const theme = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index' as const, intersect: false },
+    plugins: {
+      legend: { position: 'bottom' as const, labels: { color: theme.text, usePointStyle: true, pointStyle: 'circle' as const, boxWidth: 7, padding: 16, font: { size: 11 } } },
+      tooltip: {
+        backgroundColor: theme.tooltipBg,
+        titleColor: theme.tooltipTitle,
+        bodyColor: theme.tooltipBody,
+        borderColor: theme.grid,
+        borderWidth: 1,
+        padding: 10,
+        callbacks: {
+          title: (items: Array<{ dataIndex: number }>) => {
+            const hour = items[0]?.dataIndex
+            return hour === undefined ? '' : `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`
+          },
+          label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) => `${context.dataset.label ?? ''}: ${formatChartValue(context.parsed.y)}`,
+          afterLabel: (context: { datasetIndex: number; dataIndex: number }) => {
+            const point = hourlySeries.value[context.datasetIndex]?.hours[context.dataIndex]
+            return point ? t('admin.ustcSpeed.hourly.samples', { count: point.valid_count }) : ''
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: theme.text, maxTicksLimit: 12, autoSkip: true, maxRotation: 0, font: { size: 10 } },
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: theme.grid, borderDash: [4, 4] },
+        ticks: { color: theme.text, font: { size: 10 }, callback: (value: string | number) => Number(value).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US') },
+        title: { display: true, text: chartUnit.value, color: theme.text },
+      },
+    },
+  }
+})
+
 const seriesBreakdown = computed(() => {
-  const grouped = new Map<string, { key: string; model: string; source: string; profile: string; account: string; count: number; valid: number }>()
+  const grouped = new Map<string, { key: string; model: string; source: string; profile: string; count: number; valid: number }>()
   for (const point of filteredPoints.value) {
-    const key = [point.model, point.profile, point.source, point.account_id].join('|')
+    const key = JSON.stringify([point.model, point.profile, point.source])
     const row = grouped.get(key) ?? {
       key,
       model: point.model,
       source: point.source,
       profile: point.profile,
-      account: point.account_name || `#${point.account_id}`,
       count: 0,
       valid: 0,
     }
@@ -746,13 +889,13 @@ const seriesBreakdown = computed(() => {
     row.valid += point.valid_count || 0
     grouped.set(key, row)
   }
-  return [...grouped.values()].sort((a, b) => a.model.localeCompare(b.model) || a.account.localeCompare(b.account))
+  return [...grouped.values()].sort((a, b) => a.model.localeCompare(b.model) || a.source.localeCompare(b.source))
 })
 
 function formatChartLabel(value: number): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  const dateRange = new Date(endDate.value).getTime() - new Date(startDate.value).getTime()
+  const dateRange = chartTimeBounds.value ? chartTimeBounds.value.end - chartTimeBounds.value.start : 0
   const options: Intl.DateTimeFormatOptions = dateRange > 86400000 * 1.2
     ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
     : { hour: '2-digit', minute: '2-digit' }
@@ -765,7 +908,7 @@ function formatChartTooltipLabel(timestamp: number): string {
 
 function formatChartDate(date: Date, options: Intl.DateTimeFormatOptions): string {
   const localeName = locale.value === 'zh' ? 'zh-CN' : 'en-US'
-  const timeZone = filters.timezone || 'Asia/Shanghai'
+  const timeZone = appliedQuery.value?.timezone || filters.timezone || 'Asia/Shanghai'
   try {
     return new Intl.DateTimeFormat(localeName, { ...options, timeZone }).format(date)
   } catch {
@@ -799,6 +942,7 @@ function buildQuery(): USTCSpeedQuery {
     interval: filters.interval,
     aggregate: filters.aggregate,
     group_by: 'model',
+    hourly: true,
   }
 }
 
@@ -826,9 +970,11 @@ async function loadOverview() {
   overviewAbortController = controller
   loading.value = true
   try {
-    const result = await adminUSTCSpeedAPI.getOverview(buildQuery(), { signal: controller.signal })
+    const query = buildQuery()
+    const result = await adminUSTCSpeedAPI.getOverview(query, { signal: controller.signal })
     if (requestSeq !== overviewRequestSeq) return
     overview.value = result
+    appliedQuery.value = query
   } catch {
     if (requestSeq !== overviewRequestSeq || controller.signal.aborted) return
     overview.value = null
@@ -846,7 +992,6 @@ async function loadTasks() {
   try {
     const result = await adminUSTCSpeedAPI.listTasks()
     tasks.value = result.items ?? []
-    taskListLoaded.value = true
   } catch {
     tasks.value = []
     toastError(t('admin.ustcSpeed.error.loadTasks'))
@@ -883,10 +1028,7 @@ async function loadRuntime() {
 
 async function loadCurrentSection() {
   if (isOverview.value) {
-    const loadTaskAccounts = filters.taskId && filters.source !== 'real' && !taskListLoaded.value
-      ? loadTasks()
-      : Promise.resolve()
-    await Promise.all([loadOverview(), loadTaskAccounts])
+    await loadOverview()
   }
   else if (isTasks.value) await Promise.all([loadTasks(), loadSettings(), loadRuntime()])
 }
@@ -895,8 +1037,9 @@ function refreshCurrent() { void loadCurrentSection() }
 function applyFilters() {
   void loadCurrentSection()
 }
-function useFiveMinuteAggregation() {
-  filters.interval = '5m'
+function applyDateRange(range: { startDate: string; endDate: string }) {
+  startDate.value = range.startDate
+  endDate.value = range.endDate
   applyFilters()
 }
 function handleChartGroupChange() {
@@ -1037,14 +1180,23 @@ async function openSample(id: number) {
   }
 }
 
+function appliedRange(): { start: string; end: string } {
+  const applied = appliedQuery.value
+  return applied
+    ? { start: applied.start_date, end: applied.end_date }
+    : { start: startDate.value, end: endDate.value }
+}
+
 function openUsageRecords(point?: RenderPoint) {
+  const range = appliedRange()
+  const appliedAccountIds = appliedQuery.value?.account_ids?.split(',').map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0) ?? []
   void router.push({
     path: '/admin/usage',
     query: {
-      start_date: startDate.value,
-      end_date: endDate.value,
-      model: point?.model || filters.model || undefined,
-      account_id: point?.accountId || (filters.accountIds.length === 1 ? filters.accountIds[0] : undefined),
+      start_date: range.start,
+      end_date: range.end,
+      model: point?.model || appliedQuery.value?.model || undefined,
+      account_id: point?.accountId || (appliedAccountIds.length === 1 ? appliedAccountIds[0] : undefined),
     },
   })
 }
@@ -1106,7 +1258,7 @@ function downloadFile(contents: string, fileName: string, mime: string) {
 async function exportSamples(format: ExportFormat) {
   exporting.value = true
   try {
-    const query = buildQuery()
+    const query = appliedQuery.value ? { ...appliedQuery.value } : buildQuery()
     const limit = 200
     let offset = 0
     let total = Number.POSITIVE_INFINITY

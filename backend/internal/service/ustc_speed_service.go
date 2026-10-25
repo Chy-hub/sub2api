@@ -162,10 +162,9 @@ type USTCSpeedService struct {
 	wg           sync.WaitGroup
 	jobsMu       sync.Mutex
 	jobs         map[int64]context.CancelFunc
-	historyMu    sync.Mutex
 	historyScope string
 	historyDone  bool
-	captureSince time.Time
+	captureSince atomic.Int64
 }
 
 func NewUSTCSpeedService(repo USTCSpeedRepository, accounts AccountRepository, gateway *OpenAIGatewayService) *USTCSpeedService {
@@ -179,9 +178,10 @@ func (s *USTCSpeedService) Start() {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	s.refreshSettings(ctx)
 	cancel()
-	s.wg.Add(2)
+	s.wg.Add(3)
 	go s.writeLoop()
 	go s.schedulerLoop()
+	go s.historyLoop()
 }
 func (s *USTCSpeedService) Stop() {
 	if s.stopped.Swap(true) {
@@ -244,7 +244,7 @@ func (s *USTCSpeedService) refreshSettings(ctx context.Context) {
 		return
 	}
 	s.cfg.Store(cfg)
-	s.captureSince = since
+	s.captureSince.Store(since.UnixNano())
 }
 func (s *USTCSpeedService) GetSettings(ctx context.Context) (*USTCSpeedSettings, error) {
 	cfg, _, err := s.repo.GetSettings(ctx)
@@ -266,6 +266,8 @@ func (s *USTCSpeedService) Overview(ctx context.Context, q USTCSpeedQuery) (*UST
 		return out, err
 	}
 	out.RequestedSource = q.Source
+	out.RangeStart = q.Start
+	out.RangeEnd = q.End
 	out.DroppedSamples = s.dropped.Load()
 	// A historical benchmark query must never be silently replaced by today's
 	// traffic. Fallback is only for a current, paused/stale benchmark view.
@@ -352,6 +354,8 @@ func (s *USTCSpeedService) Overview(ctx context.Context, q USTCSpeedQuery) (*UST
 	real.RequestedSource = q.Source
 	real.FallbackApplied = true
 	real.FallbackWindowSeconds = policy.RealFallbackMaxAgeSeconds
+	real.RangeStart = q.Start
+	real.RangeEnd = q.End
 	real.DroppedSamples = s.dropped.Load()
 	return real, nil
 }
@@ -492,12 +496,32 @@ func (s *USTCSpeedService) Runtime(ctx context.Context) ([]USTCSpeedRuntime, err
 	}
 	return out, nil
 }
+
+// historyLoop imports old usage in bounded pages on its own schedule. Keeping
+// it out of schedulerLoop means a large first-time import cannot delay work
+// that is due to start.
+func (s *USTCSpeedService) historyLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(s.ctx, 2*time.Minute)
+			s.importHistory(ctx)
+			cancel()
+		}
+	}
+}
+
 func (s *USTCSpeedService) importHistory(ctx context.Context) {
-	if !s.captureEnabled() || s.captureSince.IsZero() {
+	// Zero time and pre-epoch values both mean "capture start is not known".
+	since := s.captureSince.Load()
+	if !s.captureEnabled() || since <= 0 {
 		return
 	}
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
 	accounts, err := s.ustcAccounts(ctx)
 	if err != nil {
 		return
@@ -514,7 +538,7 @@ func (s *USTCSpeedService) importHistory(ctx context.Context) {
 	if s.historyDone {
 		return
 	}
-	count, err := s.repo.ImportUsage(ctx, s.captureSince, time.Time{}, ids, 2000)
+	count, err := s.repo.ImportUsage(ctx, time.Unix(0, since), time.Time{}, ids, 2000)
 	if err != nil {
 		slog.Warn("ustc_speed_history_import_failed", "error", err)
 		return
