@@ -7,7 +7,7 @@ export default {
     overviewDescription: 'Real work calls are the default view. Probe data can be viewed alone or overlaid as separate series.',
     samplesDescription: 'Search captured calls and probe samples using the current filters.',
     tasksDescription: 'Manage scheduled probes, manual runs, global capture settings, and account cooldowns.',
-    nav: { overview: 'Trends', samples: 'Call Details', tasks: 'Tasks and Settings' },
+    nav: { overview: 'Trends', tasks: 'Tasks and Settings' },
     action: {
       refresh: 'Refresh', apply: 'Apply filters', exportCsv: 'Export CSV', exportJson: 'Export JSON',
       addTask: 'New Task', edit: 'Edit', delete: 'Delete', run: 'Run Now', save: 'Save', cancel: 'Cancel',
@@ -28,10 +28,10 @@ export default {
     metric: {
       view: 'Main chart', metric: 'Metric', tps: 'TPS trend', ttft: 'TTFT trend', time: 'Time stages',
       generationTps: 'Generation speed', overallTps: 'Overall speed (including waits)',
-      ttftMs: 'Upstream time to first text', firstOutputMs: 'Upstream time to first output', totalMs: 'Upstream request duration', outputMs: 'Upstream output stage',
-      headersMs: 'Upstream response headers', tailMs: 'Upstream response tail', maxGapMs: 'Maximum output gap', unitTps: 'tokens / second', unitMs: 'milliseconds'
+      ttftMs: 'Upstream time to first text', firstOutputMs: 'Upstream time to first output', totalMs: 'Actual task duration', outputMs: 'Actual output duration',
+      headersMs: 'Upstream response headers', tailMs: 'Wait after the last output', maxGapMs: 'Longest pause during output', unitTps: 'tokens / second', unitMs: 'milliseconds'
     },
-    interval: { label: 'Aggregation interval', auto: 'Automatic', raw: 'Raw samples', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
+    interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
     aggregate: { label: 'Statistic', p50: 'P50 median', mean: 'Mean', p10: 'P10 slow range', p90: 'P90' },
     accountView: {
       label: 'Account view', accounts: 'Show each account', equal: 'Equal account average',
@@ -39,7 +39,9 @@ export default {
       useFiveMinutes: 'Use 5-minute aggregation'
     },
     overview: {
-      chartTitle: 'Speed and upstream request timing', chartHint: 'Select a raw point to inspect it; aggregated points open matching sample details.',
+      chartTitle: 'Speed and wait trends', chartHint: 'Select a raw point to inspect its speed measurement. Real-call buckets open Usage; probe buckets reveal raw observations.',
+      aggregation: '{interval} · {statistic}', bucketSamples: '{count} valid observations in this point',
+      usageRecords: 'View usage records', probeDrilldown: 'Showing raw probe observations. Select a point to inspect its speed measurement.', legacyMeasurement: 'Historical approximation',
       timingBasis: 'For new samples, timing starts when the request is sent upstream and ends when the upstream response completes; Sub2API local queue time is excluded. TTFT / first-output time is the observed availability of the first output, not an exact model prefill measurement. Imported history has a separate approximate-measurement notice.',
       noSeries: 'There are no observations to chart for these filters.', noSeriesHint: 'Empty periods are not filled with zeros or interpolated. Adjust the date range or filters.',
       samples: 'Samples', successful: 'Successful', rateLimited: 'Rate limited', realSamples: 'Real calls', probeSamples: 'Probes', outputTokens: 'Output tokens',
@@ -47,8 +49,8 @@ export default {
       realLatest: 'Latest real call', probeLatest: 'Latest probe',
       realAge: 'Latest real call {age}', probeAge: 'Latest probe {age}',
       validPoints: 'Valid metric points', selectedCoverage: 'Account coverage', equalCoverage: 'Equal-view coverage {valid}/{total}',
-      sourceNote: 'Sources remain separate. TPS is compared only within the same model and profile series. Timing covers upstream request stages, not the full client path.',
-      auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by account series.', seriesBreakdown: 'Grouped by model, source, profile, and account',
+      sourceNote: 'Averaged by model and time bucket by default. Refine call conditions with advanced filters; real calls, probes, and historical approximations stay separate.',
+      auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by account series.', seriesBreakdown: 'Grouped by model, source, and account',
       legacyNotice: 'Includes imported historical usage. Legacy TTFT/TPS are approximate; status is unknown and is not counted as success or failure.',
       fallbackApplied: 'Probes are throttled or paused because of rate limits or capacity. Showing recent real calls from the last {minutes} minutes temporarily; the series remains labeled as real.',
       truncated: 'The backend truncated trend data to limit response size.', dropped: '{count} samples were omitted from the chart due to data limits.',
@@ -61,14 +63,14 @@ export default {
       generationTps: 'Generation TPS', ttft: 'Upstream first text', duration: 'Upstream request time', tokens: 'Input / output',
       profile: 'Profile', reasoning: 'Reasoning', stream: 'Stream', action: 'Action',
       loading: 'Loading samples…', exportLimit: 'More samples could not be loaded. The downloaded file contains the samples already fetched.',
-      id: 'Sample ID', inputTokens: 'Input tokens', outputTokens: 'Output tokens', retentionNotice: 'Sample details are kept for {days} days under the global retention policy, then cleaned up automatically.'
+      id: 'Sample ID', inputTokens: 'Input tokens', outputTokens: 'Output tokens'
     },
     status: {
       success: 'Success', error: 'Error', rate_limited: 'Rate limited', skipped: 'Skipped', cancelled: 'Cancelled',
       recorded: 'Recorded (result unknown)', queued: 'Queued', paused: 'Paused', unknown: 'Unknown'
     },
     detail: {
-      title: 'Call details', loading: 'Loading call details…', overview: 'Request', metrics: 'Observed metrics',
+      title: 'Speed measurement', loading: 'Loading speed measurement…', overview: 'Measurement', metrics: 'Observed metrics',
       upstreamTimingNotice: 'New samples start timing when sent upstream and stop when the upstream response completes; Sub2API local queue time is excluded. First-text / first-output time is observed output availability, not exact model prefill time.',
       conditions: 'Call conditions', inputTokens: 'Input tokens', outputTokens: 'Output tokens', reasoningTokens: 'Reasoning tokens',
       cachedTokens: 'Cached tokens', events: 'Valid events', chars: 'Output characters', finishReason: 'Finish reason',
@@ -89,9 +91,10 @@ export default {
       modelPlaceholder: 'Enter a model name', addModel: 'Add model', removeModel: 'Remove model {model}',
       manualRun: 'Run now', nextRun: 'Next run', lastRun: 'Last run', lastStatus: 'Last result',
       target: 'Targets', schedule: 'Schedule and time window', request: 'Request settings', safety: 'Capacity and rate limits',
+      intervalUnit: { seconds: 'seconds', minutes: 'minutes', hours: 'hours' }, everyInterval: 'Every {count} {unit}', editSchedule: 'Change interval',
       fallback: 'Real data fallback', advanced: 'Advanced settings', advancedSchedule: 'Advanced scheduling',
       field: {
-        name: 'Name', interval: 'Probe interval (seconds)', jitter: 'Round jitter (seconds)', timezone: 'Time zone',
+        name: 'Name', interval: 'Probe interval', jitter: 'Round jitter (seconds)', timezone: 'Time zone',
         cronExpression: 'Cron expression (5 fields)',
         activeStart: 'Active from', activeEnd: 'Active until', days: 'Days of week', apiMode: 'API protocol', stream: 'Streaming output',
         prompt: 'Synthetic prompt', promptHint: 'Probes use synthetic prompts. Real call prompts and responses are not stored.', promptVariants: 'Prompt variants (one per line)',
@@ -102,7 +105,6 @@ export default {
         backoffAfter429: '429s before backing off', backoffWindow: '429 observation window (seconds)', backoffMultiplier: 'Backoff multiplier',
         maxInterval: 'Maximum probe interval (seconds)', pauseAfter429: 'Consecutive 429s before pausing', recoverySuccesses: 'Successes required to recover',
         realFallback: 'Use real calls while probes are paused', realFallbackAge: 'Maximum age of real data (seconds)', realFallbackSamples: 'Minimum real samples',
-        dailyRequests: 'Daily task request limit', dailyTokens: 'Daily task output token limit'
       },
       hint: {
         perKeyConcurrency: 'Background concurrency is fixed at one request per physical key. Global concurrency is also bounded by this task and system settings.',
@@ -110,8 +112,9 @@ export default {
         physicalKeyGroup: 'Physical key group #{id}',
         days: 'Leave all days selected to run every day.',
         cronExpression: 'Leave empty to use the interval. Cron is interpreted in this task time zone; fields are minute, hour, day, month, weekday.',
+        cronOverridesInterval: 'Cron schedule takes precedence over the interval when set.',
         realFallback: 'Real calls keep their own source and conditions; they are not added to probe success rates.',
-        zeroUnlimited: 'A 0 value on task limit fields adds no task-specific limit; 0 on RPM or concurrency reserves reserves no additional capacity.'
+        zeroUnlimited: 'An active-request limit of 0 adds no task-specific limit. RPM reserve may be 0; at least one concurrency slot must be reserved.'
       },
       validation: { name: 'Enter a task name.', models: 'Select at least one model.', accounts: 'Select accounts or enable automatic account inclusion.', numbers: 'Enter valid numeric settings.' },
       defaultPrompt: 'Briefly explain a scientific concept you know well.',
@@ -121,10 +124,9 @@ export default {
       weekday: { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' }
     },
     settings: {
-      title: 'Global capture and budget settings', description: 'Global settings control capture and background budgets. Probes run only through enabled tasks.',
-      captureEnabled: 'Capture performance metrics from real calls', retentionDays: 'Sample retention (days)',
-      concurrency: 'Maximum background probe concurrency', requestBudget: 'Daily background request budget', tokenBudget: 'Daily background output token budget',
-      perKey: 'Background concurrency is limited to one request per physical key.', budgetReset: 'Daily budgets reset at UTC midnight.', budgetCalibrations: 'Calibration requests count toward reserved budget; actual usage is accumulated from samples.', saved: 'Global settings saved.',
+      title: 'Capture and background concurrency', description: 'Speed history is kept indefinitely. Set the frequency in each probe task; shared RPM, concurrency, and 429 protections still apply.',
+      captureEnabled: 'Capture performance metrics from real calls', concurrency: 'Maximum background probe concurrency',
+      perKey: 'Background concurrency is limited to one request per physical key.', saved: 'Global settings saved.',
       disableCapture: 'When disabled, new real call performance metrics will not be captured.'
     },
     runtime: {

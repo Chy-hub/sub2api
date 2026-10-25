@@ -212,6 +212,46 @@ describe('admin UsageView route filters', () => {
     expect(wrapper.find('[data-test="user-filter-label"]').text()).toBe('route-user@test.com')
   })
 
+  it('applies model and account deep-link filters with the routed date range', async () => {
+    routeQuery.start_date = '2026-10-01'
+    routeQuery.end_date = '2026-10-03'
+    routeQuery.model = 'fixture-model'
+    routeQuery.account_id = '17'
+
+    const wrapper = mountRouteFilteredUsageView()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+
+    const expected = {
+      start_date: '2026-10-01',
+      end_date: '2026-10-03',
+      model: 'fixture-model',
+      account_id: 17,
+    }
+    expect((wrapper.vm as any).filters).toMatchObject(expected)
+    expect(list).toHaveBeenCalledWith(expect.objectContaining(expected), expect.anything())
+    expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining(expected))
+    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining(expected))
+  })
+
+  it('ignores a malformed account_id deep-link value', async () => {
+    routeQuery.start_date = '2026-10-01'
+    routeQuery.end_date = '2026-10-03'
+    routeQuery.model = 'fixture-model'
+    routeQuery.account_id = '17.5'
+
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+
+    expect((wrapper.vm as any).filters).toMatchObject({ model: 'fixture-model', account_id: undefined })
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      start_date: '2026-10-01',
+      end_date: '2026-10-03',
+      model: 'fixture-model',
+    }), expect.anything())
+    expect(list.mock.calls[0][0].account_id).toBeUndefined()
+  })
+
   it('does not apply a stale routed user label after user_id changes', async () => {
     routeQuery.user_id = '42'
     let resolveLookup!: (user: { id: number; email: string }) => void

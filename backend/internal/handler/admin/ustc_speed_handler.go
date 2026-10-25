@@ -313,6 +313,13 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if len(profile) > 128 {
 		return query, errors.New("profile is too long")
 	}
+	groupBy := strings.TrimSpace(c.Query("group_by"))
+	if groupBy == "" {
+		groupBy = "model"
+	}
+	if !oneOf(groupBy, "model", "profile") {
+		return query, errors.New("group_by must be model or profile")
+	}
 	source := strings.TrimSpace(c.Query("source"))
 	if source == "" {
 		source = "real"
@@ -331,12 +338,12 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if interval == "" {
 		interval = "auto"
 	}
-	if !oneOf(interval, "raw", "5m", "15m", "1h", "1d", "auto") {
+	if !oneOf(interval, "raw", "1m", "5m", "15m", "1h", "1d", "auto") {
 		return query, errors.New("invalid interval")
 	}
 	aggregate := strings.TrimSpace(c.Query("aggregate"))
 	if aggregate == "" {
-		aggregate = "p50"
+		aggregate = "mean"
 	}
 	if !oneOf(aggregate, "p50", "mean", "p10", "p90") {
 		return query, errors.New("invalid aggregate")
@@ -407,6 +414,7 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 
 	query = service.USTCSpeedQuery{
 		Start: start, End: end, Model: model, Source: source, Status: status,
+		GroupBy:    groupBy,
 		AccountIDs: accountIDs, TaskID: taskID, Reasoning: reasoning, Stream: stream, Profile: profile,
 		InputMin: inputMin, InputMax: inputMax, OutputMin: outputMin, OutputMax: outputMax,
 		Metric: metric, Interval: interval, Aggregate: aggregate, Limit: limit, Offset: offset,

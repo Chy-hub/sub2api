@@ -7,7 +7,7 @@
     @close="emit('close')"
   >
     <form ref="formElement" class="space-y-5" @submit.prevent="submit">
-      <div class="grid gap-4 md:grid-cols-2">
+      <div class="space-y-4">
         <section class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.target') }}</h3>
           <label class="block space-y-1.5">
@@ -74,13 +74,35 @@
 
         <section class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.schedule') }}</h3>
-          <div class="grid grid-cols-2 gap-3">
-            <NumberField v-model="form.interval_seconds" :label="t('admin.ustcSpeed.task.field.interval')" :min="60" />
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label class="block space-y-1.5">
+              <span class="block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.ustcSpeed.task.field.interval') }}</span>
+              <span class="flex gap-2">
+                <input
+                  :value="intervalInputValue"
+                  type="number"
+                  :min="intervalInputMin"
+                  :max="86400 / intervalUnitSeconds[intervalUnit]"
+                  step="any"
+                  required
+                  class="form-input min-w-0 flex-1"
+                  @input="updateIntervalFromInput"
+                />
+                <select v-model="intervalUnit" class="form-input w-32 shrink-0">
+                  <option value="seconds">{{ t('admin.ustcSpeed.task.intervalUnit.seconds') }}</option>
+                  <option value="minutes">{{ t('admin.ustcSpeed.task.intervalUnit.minutes') }}</option>
+                  <option value="hours">{{ t('admin.ustcSpeed.task.intervalUnit.hours') }}</option>
+                </select>
+              </span>
+            </label>
             <NumberField v-model="form.jitter_seconds" :label="t('admin.ustcSpeed.task.field.jitter')" :min="0" />
             <TextField v-model="form.timezone" :label="t('admin.ustcSpeed.task.field.timezone')" />
             <TextField v-model="form.active_start" :label="t('admin.ustcSpeed.task.field.activeStart')" type="time" />
             <TextField v-model="form.active_end" :label="t('admin.ustcSpeed.task.field.activeEnd')" type="time" />
           </div>
+          <p v-if="form.cron_expression" class="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+            {{ t('admin.ustcSpeed.task.hint.cronOverridesInterval') }}
+          </p>
           <div>
             <div class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ustcSpeed.task.field.days') }}</div>
             <div class="flex flex-wrap gap-2">
@@ -149,10 +171,10 @@
             <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.hint.cronExpression') }}</p>
           </section>
           <div class="grid gap-4 md:grid-cols-3">
-            <NumberField v-model="form.max_parallel_accounts" :label="t('admin.ustcSpeed.task.field.maxParallel')" :min="1" :max="64" />
-            <NumberField v-model="form.max_start_skew_seconds" :label="t('admin.ustcSpeed.task.field.maxStartSkew')" :min="0" />
+            <NumberField v-model="form.max_parallel_accounts" :label="t('admin.ustcSpeed.task.field.maxParallel')" :min="1" :max="16" />
+            <NumberField v-model="form.max_start_skew_seconds" :label="t('admin.ustcSpeed.task.field.maxStartSkew')" :min="1" :max="30" />
             <NumberField v-model="form.reserve_rpm" :label="t('admin.ustcSpeed.task.field.reserveRpm')" :min="0" />
-            <NumberField v-model="form.reserve_concurrency" :label="t('admin.ustcSpeed.task.field.reserveConcurrency')" :min="0" />
+            <NumberField v-model="form.reserve_concurrency" :label="t('admin.ustcSpeed.task.field.reserveConcurrency')" :min="1" />
             <NumberField v-model="form.max_active_requests" :label="t('admin.ustcSpeed.task.field.maxActive')" :min="0" />
           </div>
           <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -167,10 +189,6 @@
             <NumberField v-model="form.max_interval_seconds" :label="t('admin.ustcSpeed.task.field.maxInterval')" :min="1" />
             <NumberField v-model="form.pause_after_429" :label="t('admin.ustcSpeed.task.field.pauseAfter429')" :min="1" />
             <NumberField v-model="form.recovery_successes" :label="t('admin.ustcSpeed.task.field.recoverySuccesses')" :min="1" />
-          </div>
-          <div class="grid gap-4 md:grid-cols-3">
-            <NumberField v-model="form.max_daily_requests" :label="t('admin.ustcSpeed.task.field.dailyRequests')" :min="0" />
-            <NumberField v-model="form.max_daily_output_tokens" :label="t('admin.ustcSpeed.task.field.dailyTokens')" :min="0" />
           </div>
           <div class="grid gap-4 md:grid-cols-3">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 md:col-span-3">
@@ -259,7 +277,7 @@ const defaults = (): USTCSpeedTaskInput => ({
   timeout_seconds: 120,
   first_output_timeout_seconds: 45,
   max_parallel_accounts: 4,
-  max_start_skew_seconds: 180,
+  max_start_skew_seconds: 5,
   reserve_rpm: 2,
   reserve_concurrency: 1,
   max_active_requests: 0,
@@ -273,11 +291,38 @@ const defaults = (): USTCSpeedTaskInput => ({
   real_fallback: false,
   real_fallback_max_age_seconds: 3600,
   real_fallback_min_samples: 5,
-  max_daily_requests: 48,
-  max_daily_output_tokens: 24576,
 })
 
 const form = ref<USTCSpeedTaskInput>(defaults())
+
+type IntervalUnit = 'seconds' | 'minutes' | 'hours'
+const intervalUnit = ref<IntervalUnit>('minutes')
+const intervalUnitSeconds: Record<IntervalUnit, number> = { seconds: 1, minutes: 60, hours: 3600 }
+const intervalInputValue = computed(() => String(form.value.interval_seconds / intervalUnitSeconds[intervalUnit.value]))
+const intervalInputMin = computed(() => 60 / intervalUnitSeconds[intervalUnit.value])
+
+function preferredIntervalUnit(seconds: number): IntervalUnit {
+  if (seconds >= 3600 && seconds % 3600 === 0) return 'hours'
+  if (seconds >= 60 && seconds % 60 === 0) return 'minutes'
+  return 'seconds'
+}
+
+function updateIntervalFromInput(event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  if (!raw.trim()) {
+    form.value.interval_seconds = Number.NaN
+    return
+  }
+  const value = Number(raw)
+  const intervalSeconds = Number.isFinite(value)
+    ? Math.round(value * intervalUnitSeconds[intervalUnit.value])
+    : Number.NaN
+  form.value.interval_seconds = intervalSeconds
+  if (Number.isFinite(intervalSeconds)) {
+    form.value.max_interval_seconds = Math.max(form.value.max_interval_seconds, intervalSeconds)
+    form.value.jitter_seconds = Math.min(form.value.jitter_seconds, Math.max(intervalSeconds - 1, 0))
+  }
+}
 
 const weekdays = computed(() => [
   { value: 0, label: t('admin.ustcSpeed.task.weekday.sun') },
@@ -312,6 +357,7 @@ watch(() => [props.show, props.task] as const, ([show, task]) => {
   modelEntry.value = ''
   if (!task) {
     form.value = defaults()
+    intervalUnit.value = preferredIntervalUnit(form.value.interval_seconds)
     return
   }
   form.value = {
@@ -325,6 +371,7 @@ watch(() => [props.show, props.task] as const, ([show, task]) => {
     top_p: task.top_p ?? null,
     seed: task.seed ?? null,
   }
+  intervalUnit.value = preferredIntervalUnit(task.interval_seconds)
 }, { immediate: true })
 
 function splitLines(value: string): string[] {
@@ -371,12 +418,14 @@ function submit() {
     form.value.recovery_successes,
     form.value.real_fallback_max_age_seconds,
     form.value.real_fallback_min_samples,
-    form.value.max_daily_requests,
-    form.value.max_daily_output_tokens,
     ...(form.value.top_p === null ? [] : [form.value.top_p]),
     ...(form.value.seed === null ? [] : [form.value.seed]),
   ]
   if (requiredNumbers.some((value) => !Number.isFinite(value))) {
+    validationError.value = t('admin.ustcSpeed.task.validation.numbers')
+    return
+  }
+  if (!Number.isInteger(form.value.interval_seconds) || form.value.interval_seconds < 60) {
     validationError.value = t('admin.ustcSpeed.task.validation.numbers')
     return
   }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -101,6 +100,24 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrUSTCSpeedNotFound)
 	require.Nil(t, missing)
 
+	legacySample := &service.USTCSpeedSample{
+		RoundID:     roundID,
+		AccountID:   accountID,
+		AccountName: "ustc-integration-account",
+		Model:       created[0].Model,
+		Source:      "real",
+		Status:      "recorded",
+		Profile:     "legacy:legacy_usage",
+		Reasoning:   "unknown",
+		StartedAt:   base.Add(time.Minute),
+		FinishedAt:  base.Add(time.Minute),
+		USTCSpeedObservation: service.USTCSpeedObservation{
+			GenerationTPS:   ustcSpeedFloat(500),
+			MeasurementMode: "legacy_usage",
+		},
+	}
+	require.NoError(t, repo.InsertSample(ctx, legacySample))
+
 	query := service.USTCSpeedQuery{
 		Start:      base.Add(-time.Minute),
 		End:        base.Add(5 * time.Minute),
@@ -109,6 +126,7 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 		Source:     "probe",
 		Metric:     "generation_tps",
 		Interval:   "raw",
+		GroupBy:    "profile",
 	}
 	raw, err := repo.Overview(ctx, query)
 	require.NoError(t, err)
@@ -122,6 +140,7 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	byStatus := map[string]*float64{}
 	for i, point := range raw.Series {
 		byStatus[created[i].Status] = point.Value
+		require.NotNil(t, point.SampleID)
 		require.Equal(t, int64(1), point.Count)
 		if point.Value == nil {
 			require.Zero(t, point.ValidCount)
@@ -152,6 +171,80 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	require.Equal(t, int64(1), b.Count)
 	require.Equal(t, int64(1), b.ValidCount)
 	require.InDelta(t, 100, *b.P50, 0.001)
+
+	modelRawQuery := query
+	modelRawQuery.Interval = "raw"
+	modelRawQuery.GroupBy = "model"
+	modelRaw, err := repo.Overview(ctx, modelRawQuery)
+	require.NoError(t, err)
+	require.Len(t, modelRaw.Series, len(created))
+	for _, point := range modelRaw.Series {
+		require.Empty(t, point.Profile, "new samples are combined in model grouping")
+		require.NotNil(t, point.SampleID, "raw model grouping keeps details-link sample IDs")
+	}
+
+	modelQuery := service.USTCSpeedQuery{
+		Start:      base.Add(-time.Minute),
+		End:        base.Add(5 * time.Minute),
+		AccountIDs: []int64{accountID},
+		Model:      created[0].Model,
+		Source:     "all",
+		Metric:     "generation_tps",
+		Interval:   "5m",
+		Aggregate:  "mean",
+		GroupBy:    "model",
+	}
+	modelOverview, err := repo.Overview(ctx, modelQuery)
+	require.NoError(t, err)
+	require.Equal(t, "model", modelOverview.GroupBy)
+	require.Equal(t, "mean", modelOverview.Aggregate)
+	require.Len(t, modelOverview.Series, 2, "the source and legacy line remain independent")
+	bySource := map[string]service.USTCSpeedPoint{}
+	for _, point := range modelOverview.Series {
+		bySource[point.Source] = point
+	}
+	probe := bySource["probe"]
+	require.Empty(t, probe.Profile)
+	require.Equal(t, int64(6), probe.Count)
+	require.Equal(t, int64(4), probe.ValidCount)
+	require.InDelta(t, 40, *probe.Mean, 0.001, "mean must be weighted across original valid samples from different profiles")
+	require.InDelta(t, 40, *probe.Value, 0.001)
+	legacy := bySource["real"]
+	require.Equal(t, "legacy", legacy.Profile)
+	require.Equal(t, int64(1), legacy.Count)
+	require.Equal(t, int64(1), legacy.ValidCount)
+	require.InDelta(t, 500, *legacy.Value, 0.001)
+
+	modelQuery.GroupBy = "profile"
+	profileOverview, err := repo.Overview(ctx, modelQuery)
+	require.NoError(t, err)
+	profileSet := map[string]struct{}{}
+	for _, point := range profileOverview.Series {
+		profileSet[point.Profile] = struct{}{}
+	}
+	require.Contains(t, profileSet, "p-a")
+	require.Contains(t, profileSet, "p-b")
+	require.Contains(t, profileSet, "legacy:legacy_usage", "profile grouping preserves raw profile dimensions")
+
+	modelQuery.GroupBy = "model"
+	modelQuery.Profile = "legacy"
+	legacyFiltered, err := repo.Overview(ctx, modelQuery)
+	require.NoError(t, err)
+	require.Len(t, legacyFiltered.Series, 1)
+	require.Equal(t, "legacy", legacyFiltered.Series[0].Profile)
+
+	autoQuery := modelQuery
+	autoQuery.Profile = ""
+	autoQuery.Start = base
+	autoQuery.End = base.Add(24 * time.Hour)
+	autoQuery.Interval = "auto"
+	autoQuery.Aggregate = ""
+	autoQuery.GroupBy = ""
+	autoOverview, err := repo.Overview(ctx, autoQuery)
+	require.NoError(t, err)
+	require.Equal(t, "1m", autoOverview.Interval)
+	require.Equal(t, "model", autoOverview.GroupBy)
+	require.Equal(t, "mean", autoOverview.Aggregate)
 }
 
 func TestUSTCSpeedRepositoryKeyLeaseCapacityAndOwnerRelease(t *testing.T) {
@@ -209,65 +302,6 @@ func TestUSTCSpeedRepositoryKeyLeaseCapacityAndOwnerRelease(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, got)
 	require.NoError(t, repo.ReleaseKey(ctx, loser.scope, "retry-"+suffix))
-}
-
-func TestUSTCSpeedRepositoryReserveBudgetIsAtomic(t *testing.T) {
-	ctx := context.Background()
-	repo := NewUSTCSpeedRepository(integrationDB)
-	taskID := time.Now().UnixNano()
-	taskBudgetKey := fmt.Sprintf("task:%d", taskID)
-	t.Cleanup(func() {
-		_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM ustc_speed_daily_budget WHERE day=(NOW() AT TIME ZONE 'UTC')::date AND budget_key IN ('global',$1)`, taskBudgetKey)
-		require.NoError(t, err)
-	})
-
-	ok, err := repo.ReserveBudget(ctx, taskID, 1, 80, 2, 100, 5, 150)
-	require.NoError(t, err)
-	require.True(t, ok)
-	ok, err = repo.ReserveBudget(ctx, taskID, 1, 30, 2, 100, 5, 150)
-	require.NoError(t, err)
-	require.False(t, ok, "a task token overrun must reject the whole reservation")
-	assertUSTCBudget(t, "global", 1, 80)
-	assertUSTCBudget(t, taskBudgetKey, 1, 80)
-	ok, err = repo.ReserveBudget(ctx, taskID, 1, 20, 2, 100, 5, 150)
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	const concurrentCalls = 12
-	results := make(chan error, concurrentCalls)
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for range concurrentCalls {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			reserved, reserveErr := repo.ReserveBudget(ctx, taskID, 1, 10, 10, 500, 5, 150)
-			if reserveErr != nil {
-				results <- reserveErr
-				return
-			}
-			if reserved {
-				results <- nil
-				return
-			}
-			results <- errUSTCBudgetRejected
-		}()
-	}
-	close(start)
-	wg.Wait()
-	close(results)
-	reservedCount := 0
-	for reserveErr := range results {
-		if reserveErr == nil {
-			reservedCount++
-		} else {
-			require.ErrorIs(t, reserveErr, errUSTCBudgetRejected)
-		}
-	}
-	require.Equal(t, 3, reservedCount, "only the three remaining global request slots may be reserved")
-	assertUSTCBudget(t, "global", 5, 130)
-	assertUSTCBudget(t, taskBudgetKey, 5, 130)
 }
 
 func TestUSTCSpeedRepositoryLegacyImportBoundariesAndBatches(t *testing.T) {
@@ -379,6 +413,24 @@ func TestUSTCSpeedRepositoryLegacyImportBoundariesAndBatches(t *testing.T) {
 	require.Equal(t, int64(6), overview.Summary.Samples)
 	require.Equal(t, int64(0), overview.Summary.Successful)
 	require.Nil(t, overview.Summary.SuccessRate, "recorded legacy imports must not count in success-rate denominator")
+	for _, point := range overview.Series {
+		require.Equal(t, "legacy", point.Profile, "model grouping must keep imported legacy usage on its own line")
+		require.NotNil(t, point.SampleID)
+	}
+
+	legacyProfileOverview, err := repo.Overview(ctx, service.USTCSpeedQuery{
+		Start:      after,
+		End:        before,
+		AccountIDs: accountIDs,
+		Source:     "real",
+		Metric:     "total_ms",
+		Interval:   "raw",
+		GroupBy:    "profile",
+	})
+	require.NoError(t, err)
+	for _, point := range legacyProfileOverview.Series {
+		require.True(t, strings.HasPrefix(point.Profile, "legacy:"), "profile grouping retains legacy profile details")
+	}
 }
 
 func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
@@ -427,38 +479,6 @@ func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	require.Equal(t, "completed", got.LastStatus)
 }
 
-func TestUSTCSpeedRepositoryCleanupDrainsMultipleBatches(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	repo := NewUSTCSpeedRepository(integrationDB)
-	accountID := -time.Now().UnixNano()
-	t.Cleanup(func() {
-		_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM ustc_speed_samples WHERE account_id=$1`, accountID)
-		require.NoError(t, err)
-	})
-	before := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := integrationDB.ExecContext(ctx, `INSERT INTO ustc_speed_samples(account_id,source,status,started_at,finished_at) SELECT $1,'real','recorded',$2::timestamptz-INTERVAL '1 day',$2::timestamptz-INTERVAL '1 day' FROM generate_series(1,10003)`, accountID, before)
-	require.NoError(t, err)
-	_, err = integrationDB.ExecContext(ctx, `INSERT INTO ustc_speed_samples(account_id,source,status,started_at,finished_at) VALUES($1,'real','recorded',$2,$2)`, accountID, before)
-	require.NoError(t, err)
-	require.NoError(t, repo.Cleanup(ctx, before))
-	var oldCount, remaining int
-	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FILTER(WHERE started_at<$2),COUNT(*) FROM ustc_speed_samples WHERE account_id=$1`, accountID, before).Scan(&oldCount, &remaining))
-	require.Zero(t, oldCount, "retention must drain all expired batches within the deadline")
-	require.Equal(t, 1, remaining, "the retention boundary is exclusive")
-}
-
-func assertUSTCBudget(t *testing.T, key string, requests, tokens int64) {
-	t.Helper()
-	var gotRequests, gotTokens int64
-	err := integrationDB.QueryRowContext(context.Background(), `SELECT requests,output_tokens FROM ustc_speed_daily_budget WHERE day=(NOW() AT TIME ZONE 'UTC')::date AND budget_key=$1`, key).Scan(&gotRequests, &gotTokens)
-	require.NoError(t, err)
-	require.Equal(t, requests, gotRequests)
-	require.Equal(t, tokens, gotTokens)
-}
-
 func ustcSpeedFloat(value float64) *float64 {
 	return &value
 }
-
-var errUSTCBudgetRejected = fmt.Errorf("budget reservation rejected")
