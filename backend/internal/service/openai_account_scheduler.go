@@ -411,7 +411,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
-			compatible, _ := s.isAccountRequestCompatibleReason(withOpenAIImageSizeStickyAccount(ctx, selection.Account.ID), selection.Account, req, true)
+			compatible, _ := s.isAccountRequestCompatibleReason(withOpenAIImageSizeStickyAccount(ctx, selection.Account.ID), selection.Account, req)
 			hasGroupMetadata := len(selection.Account.GroupIDs) > 0 || len(selection.Account.AccountGroups) > 0
 			groupCompatible := !hasGroupMetadata || openAIStickyAccountMatchesGroup(selection.Account, req.GroupID)
 			if hasGroupMetadata && s.service != nil {

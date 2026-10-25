@@ -243,7 +243,9 @@ func (b *ustcResponseBody) Close() error { err := b.ReadCloser.Close(); b.releas
 
 // All HTTP/SSE conversions use this transport gate. Internal retries get a new
 // ticket too; streaming concurrency ends only when the response body is closed.
-func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL string, account *Account) (response *http.Response, resultErr error) {
+	watch := s.beginUSTCSpeed(request, account)
+	defer func() { response, resultErr = watch.wrap(response, resultErr) }()
 	ctx := request.Context()
 	reservation, _ := ctx.Value(ustcAdmissionContextKey{}).(*ustcAdmission)
 	if reservation != nil {
@@ -276,6 +278,10 @@ func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL st
 	// LiteLLM SSE omits remaining RPM. A cold Key gets one tiny counted
 	// non-stream calibration rather than idling its entire first minute. After
 	// a conservative cooldown the real queued request itself verifies recovery.
+	if probe, _ := ctx.Value(ustcSpeedProbeKey{}).(*ustcSpeedProbeContext); probe != nil && probe.guard != nil && !probe.guard() {
+		reservation.release()
+		return s.ustcLocalCapacityResponse(request, account), nil
+	}
 	if reservation.ticket.Cold {
 		if model := ustcColdStreamingModel(request); model != "" {
 			if err := s.calibrateUSTCStream(ctx, request, proxyURL, account, reservation, model); err != nil {
@@ -289,11 +295,17 @@ func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL st
 			}
 		}
 	}
+	if probe, _ := ctx.Value(ustcSpeedProbeKey{}).(*ustcSpeedProbeContext); probe != nil && probe.guard != nil && !probe.guard() {
+		reservation.release()
+		return s.ustcLocalCapacityResponse(request, account), nil
+	}
 	if !reservation.commit(ctx) {
 		reservation.release()
 		return s.ustcLocalCapacityResponse(request, account), nil
 	}
+	watch.sent()
 	resp, err := s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
+	watch.headers(resp)
 	if err != nil {
 		if reservation.ticket.Probe {
 			observeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -318,6 +330,11 @@ func (s *OpenAIGatewayService) doUSTCUpstream(request *http.Request, proxyURL st
 		resp.Body = &ustcResponseBody{ReadCloser: resp.Body, release: reservation.release}
 	}
 	s.observeUSTCResponse(reservation, resp, errorBody)
+	if probe, _ := ctx.Value(ustcSpeedProbeKey{}).(*ustcSpeedProbeContext); probe != nil && resp.StatusCode == http.StatusTooManyRequests && s.rateLimitService != nil {
+		// Probes share the same quota/RPM recovery path as user traffic. In
+		// particular, a budget 429 must not be treated as a short RPM reset.
+		s.rateLimitService.handleUSTC429(ctx, account, resp.Header, errorBody)
+	}
 	s.notifyUSTCCapacity()
 	return resp, nil
 }
