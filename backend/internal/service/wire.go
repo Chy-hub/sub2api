@@ -1006,6 +1006,7 @@ var ProviderSet = wire.NewSet(
 	ProvidePaymentOrderExpiryService,
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
+	ProvideUSTCSpeedService,
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
@@ -1059,6 +1060,13 @@ func ProvideChannelMonitorService(
 ) *ChannelMonitorService {
 	svc := NewChannelMonitorService(repo, encryptor)
 	svc.SetRuntimeReader(settingService)
+	return svc
+}
+
+func ProvideUSTCSpeedService(repo USTCSpeedRepository, accounts AccountRepository, gateway *OpenAIGatewayService, quota *UpstreamUserInfoQuotaService) *USTCSpeedService {
+	svc := NewUSTCSpeedService(repo, accounts, gateway)
+	gateway.ustcSpeed = svc
+	svc.Start()
 	return svc
 }
 
