@@ -27,27 +27,25 @@ export default {
     },
     metric: {
       view: '主图', metric: '指标', tps: 'TPS 趋势', ttft: 'TTFT 趋势', time: 'Time 耗时',
-      generationTps: '生成速度', overallTps: '整体速度（含等待）',
+      generationTps: '生成速度（不含首字等待）', overallTps: '平均速度（含首字等待）',
       ttftMs: '上游正文首字耗时', firstOutputMs: '上游首次输出耗时', totalMs: '实际任务总耗时', outputMs: '实际输出阶段时长',
       headersMs: '上游响应头时间', tailMs: '输出结束后的等待', maxGapMs: '流内最大输出停顿', unitTps: 'token / 秒', unitMs: '毫秒'
     },
     interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
     aggregate: { label: '统计口径', p50: 'P50 中位数', mean: '平均值', p10: 'P10 慢速水平', p90: 'P90' },
     overview: {
-      chartTitle: '速度与等待趋势', chartHint: '点击原始点查看速度测量；真实调用聚合点打开使用记录，基准聚合点展开原始观测。',
-      chartReading: '真实调用按时间桶显示柱状值；只显示一个真实系列时，柱后的浅色区间是该桶的 P10–P90 分布。原始调用显示散点，基准趋势使用虚线。没有调用的时段留空。',
+      chartTitle: '速度与等待趋势',
       aggregation: '{interval} · {statistic}', bucketSamples: '该点包含 {count} 个有效观测',
       distribution: 'P10–P90 分布区间', spread: 'P10 / P50 / P90：{p10} / {p50} / {p90}',
       lowSamples: '有效观测不足 5 个，该点仅供参考。',
+      lastHours: '最近 {hours} 小时',
       usageRecords: '查看使用记录', probeDrilldown: '已切换到原始基准观测，点击数据点查看速度测量。', legacyMeasurement: '历史近似口径',
-      timingBasis: '新采样耗时从请求发往上游时开始，到上游响应结束时为止，不含 Sub2API 本地排队。TTFT / 首次输出表示观测到首个输出的时间，不是模型精确预填充耗时。历史导入数据另有近似口径提示。',
       noSeries: '当前条件下没有可绘制的观测数据。', noSeriesHint: '数据为空时不补零、不插值。请调整时间范围或筛选条件。',
       samples: '样本数', successful: '成功', rateLimited: '限流', realSamples: '真实调用', probeSamples: '基准检测', outputTokens: '输出 token',
       failed: '错误', skipped: '跳过', cancelled: '取消',
       realLatest: '真实调用最新时间', probeLatest: '基准检测最新时间',
       realAge: '最新真实调用距今 {age}', probeAge: '最新基准检测距今 {age}',
       validPoints: '有效指标点',
-      sourceNote: '先按模型、账号和日期筛选，再对各时间桶内的有效调用求平均；每次调用权重相同。',
       auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各模型系列的样本数。', seriesBreakdown: '按模型与来源分组',
       legacyNotice: '包含历史用量导入数据。旧 TTFT/TPS 是近似口径，状态为“结果未知”，不能当作成功或失败。',
       fallbackApplied: '基准检测因限流或资源繁忙正在缓测/暂停，当前临时显示最近 {minutes} 分钟的真实调用；图例仍标记为真实来源。',
@@ -58,7 +56,7 @@ export default {
     hourly: {
       title: '调用时段分布', description: '按所选时区聚合已应用范围内的有效调用，用于选择更合适的调用时段。',
       samples: '{count} 个有效观测', noData: '所选范围没有可按时段比较的有效调用。',
-      hint: '每条线代表一个模型和来源；没有有效调用的小时留空。主图悬浮提示可查看各时间桶的 P10–P90 分布。'
+      metric: '统计口径'
     },
     samples: {
       tableTitle: '调用与检测样本', total: '共 {count} 条', noData: '没有符合条件的样本。',
@@ -70,7 +68,9 @@ export default {
     },
     status: {
       success: '成功', error: '错误', rate_limited: '限流', skipped: '跳过', cancelled: '已取消',
-      recorded: '已记录（结果未知）', queued: '排队中', paused: '已暂停', unknown: '未知'
+      recorded: '已记录（结果未知）', queued: '排队中', paused: '已暂停', unknown: '未知',
+      completed: '已完成', failed: '失败', partial: '部分完成',
+      no_accounts: '无可用账号', outside_active_window: '不在活动时段'
     },
     detail: {
       title: '速度测量详情', loading: '正在读取速度测量…', overview: '测量信息', metrics: '可观测指标',
@@ -124,6 +124,16 @@ export default {
       apis: { chat: 'Chat Completions', responses: 'Responses' },
       thinking: { off: '关闭', on: '开启', auto: '自动（不额外指定）' },
       effort: { none: '未设置', low: '低', medium: '中', high: '高', xhigh: '极高' },
+      reason: {
+        userLoad: '用户繁忙或容量不足', backgroundCapacity: '后台并发已满', sharedAdmission: '共享准入未通过',
+        paused429: '429 暂停中', backoff429: '429 缓测中', limitsUnknown: '额度信息未知', modelNotSupported: '账号不支持该模型',
+        roundStartSkew: '起跑差超过限制', runtimeUnavailable: '运行状态读取失败', gatewayUnavailable: '网关不可用',
+        invalidRequest: '请求参数无效', invalidEndpoint: '上游地址无效', localCapacity: '本地容量不足', noAccounts: '无可用账号',
+        outsideActiveWindow: '不在活动时段', accountsUnavailable: '账号列表读取失败', stopped: '服务停止', cancelled: '已取消', taskChanged: '任务已修改',
+        upstreamNetworkError: '上游网络错误', upstreamHttpError: '上游 HTTP 错误', upstreamStreamError: '上游流式错误',
+        streamIncomplete: '流未正常结束', emptyOutput: '输出为空', firstOutputTimeout: '首字超时', observerUnavailable: '观测器不可用',
+        upstream429: '上游 429', requestCancelled: '请求已取消', timeout: '超时', upstreamIoError: '上游 I/O 错误'
+      },
       weekday: { sun: '周日', mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六' }
     },
     settings: {

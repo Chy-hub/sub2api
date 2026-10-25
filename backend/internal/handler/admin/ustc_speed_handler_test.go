@@ -89,6 +89,28 @@ func TestParseUSTCSpeedQueryFilters(t *testing.T) {
 	}
 }
 
+func TestParseUSTCSpeedQueryLastHoursUsesExactRollingWindow(t *testing.T) {
+	now := time.Date(2026, 10, 26, 15, 4, 5, 0, time.UTC)
+	query, err := parseUSTCSpeedQueryValues(url.Values{
+		"last_hours": {"24"}, "start_date": {"2026-10-25"}, "end_date": {"2026-10-26"}, "timezone": {"Asia/Shanghai"},
+	}, now)
+	if err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	if query.LastHours != 24 {
+		t.Fatalf("last_hours = %d, want 24", query.LastHours)
+	}
+	if want := now.Add(time.Nanosecond); !query.End.Equal(want) {
+		t.Fatalf("end = %s, want %s", query.End, want)
+	}
+	if want := now.Add(-24 * time.Hour); !query.Start.Equal(want) {
+		t.Fatalf("start = %s, want %s", query.Start, want)
+	}
+	if !query.Start.Equal(query.End.Add(-24*time.Hour - time.Nanosecond)) {
+		t.Fatal("the window must be exactly 24 hours")
+	}
+}
+
 func TestParseUSTCSpeedQueryHourly(t *testing.T) {
 	for _, value := range []string{"1", "true", "TRUE"} {
 		values := url.Values{"hourly": {value}, "timezone": {"Asia/Shanghai"}}
@@ -133,6 +155,9 @@ func TestParseUSTCSpeedQueryRejectsInvalidFilters(t *testing.T) {
 		values url.Values
 	}{
 		{name: "timezone", values: url.Values{"timezone": {"Mars/Olympus"}}},
+		{name: "last hours negative", values: url.Values{"last_hours": {"-1"}}},
+		{name: "last hours not integer", values: url.Values{"last_hours": {"24h"}}},
+		{name: "last hours too long", values: url.Values{"last_hours": {"4321"}}},
 		{name: "date format", values: url.Values{"start_date": {"2026/10/01"}}},
 		{name: "date ordering", values: url.Values{"start_date": {"2026-10-02"}, "end_date": {"2026-10-01"}}},
 		{name: "source", values: url.Values{"source": {"benchmark"}}},

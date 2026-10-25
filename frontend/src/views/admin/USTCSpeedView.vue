@@ -65,9 +65,9 @@
           </div>
           <div class="min-w-[235px] space-y-1.5">
             <span class="block text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.filter.timeRange') }}</span>
-            <DateRangePicker v-model:start-date="startDate" v-model:end-date="endDate" @change="applyDateRange" />
+            <DateRangePicker ref="datePickerRef" v-model:start-date="startDate" v-model:end-date="endDate" @change="applyDateRange" />
           </div>
-          <button type="button" class="btn btn-primary h-[42px]" :disabled="loading" @click="applyFilters">
+          <button type="button" class="btn btn-primary h-[42px]" :disabled="loading" @click="applyAllFilters">
             {{ t('admin.ustcSpeed.action.apply') }}
           </button>
         </div>
@@ -158,9 +158,8 @@
           <div class="flex flex-wrap items-end justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.overview.chartTitle') }}</h2>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.sourceNote') }}</p>
               <span v-if="overview" class="mt-2 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ aggregationLabel }}</span>
-              <p v-if="appliedQuery" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ appliedQuery.start_date }} — {{ appliedQuery.end_date }} · {{ appliedQuery.timezone }}</p>
+              <p v-if="appliedQuery" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ appliedRangeLabel }}</p>
             </div>
             <div class="flex flex-wrap items-end gap-2">
               <label class="filter-field min-w-36">
@@ -201,9 +200,6 @@
             <div v-else class="h-[420px] min-w-0">
               <SpeedChart type="bar" :data="chartData" :options="chartOptions" />
             </div>
-            <p class="mt-2 text-xs text-gray-400 dark:text-gray-500">{{ t('admin.ustcSpeed.overview.chartHint') }}</p>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.chartReading') }}</p>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.timingBasis') }}</p>
           </div>
           <div class="grid gap-3 border-t border-gray-100 bg-gray-50/70 px-5 py-3 text-sm dark:border-dark-700 dark:bg-dark-900/30 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
             <SummaryValue :label="t('admin.ustcSpeed.overview.samples')" :value="formatNumber(overview?.summary.samples)" />
@@ -221,14 +217,16 @@
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.hourly.title') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.description') }}</p>
             </div>
-            <span v-if="appliedQuery" class="text-xs text-gray-500 dark:text-gray-400">{{ appliedQuery.timezone }}</span>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ t('admin.ustcSpeed.hourly.metric') }} · {{ metricLabel }}</span>
+              <span v-if="appliedQuery" class="text-xs text-gray-500 dark:text-gray-400">{{ appliedQuery.timezone }}</span>
+            </div>
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="!hourlySeries.length" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
             <div v-else class="h-[260px] min-w-0">
               <SpeedChart type="line" :data="hourlyChartData" :options="hourlyChartOptions" />
             </div>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.hint') }}</p>
           </div>
         </section>
 
@@ -271,7 +269,7 @@
         <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
             <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.disabledByDefault') }}</p></div>
-            <button type="button" class="btn btn-secondary" :disabled="tasksLoading" @click="loadTasks">{{ t('admin.ustcSpeed.action.refresh') }}</button>
+            <button type="button" class="btn btn-secondary" :disabled="tasksLoading" @click="loadTasks()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
           </div>
           <div v-if="tasksLoading" class="flex min-h-40 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
           <div v-else-if="!tasks.length" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.empty') }}</div>
@@ -286,7 +284,10 @@
                 <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.all_accounts ? t('admin.ustcSpeed.task.allAccounts') : accountNames(task.account_ids) }}</td>
                 <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(task.next_run_at) }}</td>
                 <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(task.last_run_at) }}</td>
-                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ task.last_status ? statusLabel(task.last_status) : '—' }}</td>
+                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">
+                  <span>{{ task.last_status ? statusLabel(task.last_status) : '—' }}</span>
+                  <span v-if="task.last_detail" class="mt-0.5 block text-xs text-gray-400 dark:text-gray-500">{{ taskDetailLabel(task.last_detail) }}</span>
+                </td>
                 <td class="px-4 py-3"><span :class="task.enabled ? 'status-pill status-success' : 'status-pill status-muted'">{{ task.enabled ? t('admin.ustcSpeed.task.enabled') : t('admin.ustcSpeed.status.paused') }}</span></td>
                 <td class="px-4 py-3"><div class="flex items-center gap-2">
                   <button type="button" class="text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.action.edit') }}</button>
@@ -324,7 +325,7 @@
         <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
             <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.runtime.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.runtime.description') }}</p></div>
-            <button type="button" class="btn btn-secondary" :disabled="runtimeLoading" @click="loadRuntime">{{ t('admin.ustcSpeed.action.refresh') }}</button>
+            <button type="button" class="btn btn-secondary" :disabled="runtimeLoading" @click="loadRuntime()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
           </div>
           <div v-if="runtimeLoading" class="flex min-h-32 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
           <div v-else-if="!runtime.length" class="px-5 py-8 text-center text-sm text-gray-500">{{ t('admin.ustcSpeed.runtime.noData') }}</div>
@@ -437,6 +438,9 @@ const weekAgoDate = new Date()
 weekAgoDate.setDate(weekAgoDate.getDate() - 6)
 const startDate = ref(localDate(weekAgoDate))
 const endDate = ref(today)
+// The shared picker exposes only calendar dates. Its "last 24 hours" preset is
+// translated into an exact rolling window instead of two whole days.
+const lastHours = ref<number | null>(null)
 const filters = reactive<SampleFilterState>({
   source: 'real',
   model: '',
@@ -458,6 +462,7 @@ const filters = reactive<SampleFilterState>({
 const dimensions = reactive<{ accounts: USTCSpeedAccountDimension[]; models: string[] }>({ accounts: [], models: [] })
 const overview = ref<USTCSpeedOverview | null>(null)
 const appliedQuery = ref<USTCSpeedQuery | null>(null)
+const datePickerRef = ref<InstanceType<typeof DateRangePicker> | null>(null)
 const loading = ref(false)
 let overviewRequestSeq = 0
 let overviewAbortController: AbortController | null = null
@@ -481,6 +486,22 @@ const settingsLoaded = ref(false)
 const runtime = ref<USTCSpeedRuntime[]>([])
 const runtimeLoading = ref(false)
 const pendingAction = ref<PendingAction>(null)
+let tasksRefreshTimer: number | undefined
+
+function startTasksAutoRefresh() {
+  stopTasksAutoRefresh()
+  tasksRefreshTimer = window.setInterval(() => {
+    if (!isTasks.value) return
+    void Promise.all([loadTasks(true), loadRuntime(true)])
+  }, 10000)
+}
+
+function stopTasksAutoRefresh() {
+  if (tasksRefreshTimer !== undefined) {
+    window.clearInterval(tasksRefreshTimer)
+    tasksRefreshTimer = undefined
+  }
+}
 
 const statuses = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded']
 const accountFilterLabel = computed(() => filters.accountIds.length
@@ -513,6 +534,18 @@ const metricOptions = computed(() => {
 })
 
 const isTpsMetric = computed(() => (overview.value?.metric ?? metric.value).endsWith('tps'))
+const metricI18nKeys: Record<USTCSpeedMetric, string> = {
+  generation_tps: 'generationTps',
+  overall_tps: 'overallTps',
+  ttft_ms: 'ttftMs',
+  first_output_ms: 'firstOutputMs',
+  total_ms: 'totalMs',
+  output_ms: 'outputMs',
+  headers_ms: 'headersMs',
+  tail_ms: 'tailMs',
+  max_gap_ms: 'maxGapMs',
+}
+const metricLabel = computed(() => t(`admin.ustcSpeed.metric.${metricI18nKeys[overview.value?.metric ?? metric.value]}`))
 const chartUnit = computed(() => isTpsMetric.value ? t('admin.ustcSpeed.metric.unitTps') : t('admin.ustcSpeed.metric.unitMs'))
 const aggregationLabel = computed(() => {
   const interval = overview.value?.interval ?? filters.interval
@@ -526,6 +559,24 @@ const aggregationLabel = computed(() => {
 const filteredPoints = computed(() => overview.value?.series ?? [])
 const validMetricPointCount = computed(() => filteredPoints.value.filter((point) => readValue(point) !== null).reduce((sum, point) => sum + Math.max(1, point.valid_count || 0), 0))
 const hasLegacy = computed(() => filteredPoints.value.some((point) => point.profile.toLowerCase().startsWith('legacy')))
+
+function formatRangeTimestamp(timestamp: number): string {
+  return formatChartDate(new Date(timestamp), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+const appliedRangeLabel = computed(() => {
+  const query = appliedQuery.value
+  if (!query) return ''
+  if (query.last_hours) {
+    const start = overview.value?.range_start ? Date.parse(overview.value.range_start) : NaN
+    const end = overview.value?.range_end ? Date.parse(overview.value.range_end) : NaN
+    const window = Number.isFinite(start) && Number.isFinite(end)
+      ? `${formatRangeTimestamp(start)} — ${formatRangeTimestamp(end)}`
+      : ''
+    return [t('admin.ustcSpeed.overview.lastHours', { hours: query.last_hours }), window, query.timezone].filter(Boolean).join(' · ')
+  }
+  return `${query.start_date} — ${query.end_date} · ${query.timezone}`
+})
 
 function readValue(point: USTCSpeedPoint): number | null {
   const aggregateValue = point[overview.value?.aggregate ?? filters.aggregate]
@@ -559,7 +610,7 @@ function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
       model: point.model,
       source: point.source,
       profile: point.profile,
-      label: seriesLabel(point.model, point.profile, point.source),
+      label: '',
       points: [],
     }
     series.points.push({
@@ -578,7 +629,12 @@ function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
     })
     grouped.set(key, series)
   }
-  for (const series of grouped.values()) series.points.sort((a, b) => a.time.localeCompare(b.time))
+  const sources = sourceCountsByModel(points)
+  for (const series of grouped.values()) {
+    const showSource = (sources.get(series.model)?.size ?? 0) > 1
+    series.label = seriesLabel(series.model, series.profile, showSource ? sourceLabel(series.source) : '')
+    series.points.sort((a, b) => a.time.localeCompare(b.time))
+  }
   return [...grouped.values()]
 }
 
@@ -606,8 +662,18 @@ function tint(hex: string, alpha: string): string {
   return `${hex}${alpha}`
 }
 
-function seriesLabel(model: string, profile: string, source: string): string {
-  return [model, profile === 'legacy' ? t('admin.ustcSpeed.overview.legacyMeasurement') : '', sourceLabel(source)].filter(Boolean).join(' · ')
+function seriesLabel(model: string, profile: string, source = ''): string {
+  return [model, profile === 'legacy' ? t('admin.ustcSpeed.overview.legacyMeasurement') : '', source].filter(Boolean).join(' · ')
+}
+
+function sourceCountsByModel(points: Array<{ model: string; source: string }>): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>()
+  for (const point of points) {
+    const sources = out.get(point.model) ?? new Set<string>()
+    sources.add(point.source)
+    out.set(point.model, sources)
+  }
+  return out
 }
 
 const chartTheme = computed(() => {
@@ -783,13 +849,15 @@ const chartOptions = computed<any>(() => {
 interface HourlySeries { key: string; label: string; source: string; hours: Array<USTCSpeedHourPoint | undefined> }
 
 const hourlySeries = computed<HourlySeries[]>(() => {
+  const points = overview.value?.hourly ?? []
+  const sources = sourceCountsByModel(points)
   const grouped = new Map<string, HourlySeries>()
-  for (const point of overview.value?.hourly ?? []) {
+  for (const point of points) {
     if (point.hour < 0 || point.hour > 23) continue
     const key = JSON.stringify([point.model, point.source, point.profile])
     const series = grouped.get(key) ?? {
       key,
-      label: seriesLabel(point.model, point.profile, point.source),
+      label: seriesLabel(point.model, point.profile, (sources.get(point.model)?.size ?? 0) > 1 ? sourceLabel(point.source) : ''),
       source: point.source,
       hours: Array.from({ length: 24 }, () => undefined),
     }
@@ -943,6 +1011,7 @@ function buildQuery(): USTCSpeedQuery {
     aggregate: filters.aggregate,
     group_by: 'model',
     hourly: true,
+    last_hours: lastHours.value ?? undefined,
   }
 }
 
@@ -987,16 +1056,18 @@ async function loadOverview() {
   }
 }
 
-async function loadTasks() {
-  tasksLoading.value = true
+async function loadTasks(silent = false) {
+  if (!silent) tasksLoading.value = true
   try {
     const result = await adminUSTCSpeedAPI.listTasks()
     tasks.value = result.items ?? []
   } catch {
-    tasks.value = []
-    toastError(t('admin.ustcSpeed.error.loadTasks'))
+    if (!silent) {
+      tasks.value = []
+      toastError(t('admin.ustcSpeed.error.loadTasks'))
+    }
   } finally {
-    tasksLoading.value = false
+    if (!silent) tasksLoading.value = false
   }
 }
 
@@ -1013,33 +1084,48 @@ async function loadSettings(force = false) {
   }
 }
 
-async function loadRuntime() {
-  runtimeLoading.value = true
+async function loadRuntime(silent = false) {
+  if (!silent) runtimeLoading.value = true
   try {
     const result = await adminUSTCSpeedAPI.getRuntime()
     runtime.value = result.items ?? []
   } catch {
-    runtime.value = []
-    toastError(t('admin.ustcSpeed.error.loadRuntime'))
+    if (!silent) {
+      runtime.value = []
+      toastError(t('admin.ustcSpeed.error.loadRuntime'))
+    }
   } finally {
-    runtimeLoading.value = false
+    if (!silent) runtimeLoading.value = false
   }
 }
 
 async function loadCurrentSection() {
   if (isOverview.value) {
+    stopTasksAutoRefresh()
     await loadOverview()
+  } else if (isTasks.value) {
+    startTasksAutoRefresh()
+    await Promise.all([loadTasks(), loadSettings(), loadRuntime()])
+  } else {
+    stopTasksAutoRefresh()
   }
-  else if (isTasks.value) await Promise.all([loadTasks(), loadSettings(), loadRuntime()])
 }
 
 function refreshCurrent() { void loadCurrentSection() }
 function applyFilters() {
   void loadCurrentSection()
 }
-function applyDateRange(range: { startDate: string; endDate: string }) {
+// The filter bar's Apply button must commit a pending date selection too;
+// otherwise the picker's local dates are discarded and the page reloads the
+// previous range.
+function applyAllFilters() {
+  if (datePickerRef.value) datePickerRef.value.apply()
+  else applyFilters()
+}
+function applyDateRange(range: { startDate: string; endDate: string; preset?: string | null }) {
   startDate.value = range.startDate
   endDate.value = range.endDate
+  lastHours.value = range.preset === 'last24Hours' ? 24 : null
   applyFilters()
 }
 function handleChartGroupChange() {
@@ -1077,8 +1163,51 @@ function sourceLabel(source: string): string {
 }
 
 function statusLabel(status: string): string {
-  const supported = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded', 'queued', 'paused']
+  const supported = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded', 'queued', 'paused', 'completed', 'failed', 'partial', 'no_accounts', 'outside_active_window']
   return supported.includes(status) ? t(`admin.ustcSpeed.status.${status}`) : status || t('admin.ustcSpeed.status.unknown')
+}
+
+const taskReasonLabels: Record<string, string> = {
+  user_load_or_capacity: 'userLoad',
+  background_capacity: 'backgroundCapacity',
+  shared_admission: 'sharedAdmission',
+  '429_paused': 'paused429',
+  '429_backoff': 'backoff429',
+  limits_unknown: 'limitsUnknown',
+  model_not_supported: 'modelNotSupported',
+  round_start_skew: 'roundStartSkew',
+  runtime_unavailable: 'runtimeUnavailable',
+  gateway_unavailable: 'gatewayUnavailable',
+  invalid_request: 'invalidRequest',
+  invalid_endpoint: 'invalidEndpoint',
+  local_capacity: 'localCapacity',
+  no_accounts: 'noAccounts',
+  outside_active_window: 'outsideActiveWindow',
+  accounts_unavailable: 'accountsUnavailable',
+  stopped: 'stopped',
+  cancelled: 'cancelled',
+  task_changed: 'taskChanged',
+  upstream_network_error: 'upstreamNetworkError',
+  upstream_http_error: 'upstreamHttpError',
+  upstream_stream_error: 'upstreamStreamError',
+  stream_incomplete: 'streamIncomplete',
+  empty_output: 'emptyOutput',
+  first_output_timeout: 'firstOutputTimeout',
+  observer_unavailable: 'observerUnavailable',
+  upstream_429: 'upstream429',
+  request_cancelled: 'requestCancelled',
+  timeout: 'timeout',
+  upstream_io_error: 'upstreamIoError',
+}
+
+// Last-run detail is stored as "reason×count, reason×count".
+function taskDetailLabel(detail: string): string {
+  return detail.split(',').map((part) => {
+    const [reason, count] = part.trim().split('×')
+    const key = taskReasonLabels[reason]
+    const label = key ? t(`admin.ustcSpeed.task.reason.${key}`) : reason
+    return count ? `${label} ×${count}` : label
+  }).join(' · ')
 }
 
 function accountName(id: number): string {
@@ -1295,6 +1424,7 @@ onMounted(async () => {
   await loadCurrentSection()
 })
 onUnmounted(() => {
+  stopTasksAutoRefresh()
   overviewViewDisposed = true
   overviewRequestSeq += 1
   overviewAbortController?.abort()

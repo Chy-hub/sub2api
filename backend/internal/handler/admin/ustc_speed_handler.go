@@ -17,6 +17,7 @@ import (
 const (
 	ustcSpeedDefaultTimezone = "Asia/Shanghai"
 	ustcSpeedMaxRangeDays    = 180
+	ustcSpeedMaxRangeHours   = ustcSpeedMaxRangeDays * 24
 	ustcSpeedDefaultLimit    = 50
 	ustcSpeedMaxLimit        = 200
 	ustcSpeedMaxAccounts     = 100
@@ -276,6 +277,13 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if err != nil {
 		return query, errors.New("invalid timezone")
 	}
+	lastHours, err := parseQueryInt(c, "last_hours", 0)
+	if err != nil {
+		return query, err
+	}
+	if lastHours < 0 || lastHours > ustcSpeedMaxRangeHours {
+		return query, fmt.Errorf("last_hours must be between 0 and %d", ustcSpeedMaxRangeHours)
+	}
 
 	today := now.In(location).Format("2006-01-02")
 	startDate := strings.TrimSpace(c.Query("start_date"))
@@ -297,13 +305,21 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if endDateTime.Before(start) {
 		return query, errors.New("start_date must be on or before end_date")
 	}
-	calendarStart := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
-	calendarEnd := time.Date(endDateTime.Year(), endDateTime.Month(), endDateTime.Day(), 0, 0, 0, 0, time.UTC)
-	calendarDays := int(calendarEnd.Sub(calendarStart)/(24*time.Hour)) + 1
-	if calendarDays > ustcSpeedMaxRangeDays {
-		return query, fmt.Errorf("date range cannot exceed %d days", ustcSpeedMaxRangeDays)
+	if lastHours == 0 {
+		calendarStart := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+		calendarEnd := time.Date(endDateTime.Year(), endDateTime.Month(), endDateTime.Day(), 0, 0, 0, 0, time.UTC)
+		calendarDays := int(calendarEnd.Sub(calendarStart)/(24*time.Hour)) + 1
+		if calendarDays > ustcSpeedMaxRangeDays {
+			return query, fmt.Errorf("date range cannot exceed %d days", ustcSpeedMaxRangeDays)
+		}
 	}
 	end := endDateTime.AddDate(0, 0, 1)
+	if lastHours > 0 {
+		// The picker's "last 24 hours" preset only yields two calendar dates;
+		// use an exact rolling window so the query really covers N hours.
+		end = now.Add(time.Nanosecond)
+		start = now.Add(-time.Duration(lastHours) * time.Hour)
+	}
 
 	model := strings.TrimSpace(c.Query("model"))
 	if len(model) > 200 {
@@ -422,7 +438,7 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 		AccountIDs: accountIDs, TaskID: taskID, Reasoning: reasoning, Stream: stream, Profile: profile,
 		InputMin: inputMin, InputMax: inputMax, OutputMin: outputMin, OutputMax: outputMax,
 		Metric: metric, Interval: interval, Aggregate: aggregate, Limit: limit, Offset: offset,
-		Timezone: timezone, Hourly: hourly,
+		Timezone: timezone, Hourly: hourly, LastHours: lastHours,
 	}
 	return query, nil
 }
