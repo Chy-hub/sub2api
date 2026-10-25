@@ -52,6 +52,7 @@ export interface USTCSpeedQuery {
   limit?: number
   offset?: number
   hourly?: boolean
+  last_hours?: number
 }
 
 export interface USTCSpeedObservation {
@@ -219,13 +220,14 @@ export interface USTCSpeedTask {
   next_run_at: string | null
   last_run_at: string | null
   last_status: string
+  last_detail?: string
   created_at: string
   updated_at: string
 }
 
 export type USTCSpeedTaskInput = Omit<
   USTCSpeedTask,
-  'next_run_at' | 'last_run_at' | 'last_status' | 'created_at' | 'updated_at'
+  'next_run_at' | 'last_run_at' | 'last_status' | 'last_detail' | 'created_at' | 'updated_at'
 >
 
 export interface USTCSpeedSettings {

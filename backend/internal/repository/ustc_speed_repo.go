@@ -472,10 +472,10 @@ func (r *ustcSpeedRepository) ClaimTask(ctx context.Context, id int64, owner str
 	n, _ := result.RowsAffected()
 	return n > 0, nil
 }
-func (r *ustcSpeedRepository) FinishTask(ctx context.Context, id int64, owner string, next time.Time, status string) error {
+func (r *ustcSpeedRepository) FinishTask(ctx context.Context, id int64, owner string, next time.Time, status, detail string) error {
 	// Edits keep the running lease until its owner exits, but a stale run may
 	// never replace the schedule saved by the newer task revision.
-	_, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=NULL,lease_until=NULL,lease_revision=NULL,next_run_at=CASE WHEN lease_revision=revision THEN $3 ELSE next_run_at END,last_status=CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,updated_at=NOW() WHERE id=$1 AND lease_owner=$2`, id, owner, next, status)
+	_, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=NULL,lease_until=NULL,lease_revision=NULL,next_run_at=CASE WHEN lease_revision=revision THEN $3 ELSE next_run_at END,last_status=CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,config=CASE WHEN lease_revision<>revision THEN config WHEN $5='' THEN config-'last_detail' ELSE jsonb_set(config,'{last_detail}',to_jsonb($5::text),true) END,updated_at=NOW() WHERE id=$1 AND lease_owner=$2`, id, owner, next, status, detail)
 	return err
 }
 func (r *ustcSpeedRepository) AcquireKey(ctx context.Context, scope, owner string, ttl time.Duration, maximum int) (bool, error) {

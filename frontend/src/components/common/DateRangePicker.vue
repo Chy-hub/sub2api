@@ -283,6 +283,10 @@ const handleEscape = (event: KeyboardEvent) => {
   }
 }
 
+// Parents with a separate "apply all filters" button can commit the pending
+// date selection through this method instead of silently discarding it.
+defineExpose({ apply })
+
 // Restore the applied range after dismissal, including parent updates from Apply.
 watch(isOpen, (open) => {
   if (open) return

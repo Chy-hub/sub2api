@@ -27,27 +27,25 @@ export default {
     },
     metric: {
       view: 'Main chart', metric: 'Metric', tps: 'TPS trend', ttft: 'TTFT trend', time: 'Time stages',
-      generationTps: 'Generation speed', overallTps: 'Overall speed (including waits)',
+      generationTps: 'Generation speed (excl. first-token wait)', overallTps: 'Average speed (incl. first-token wait)',
       ttftMs: 'Upstream time to first text', firstOutputMs: 'Upstream time to first output', totalMs: 'Actual task duration', outputMs: 'Actual output duration',
       headersMs: 'Upstream response headers', tailMs: 'Wait after the last output', maxGapMs: 'Longest pause during output', unitTps: 'tokens / second', unitMs: 'milliseconds'
     },
     interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
     aggregate: { label: 'Statistic', p50: 'P50 median', mean: 'Mean', p10: 'P10 slow range', p90: 'P90' },
     overview: {
-      chartTitle: 'Speed and wait trends', chartHint: 'Select a raw point to inspect its speed measurement. Real-call buckets open Usage; probe buckets reveal raw observations.',
-      chartReading: 'Real-call buckets use bars; the shaded band behind a single real series is its P10–P90 spread. Raw calls use scatter points and probes use dashed trend lines. Periods without calls stay empty.',
+      chartTitle: 'Speed and wait trends',
       aggregation: '{interval} · {statistic}', bucketSamples: '{count} valid observations in this point',
       distribution: 'P10–P90 spread', spread: 'P10 / P50 / P90: {p10} / {p50} / {p90}',
       lowSamples: 'Fewer than 5 valid observations; treat this point as indicative only.',
+      lastHours: 'Last {hours} hours',
       usageRecords: 'View usage records', probeDrilldown: 'Showing raw probe observations. Select a point to inspect its speed measurement.', legacyMeasurement: 'Historical approximation',
-      timingBasis: 'For new samples, timing starts when the request is sent upstream and ends when the upstream response completes; Sub2API local queue time is excluded. TTFT / first-output time is the observed availability of the first output, not an exact model prefill measurement. Imported history has a separate approximate-measurement notice.',
       noSeries: 'There are no observations to chart for these filters.', noSeriesHint: 'Empty periods are not filled with zeros or interpolated. Adjust the date range or filters.',
       samples: 'Samples', successful: 'Successful', rateLimited: 'Rate limited', realSamples: 'Real calls', probeSamples: 'Probes', outputTokens: 'Output tokens',
       failed: 'Errors', skipped: 'Skipped', cancelled: 'Cancelled',
       realLatest: 'Latest real call', probeLatest: 'Latest probe',
       realAge: 'Latest real call {age}', probeAge: 'Latest probe {age}',
       validPoints: 'Valid metric points',
-      sourceNote: 'Filter by model, accounts, and dates, then average the valid calls in each time bucket. Every call has equal weight.',
       auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by model series.', seriesBreakdown: 'Grouped by model and source',
       legacyNotice: 'Includes imported historical usage. Legacy TTFT/TPS are approximate; status is unknown and is not counted as success or failure.',
       fallbackApplied: 'Probes are throttled or paused because of rate limits or capacity. Showing recent real calls from the last {minutes} minutes temporarily; the series remains labeled as real.',
@@ -58,7 +56,7 @@ export default {
     hourly: {
       title: 'Calls by hour of day', description: 'Valid calls in the applied range, grouped by local hour. Use it to choose when to run long work.',
       samples: '{count} valid observations', noData: 'No valid calls in this range to compare by hour.',
-      hint: 'One line per model and source; empty hours had no valid calls. The main chart tooltip shows the P10–P90 spread for each bucket.'
+      metric: 'Metric'
     },
     samples: {
       tableTitle: 'Calls and probe samples', total: '{count} total', noData: 'No samples match these filters.',
@@ -70,7 +68,9 @@ export default {
     },
     status: {
       success: 'Success', error: 'Error', rate_limited: 'Rate limited', skipped: 'Skipped', cancelled: 'Cancelled',
-      recorded: 'Recorded (result unknown)', queued: 'Queued', paused: 'Paused', unknown: 'Unknown'
+      recorded: 'Recorded (result unknown)', queued: 'Queued', paused: 'Paused', unknown: 'Unknown',
+      completed: 'Completed', failed: 'Failed', partial: 'Partially completed',
+      no_accounts: 'No eligible accounts', outside_active_window: 'Outside active window'
     },
     detail: {
       title: 'Speed measurement', loading: 'Loading speed measurement…', overview: 'Measurement', metrics: 'Observed metrics',
@@ -124,6 +124,16 @@ export default {
       apis: { chat: 'Chat Completions', responses: 'Responses' },
       thinking: { off: 'Off', on: 'On', auto: 'Automatic (no extra setting)' },
       effort: { none: 'Unset', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' },
+      reason: {
+        userLoad: 'User load or capacity', backgroundCapacity: 'Background concurrency full', sharedAdmission: 'Shared admission blocked',
+        paused429: '429 pause', backoff429: '429 backoff', limitsUnknown: 'Quota limits unknown', modelNotSupported: 'Model not supported by account',
+        roundStartSkew: 'Start skew exceeded', runtimeUnavailable: 'Runtime state unavailable', gatewayUnavailable: 'Gateway unavailable',
+        invalidRequest: 'Invalid request', invalidEndpoint: 'Invalid endpoint', localCapacity: 'Local capacity', noAccounts: 'No eligible accounts',
+        outsideActiveWindow: 'Outside active window', accountsUnavailable: 'Account list unavailable', stopped: 'Stopped', cancelled: 'Cancelled', taskChanged: 'Task edited',
+        upstreamNetworkError: 'Upstream network error', upstreamHttpError: 'Upstream HTTP error', upstreamStreamError: 'Upstream stream error',
+        streamIncomplete: 'Stream incomplete', emptyOutput: 'Empty output', firstOutputTimeout: 'First-output timeout', observerUnavailable: 'Observer unavailable',
+        upstream429: 'Upstream 429', requestCancelled: 'Request cancelled', timeout: 'Timeout', upstreamIoError: 'Upstream I/O error'
+      },
       weekday: { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' }
     },
     settings: {

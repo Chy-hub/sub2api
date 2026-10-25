@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -21,6 +22,41 @@ import (
 )
 
 var errUSTCSpeedFirstTimeout = errors.New("ustc speed first-output timeout")
+
+type ustcProbeResult struct {
+	status string
+	reason string
+}
+
+// summarizeSpeedReasons keeps the last run's dominant skip causes visible in
+// the task list instead of only reporting a generic "skipped" status.
+func summarizeSpeedReasons(reasons map[string]int) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	type pair struct {
+		reason string
+		count  int
+	}
+	pairs := make([]pair, 0, len(reasons))
+	for reason, count := range reasons {
+		pairs = append(pairs, pair{reason: reason, count: count})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].count != pairs[j].count {
+			return pairs[i].count > pairs[j].count
+		}
+		return pairs[i].reason < pairs[j].reason
+	})
+	parts := make([]string, 0, 3)
+	for i, item := range pairs {
+		if i == 3 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s×%d", item.reason, item.count))
+	}
+	return strings.Join(parts, ", ")
+}
 
 type USTCSpeedWaitReader interface {
 	USTCHasWaiting(context.Context) (bool, error)
@@ -82,7 +118,7 @@ func (s *USTCSpeedService) startTask(ctx context.Context, task USTCSpeedTask, fo
 	if s.stopped.Load() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = s.repo.FinishTask(cleanup, task.ID, owner, time.Now().Add(time.Duration(task.IntervalSeconds)*time.Second), "cancelled")
+		_ = s.repo.FinishTask(cleanup, task.ID, owner, time.Now().Add(time.Duration(task.IntervalSeconds)*time.Second), "cancelled", "stopped")
 		return "", ErrUSTCSpeedBusy
 	}
 	jobCtx, cancel := context.WithTimeout(s.ctx, ttl-5*time.Second)
@@ -92,11 +128,11 @@ func (s *USTCSpeedService) startTask(ctx context.Context, task USTCSpeedTask, fo
 		defer s.wg.Done()
 		defer cancel()
 		defer func() { s.jobsMu.Lock(); delete(s.jobs, task.ID); s.jobsMu.Unlock() }()
-		status := s.executeTask(jobCtx, task, owner, force)
+		status, detail := s.executeTask(jobCtx, task, owner, force)
 		next := nextUSTCSpeedTask(task, time.Now())
 		finishCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
-		_ = s.repo.FinishTask(finishCtx, task.ID, owner, next, status)
+		_ = s.repo.FinishTask(finishCtx, task.ID, owner, next, status, detail)
 	}()
 	return owner, nil
 }
@@ -167,15 +203,15 @@ func speedTaskActive(task USTCSpeedTask, now time.Time) bool {
 	}
 	return minute >= lo || minute <= hi
 }
-func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, owner string, force bool) string {
+func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, owner string, force bool) (string, string) {
 	// A manual run is an explicit operator action; scheduled runs must respect
 	// the task's active window. Capacity, quota, and queue protection still apply.
 	if !force && !speedTaskActive(task, time.Now()) {
-		return "outside_active_window"
+		return "outside_active_window", "outside_active_window"
 	}
 	accounts, err := s.ustcAccounts(ctx)
 	if err != nil {
-		return "failed"
+		return "failed", "accounts_unavailable"
 	}
 	selected := map[int64]bool{}
 	for _, id := range task.AccountIDs {
@@ -195,7 +231,7 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 		eligible = append(eligible, account)
 	}
 	if len(eligible) == 0 {
-		return "no_accounts"
+		return "no_accounts", "no_accounts"
 	}
 	sort.Slice(eligible, func(i, j int) bool { return eligible[i].ID < eligible[j].ID })
 	// Rotate the start order when the configured global cap cannot cover every
@@ -205,9 +241,10 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 		eligible = append(eligible[offset:], eligible[:offset]...)
 	}
 	successes, failures, skipped := 0, 0, 0
+	reasons := map[string]int{}
 	for modelIndex, model := range task.Models {
 		if !s.speedTaskCurrent(ctx, task) {
-			return "cancelled"
+			return "cancelled", "task_changed"
 		}
 		round := owner + fmt.Sprintf("-%d", modelIndex)
 		roundStart := time.Now()
@@ -216,7 +253,7 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 			prompt = task.PromptVariants[rand.IntN(len(task.PromptVariants))]
 		}
 		semaphore := make(chan struct{}, task.MaxParallelAccounts)
-		results := make(chan string, len(eligible))
+		results := make(chan ustcProbeResult, len(eligible))
 		var workers sync.WaitGroup
 		for _, candidate := range eligible {
 			account := candidate
@@ -228,45 +265,57 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 				select {
 				case semaphore <- struct{}{}:
 					defer func() { <-semaphore }()
-					results <- s.runProbe(ctx, task, &account, model, prompt, round, roundStart)
+					status, reason := s.runProbe(ctx, task, &account, model, prompt, round, roundStart)
+					results <- ustcProbeResult{status: status, reason: reason}
 				case <-deadline.C:
 					s.recordSkip(task, &account, model, round, "round_start_skew")
-					results <- "skipped"
+					results <- ustcProbeResult{status: "skipped", reason: "round_start_skew"}
 				case <-ctx.Done():
-					results <- "cancelled"
+					results <- ustcProbeResult{status: "cancelled", reason: "cancelled"}
 				}
 			}()
 		}
 		workers.Wait()
 		close(results)
+		roundSuccesses, roundSkipped, roundFailures := 0, 0, 0
 		for result := range results {
-			switch result {
+			if result.reason != "" && result.status != "success" {
+				reasons[result.reason]++
+			}
+			switch result.status {
 			case "success":
 				successes++
+				roundSuccesses++
 			case "skipped":
 				skipped++
+				roundSkipped++
 			case "cancelled":
 				if ctx.Err() != nil {
-					return "cancelled"
+					return "cancelled", "cancelled"
 				}
 				failures++
+				roundFailures++
 			default:
 				failures++
+				roundFailures++
 			}
 		}
+		slog.Info("ustc_speed_probe_round", "task_id", task.ID, "model", model, "round", round, "success", roundSuccesses, "skipped", roundSkipped, "failed", roundFailures)
 	}
+	detail := summarizeSpeedReasons(reasons)
 	if failures > 0 {
 		if successes > 0 {
-			return "partial"
+			return "partial", detail
 		}
-		return "failed"
+		return "failed", detail
 	}
 	if successes == 0 && skipped > 0 {
-		return "skipped"
+		return "skipped", detail
 	}
-	return "completed"
+	return "completed", detail
 }
 func (s *USTCSpeedService) recordSkip(task USTCSpeedTask, account *Account, model, round, reason string) {
+	slog.Info("ustc_speed_probe_skip", "task_id", task.ID, "account_id", account.ID, "model", model, "round", round, "reason", reason)
 	now := time.Now()
 	sample := USTCSpeedSample{TaskID: &task.ID, RoundID: round, AccountID: account.ID, AccountName: account.Name, KeyScope: USTCKeyScope(account), Model: account.GetMappedModel(model), Source: "probe", Status: "skipped", Reason: reason, Stream: task.Stream, APIMode: task.APIMode, Profile: "probe:skipped", Reasoning: "unknown", StartedAt: now, FinishedAt: now}
 	if task.RealFallback {
@@ -454,10 +503,13 @@ func speedProbeURL(account *Account, mode string) (string, error) {
 	}
 	return parsed.String(), nil
 }
-func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, account *Account, model, prompt, round string, roundStart time.Time) string {
-	skip := func(reason string) string { s.recordSkip(task, account, model, round, reason); return "skipped" }
+func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, account *Account, model, prompt, round string, roundStart time.Time) (string, string) {
+	skip := func(reason string) (string, string) {
+		s.recordSkip(task, account, model, round, reason)
+		return "skipped", reason
+	}
 	if !s.speedTaskCurrent(parent, task) {
-		return "cancelled"
+		return "cancelled", "task_changed"
 	}
 	if s.gateway == nil {
 		return skip("gateway_unavailable")
@@ -572,5 +624,5 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 		result.Reason = "first_output_timeout"
 	}
 	s.persist(result)
-	return result.Status
+	return result.Status, result.Reason
 }

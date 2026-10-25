@@ -393,7 +393,18 @@ func (s *USTCSpeedService) SaveTask(ctx context.Context, task *USTCSpeedTask) er
 			}
 		}
 	}
+	previouslyEnabled := false
+	if task.ID != 0 {
+		if previous, err := s.repo.GetTask(ctx, task.ID); err == nil && previous != nil {
+			previouslyEnabled = previous.Enabled
+		}
+	}
 	next := nextUSTCSpeedTask(*task, time.Now())
+	// Enabling a task (or creating one already enabled) should start the first
+	// round promptly instead of waiting a whole interval.
+	if task.Enabled && !previouslyEnabled {
+		next = time.Now()
+	}
 	task.NextRunAt = &next
 	if err := s.repo.SaveTask(ctx, task); err != nil {
 		return err

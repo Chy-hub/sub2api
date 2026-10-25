@@ -51,7 +51,7 @@ func TestUSTCSpeedEditedOrDeletedTaskStopsBeforeDispatch(t *testing.T) {
 		speed.repo = &ustcSpeedTaskRevisionRepo{task: current}
 		task := DefaultUSTCSpeedTask()
 		task.ID, task.Revision = 1, 1
-		status := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "prompt", "round", time.Now())
+		status, _ := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "prompt", "round", time.Now())
 		require.Equal(t, "cancelled", status)
 		calls, _ := upstream.snapshot()
 		require.Zero(t, calls)
