@@ -33,14 +33,12 @@ export default {
     },
     interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
     aggregate: { label: '统计口径', p50: 'P50 中位数', mean: '平均值', p10: 'P10 慢速水平', p90: 'P90' },
-    accountView: {
-      label: '账号视图', accounts: '各账号单独显示', equal: '账号等权平均',
-      aggregateRequired: '真实调用的时间戳不同，原始样本无法代表同一时刻的跨账号均值。请选择聚合粒度后再查看等权平均。',
-      useFiveMinutes: '改用 5 分钟聚合'
-    },
     overview: {
       chartTitle: '速度与等待趋势', chartHint: '点击原始点查看速度测量；真实调用聚合点打开使用记录，基准聚合点展开原始观测。',
+      chartReading: '真实调用按时间桶显示柱状值；只显示一个真实系列时，柱后的浅色区间是该桶的 P10–P90 分布。原始调用显示散点，基准趋势使用虚线。没有调用的时段留空。',
       aggregation: '{interval} · {statistic}', bucketSamples: '该点包含 {count} 个有效观测',
+      distribution: 'P10–P90 分布区间', spread: 'P10 / P50 / P90：{p10} / {p50} / {p90}',
+      lowSamples: '有效观测不足 5 个，该点仅供参考。',
       usageRecords: '查看使用记录', probeDrilldown: '已切换到原始基准观测，点击数据点查看速度测量。', legacyMeasurement: '历史近似口径',
       timingBasis: '新采样耗时从请求发往上游时开始，到上游响应结束时为止，不含 Sub2API 本地排队。TTFT / 首次输出表示观测到首个输出的时间，不是模型精确预填充耗时。历史导入数据另有近似口径提示。',
       noSeries: '当前条件下没有可绘制的观测数据。', noSeriesHint: '数据为空时不补零、不插值。请调整时间范围或筛选条件。',
@@ -48,14 +46,19 @@ export default {
       failed: '错误', skipped: '跳过', cancelled: '取消',
       realLatest: '真实调用最新时间', probeLatest: '基准检测最新时间',
       realAge: '最新真实调用距今 {age}', probeAge: '最新基准检测距今 {age}',
-      validPoints: '有效指标点', selectedCoverage: '账号覆盖', equalCoverage: '等权视图覆盖 {valid}/{total}',
-      sourceNote: '默认按模型和时间桶求平均，调用条件可在高级筛选中限定；真实、基准和历史近似数据分别展示。',
-      auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各账号系列的样本数。', seriesBreakdown: '按模型、来源与账号分组',
+      validPoints: '有效指标点',
+      sourceNote: '先按模型、账号和日期筛选，再对各时间桶内的有效调用求平均；每次调用权重相同。',
+      auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各模型系列的样本数。', seriesBreakdown: '按模型与来源分组',
       legacyNotice: '包含历史用量导入数据。旧 TTFT/TPS 是近似口径，状态为“结果未知”，不能当作成功或失败。',
       fallbackApplied: '基准检测因限流或资源繁忙正在缓测/暂停，当前临时显示最近 {minutes} 分钟的真实调用；图例仍标记为真实来源。',
       truncated: '后端为控制返回量截断了趋势数据。', dropped: '有 {count} 个样本因数据限制未进入图表。',
       noReal: '当前时间范围内没有真实调用样本。', noProbe: '当前时间范围内没有基准检测样本。',
       ageUnknown: '时间未知', profile: '配置', configuration: '配置 {number}', account: '账号', source: '来源', coverage: '有效账号覆盖'
+    },
+    hourly: {
+      title: '调用时段分布', description: '按所选时区聚合已应用范围内的有效调用，用于选择更合适的调用时段。',
+      samples: '{count} 个有效观测', noData: '所选范围没有可按时段比较的有效调用。',
+      hint: '每条线代表一个模型和来源；没有有效调用的小时留空。主图悬浮提示可查看各时间桶的 P10–P90 分布。'
     },
     samples: {
       tableTitle: '调用与检测样本', total: '共 {count} 条', noData: '没有符合条件的样本。',

@@ -81,6 +81,34 @@ func TestParseUSTCSpeedQueryFilters(t *testing.T) {
 	if query.Metric != "ttft_ms" || query.Interval != "1m" || query.GroupBy != "profile" || query.Aggregate != "mean" || query.Limit != 100 || query.Offset != 50 {
 		t.Errorf("unexpected metric/paging filters: %+v", query)
 	}
+	if query.Timezone != "America/Los_Angeles" {
+		t.Errorf("timezone must reach the repository for local-hour grouping: %q", query.Timezone)
+	}
+	if query.Hourly {
+		t.Error("hourly should default to off")
+	}
+}
+
+func TestParseUSTCSpeedQueryHourly(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE"} {
+		values := url.Values{"hourly": {value}, "timezone": {"Asia/Shanghai"}}
+		query, err := parseUSTCSpeedQueryValues(values, time.Now())
+		if err != nil {
+			t.Fatalf("hourly=%q should be accepted: %v", value, err)
+		}
+		if !query.Hourly || query.Timezone != "Asia/Shanghai" {
+			t.Fatalf("unexpected hourly query: %+v", query)
+		}
+	}
+	for _, value := range []string{"0", "false"} {
+		query, err := parseUSTCSpeedQueryValues(url.Values{"hourly": {value}}, time.Now())
+		if err != nil || query.Hourly {
+			t.Fatalf("hourly=%q should disable grouping: %+v, %v", value, query, err)
+		}
+	}
+	if _, err := parseUSTCSpeedQueryValues(url.Values{"hourly": {"yes"}}, time.Now()); err == nil {
+		t.Fatal("ambiguous hourly values should be rejected")
+	}
 }
 
 func TestParseUSTCSpeedQueryAccepts180CalendarDays(t *testing.T) {

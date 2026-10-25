@@ -506,6 +506,53 @@ func TestUSTCSpeedActiveWindowUsesTimezoneAndSupportsCrossMidnight(t *testing.T)
 	require.True(t, speedTaskActive(task, tuesdayAt00Shanghai))
 }
 
+func TestUSTCSpeedBackoffPausedWithoutDeadlineBlocks(t *testing.T) {
+	task := DefaultUSTCSpeedTask()
+	runtime := &USTCSpeedRuntime{Paused: true}
+	blocked, reason := speedBackoff(task, runtime, time.Now())
+	require.True(t, blocked, "a pause without a deadline must not silently probe")
+	require.Equal(t, "429_paused", reason)
+}
+
+// ustcSpeedAccountsRepo supplies the full-account listing used by scheduled
+// tasks; the scheduler fixture only implements its own scheduling queries.
+type ustcSpeedAccountsRepo struct {
+	schedulerTestOpenAIAccountRepo
+}
+
+func (r ustcSpeedAccountsRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
+func TestUSTCSpeedManualRunBypassesActiveWindow(t *testing.T) {
+	speed, gateway, _, _, upstream, _ := newUSTCSpeedRunnerFixture()
+	accounts := gateway.accountRepo.(schedulerTestOpenAIAccountRepo)
+	speed.accounts = ustcSpeedAccountsRepo{accounts}
+	task := DefaultUSTCSpeedTask()
+	task.Models = []string{"deepseek-flash"}
+	task.AllAccounts = true
+	task.RealFallback = false
+	task.MaxParallelAccounts = 1
+
+	location, err := time.LoadLocation(task.Timezone)
+	require.NoError(t, err)
+	now := time.Now().In(location)
+	start := (now.Hour()*60 + now.Minute() + 5) % (24 * 60)
+	task.ActiveStart = fmt.Sprintf("%02d:%02d", start/60, start%60)
+	end := (start + 1) % (24 * 60)
+	task.ActiveEnd = fmt.Sprintf("%02d:%02d", end/60, end%60)
+	require.NotEqual(t, task.ActiveStart, task.ActiveEnd)
+
+	require.Equal(t, "outside_active_window", speed.executeTask(context.Background(), task, "scheduled", false))
+	calls, _ := upstream.snapshot()
+	require.Zero(t, calls, "a scheduled run outside the window must not spend upstream quota")
+
+	status := speed.executeTask(context.Background(), task, "manual", true)
+	require.NotEqual(t, "outside_active_window", status)
+	calls, _ = upstream.snapshot()
+	require.Equal(t, 1, calls, "a manual run should proceed despite the active window")
+}
+
 func TestUSTCSpeedProbeBodyAndEndpoint(t *testing.T) {
 	topP := 0.7
 	seed := int64(123)

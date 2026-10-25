@@ -371,6 +371,10 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if err != nil {
 		return query, err
 	}
+	hourly, err := parseUSTCSpeedBool(c.Query("hourly"), "hourly")
+	if err != nil {
+		return query, err
+	}
 	taskID, err := parseOptionalPositiveInt64(c.Query("task_id"), "task_id")
 	if err != nil {
 		return query, err
@@ -418,6 +422,7 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 		AccountIDs: accountIDs, TaskID: taskID, Reasoning: reasoning, Stream: stream, Profile: profile,
 		InputMin: inputMin, InputMax: inputMax, OutputMin: outputMin, OutputMax: outputMax,
 		Metric: metric, Interval: interval, Aggregate: aggregate, Limit: limit, Offset: offset,
+		Timezone: timezone, Hourly: hourly,
 	}
 	return query, nil
 }
@@ -445,6 +450,19 @@ func parseUSTCSpeedAccountIDs(value string) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// parseUSTCSpeedBool accepts the compact true/1 form used by dashboards while
+// rejecting ambiguous values instead of silently treating them as false.
+func parseUSTCSpeedBool(value, name string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "false":
+		return false, nil
+	case "1", "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be true or false", name)
+	}
 }
 
 func parseOptionalPositiveInt64(value, name string) (int64, error) {
