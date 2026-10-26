@@ -163,6 +163,7 @@ export interface USTCSpeedSummary {
 }
 
 export interface USTCSpeedOverview {
+  stats?: USTCSpeedStats
   analysis?: USTCSpeedAnalysis
   range_start: string
   range_end: string
@@ -179,6 +180,19 @@ export interface USTCSpeedOverview {
   hourly?: USTCSpeedHourPoint[]
   truncated: boolean
   dropped_samples: number
+}
+
+export interface USTCSpeedStats {
+  total_requests: number
+  total_input_tokens: number | null
+  total_output_tokens: number | null
+  total_tokens: number | null
+  total_provider_cost: number | null
+  average_duration_ms: number | null
+  input_samples: number
+  output_samples: number
+  cost_samples: number
+  duration_samples: number
 }
 
 export interface USTCSpeedAnalysisStats {

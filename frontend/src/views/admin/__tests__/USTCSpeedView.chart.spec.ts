@@ -3,6 +3,7 @@ import { defineComponent } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import USTCSpeedView from '../USTCSpeedView.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
 
 const { benchmark, usage, dimensions, settings, tasks, runtime, toast } = vi.hoisted(() => ({
   benchmark: vi.fn(), usage: vi.fn(), dimensions: vi.fn(), settings: vi.fn(), tasks: vi.fn(), runtime: vi.fn(), toast: vi.fn(),
@@ -76,8 +77,75 @@ describe('separate usage and benchmark views', () => {
     expect(benchmark).not.toHaveBeenCalled(); expect(tasks).not.toHaveBeenCalled(); expect(dimensions).not.toHaveBeenCalled()
     expect(wrapper.find('#benchmark-tasks').exists()).toBe(false)
     expect(wrapper.findComponent(DateRangePicker).exists()).toBe(false)
+    expect(wrapper.findComponent(UsageStatsCards).exists()).toBe(false)
     expect(datasets(wrapper)[0].type).toBe('bar')
     expect(wrapper.text()).not.toContain('admin.ustcSpeed.overview.outputTokens')
+  })
+
+  it('reuses usage cards with filtered benchmark totals and preserves missing values', async () => {
+    benchmark.mockImplementation(async (q: any) => ({ ...response(q), stats: q.account_ids ? {
+      total_requests: 1, total_input_tokens: null, total_output_tokens: null, total_tokens: null, total_provider_cost: null, average_duration_ms: 1000, input_samples: 0, output_samples: 0, cost_samples: 0, duration_samples: 1,
+    } : {
+      total_requests: 3, total_input_tokens: 15, total_output_tokens: 20, total_tokens: 35, total_provider_cost: 0.1, average_duration_ms: 4000 / 3, input_samples: 2, output_samples: 2, cost_samples: 2, duration_samples: 3,
+    } }))
+    const wrapper = render()
+    await flushPromises()
+    const cards = wrapper.getComponent(UsageStatsCards)
+    const values = () => cards.findAll('p.text-xl').map((node) => node.text())
+    expect(values()).toEqual(['3', '35', '0.1000', '1.33s'])
+    expect(cards.text()).toContain('stats.tokenCoverage')
+    expect(cards.text()).toContain('stats.costCoverage')
+    expect(cards.text()).not.toContain('usage.standardCost')
+    await wrapper.get('[data-testid="benchmark-filters"] input[type="checkbox"]').setValue(true)
+    await flushPromises()
+    expect(values()).toEqual(['1', '—', '—', '1.00s'])
+    expect(cards.text()).toContain('stats.costUnavailable')
+    expect(cards.text()).not.toContain('$0.0000')
+  })
+
+  it.each([false, true])('shows all ten hourly model labels outside the canvas (embedded=%s)', async (embedded) => {
+    const api = embedded ? usage : benchmark
+    api.mockImplementation(async (q: any) => {
+      const result = response(q)
+      result.hourly = Array.from({ length: 10 }, (_, index) => ({ ...result.hourly[0], model: `model-${index}-complete-long-name`, hour: 12 }))
+      return result
+    })
+    const wrapper = render(embedded)
+    await flushPromises()
+    const options = (wrapper.vm as any).hourlyChartOptions
+    expect(options.plugins.tooltip.enabled).toBe(false)
+    options.plugins.tooltip.external({ chart: { width: 600, height: 260, isDatasetVisible: () => true, canvas: { getBoundingClientRect: () => ({ left: 20, top: 100, width: 600, height: 260 }) } }, tooltip: { opacity: 1, caretX: 500, caretY: 100, dataPoints: Array.from({ length: 10 }, (_, datasetIndex) => ({ datasetIndex, dataIndex: 12 })) } })
+    await flushPromises()
+    expect(document.querySelectorAll('[data-testid="hourly-tooltip-row"]')).toHaveLength(10)
+    expect(document.querySelector('[data-testid="hourly-tooltip"]')?.textContent).toContain('model-9-complete-long-name')
+    if (embedded) {
+      await wrapper.setProps({ active: false })
+      expect(document.querySelector('[data-testid="hourly-tooltip"]')).toBeNull()
+    } else {
+      await wrapper.get('[data-testid="chart-metric"]').setValue('generation_tps')
+      await flushPromises()
+      expect(document.querySelector('[data-testid="hourly-tooltip"]')).toBeNull()
+    }
+  })
+
+  it('includes missing-hour models as unavailable and respects hidden legend items', async () => {
+    benchmark.mockImplementation(async (q: any) => {
+      const result = response(q)
+      result.hourly = Array.from({ length: 10 }, (_, index) => ({ ...result.hourly[0], model: `model-${index}`, hour: index < 5 ? 12 : 8 }))
+      return result
+    })
+    const wrapper = render()
+    await flushPromises()
+    const external = (wrapper.vm as any).hourlyChartOptions.plugins.tooltip.external
+    const chart = { width: 600, height: 260, isDatasetVisible: (index: number) => index !== 1, canvas: { getBoundingClientRect: () => ({ left: 20, top: 100, width: 600, height: 260 }) } }
+    external({ chart, tooltip: { opacity: 1, caretX: 500, caretY: 100, dataPoints: [{ datasetIndex: 0, dataIndex: 12 }] } })
+    await flushPromises()
+    expect(document.querySelectorAll('[data-testid="hourly-tooltip-row"]')).toHaveLength(9)
+    const last = Array.from(document.querySelectorAll('[data-testid="hourly-tooltip-row"]')).at(-1)!
+    expect(last.textContent).toContain('model-9')
+    expect(last.textContent).toContain('—')
+    expect(last.textContent).toContain('hourly.noHourData')
+    expect(document.querySelector('[data-testid="hourly-tooltip"]')?.textContent).not.toContain('model-1')
   })
 
   it('updates benchmark filters immediately with one request for each change and no Apply button', async () => {

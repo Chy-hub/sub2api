@@ -73,9 +73,16 @@ export default {
       method: 'Statistics use all filtered valid calls with equal call weights, separated by model and source. Bucket means and quantiles are never averaged. Real generation TPS is approximated from usage records; recorded first-token timing does not distinguish reasoning from text.'
     },
     hourly: {
+      models: '{count} models', noHourData: 'No valid observations in this hour',
       title: 'Calls by hour of day', description: 'Calls in the applied range are folded onto one local day; multi-day observations in the same hour are combined with the selected statistic.',
       samples: '{count} valid observations', days: '{count} days covered', noData: 'No valid calls in this range to compare by hour.',
       metric: 'Metric', metricGeneration: 'TPS (generation)', metricOverall: 'End-to-end speed'
+    },
+    stats: {
+      skipped: '{count} additional test items were skipped',
+      tokenCoverage: 'Known usage: input {input}/{total} · output {output}/{total}',
+      upstreamAmount: 'Reported amount (upstream units)', costUnavailable: 'Cost not reported by upstream',
+      costCoverage: 'Amount recorded for {known}/{total} requests', durationCoverage: 'Duration recorded for {known}/{total} requests'
     },
     samples: {
       tableTitle: 'Test records', description: 'Uses the time, task, model and account filters above, including successful, failed and skipped tests.', overallTps: 'End-to-end speed', total: '{count} total', noData: 'No matching test records.',

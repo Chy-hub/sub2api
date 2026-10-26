@@ -73,9 +73,16 @@ export default {
       method: '统计直接使用筛选后的全部有效调用，每次调用等权，模型和来源分开；不平均时间桶的均值或分位数。真实生成 TPS 来自使用记录的近似计算，记录首字不区分思考与正文。'
     },
     hourly: {
+      models: '{count} 个模型', noHourData: '该时段无有效观测',
       title: '调用时段分布', description: '所选时间范围内的调用按本地小时折叠：多天数据合并到同一天，同一时段按当前统计口径汇总。',
       samples: '{count} 个有效观测', days: '覆盖 {count} 天', noData: '所选范围没有可按时段比较的有效调用。',
       metric: '指标', metricGeneration: 'TPS（生成速度）', metricOverall: '端到端速度'
+    },
+    stats: {
+      skipped: '另有 {count} 项测试被跳过',
+      tokenCoverage: '已知用量：输入 {input}/{total} · 输出 {output}/{total}',
+      upstreamAmount: '上游返回金额（上游计价单位）', costUnavailable: '上游未返回费用',
+      costCoverage: '已记录 {known}/{total} 笔金额', durationCoverage: '已记录 {known}/{total} 笔耗时'
     },
     samples: {
       tableTitle: '测试明细', description: '与顶部时间、任务、模型和账号筛选同步，包含成功、失败及跳过的测试。', overallTps: '端到端速度', total: '共 {count} 条', noData: '没有符合条件的测试记录。',
