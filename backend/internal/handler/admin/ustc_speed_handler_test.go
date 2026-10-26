@@ -54,6 +54,7 @@ func TestParseUSTCSpeedQueryFilters(t *testing.T) {
 		"aggregate":   {"mean"},
 		"limit":       {"100"},
 		"offset":      {"50"},
+		"analysis":    {"true"}, "comparison": {"year"},
 	}
 	query, err := parseUSTCSpeedQueryValues(values, time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -80,6 +81,9 @@ func TestParseUSTCSpeedQueryFilters(t *testing.T) {
 	}
 	if query.Metric != "ttft_ms" || query.Interval != "1m" || query.GroupBy != "profile" || query.Aggregate != "mean" || query.Limit != 100 || query.Offset != 50 {
 		t.Errorf("unexpected metric/paging filters: %+v", query)
+	}
+	if !query.Analysis || query.Comparison != "year" {
+		t.Errorf("analysis options were lost: %+v", query)
 	}
 	if query.Timezone != "America/Los_Angeles" {
 		t.Errorf("timezone must reach the repository for local-hour grouping: %q", query.Timezone)

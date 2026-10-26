@@ -15,6 +15,7 @@ import (
 )
 
 const ustcPoolWaitKeyPrefix = "ustc:pool_wait:"
+const ustcPoolWaitActiveKey = "ustc:pool_wait:active"
 
 const ustcPoolWaitReleaseTimeout = 2 * time.Second
 
@@ -24,10 +25,19 @@ var reserveUSTCPoolWaitScript = redis.NewScript(`
 local now = redis.call('TIME')
 local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
+
+local function track(lease_until)
+  redis.call('ZADD', KEYS[2], lease_until, ARGV[2])
+  local last = redis.call('ZREVRANGE', KEYS[2], 0, 0, 'WITHSCORES')
+  redis.call('PEXPIREAT', KEYS[2], tonumber(last[2]))
+end
 
 -- A retried command may already own the last permit. Confirm that lease
 -- before checking capacity, without extending its original expiry.
-if redis.call('ZSCORE', KEYS[1], ARGV[2]) then
+local existing = redis.call('ZSCORE', KEYS[1], ARGV[2])
+if existing then
+  track(tonumber(existing))
   return 1
 end
 
@@ -38,6 +48,7 @@ end
 
 local lease_until = now_ms + tonumber(ARGV[3])
 redis.call('ZADD', KEYS[1], lease_until, ARGV[2])
+track(lease_until)
 
 -- Keep the key until the longest current lease expires. A shorter new lease
 -- must never shorten the lifetime of another waiter's active permit.
@@ -47,7 +58,15 @@ return 1
 `)
 
 var releaseUSTCPoolWaitScript = redis.NewScript(`
+redis.call('ZREM', KEYS[2], ARGV[1])
 return redis.call('ZREM', KEYS[1], ARGV[1])
+`)
+
+var ustcHasWaitingScript = redis.NewScript(`
+local now = redis.call('TIME')
+local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+return redis.call('ZCARD', KEYS[1])
 `)
 
 // AcquireUSTCPoolWait reserves one lease from the shared per-pool waiting
@@ -75,7 +94,7 @@ func (c *RPMCacheImpl) AcquireUSTCPoolWait(ctx context.Context, poolKey string, 
 	if ttl%time.Millisecond != 0 {
 		ttlMillis++
 	}
-	allowed, err := reserveUSTCPoolWaitScript.Run(ctx, c.rdb, []string{key}, maxWaiting, token, ttlMillis).Int()
+	allowed, err := reserveUSTCPoolWaitScript.Run(ctx, c.rdb, []string{key, ustcPoolWaitActiveKey}, maxWaiting, token, ttlMillis).Int()
 	if err != nil {
 		return false, nil, fmt.Errorf("ustc pool wait acquire: %w", err)
 	}
@@ -88,7 +107,7 @@ func (c *RPMCacheImpl) AcquireUSTCPoolWait(ctx context.Context, poolKey string, 
 		releaseOnce.Do(func() {
 			releaseCtx, cancel := context.WithTimeout(context.Background(), ustcPoolWaitReleaseTimeout)
 			defer cancel()
-			if err := releaseUSTCPoolWaitScript.Run(releaseCtx, c.rdb, []string{key}, token).Err(); err != nil {
+			if err := releaseUSTCPoolWaitScript.Run(releaseCtx, c.rdb, []string{key, ustcPoolWaitActiveKey}, token).Err(); err != nil {
 				// Do not include the Redis key or lease token in logs.
 				slog.Warn("ustc_pool_wait_release_failed")
 			}
@@ -97,39 +116,10 @@ func (c *RPMCacheImpl) AcquireUSTCPoolWait(ctx context.Context, poolKey string, 
 	return true, release, nil
 }
 
-// USTCHasWaiting is a conservative, read-only guard for low-priority speed
-// probes. It includes pools on other backend instances and ignores expired
-// leases using Redis time. A bounded scan fails closed if there are many pools.
+// USTCHasWaiting checks leases across all backend instances using Redis time.
+// A dedicated index avoids scanning unrelated Redis keys: SCAN's COUNT is a
+// work hint, so a page limit used to report a busy queue on a large idle DB.
 func (c *RPMCacheImpl) USTCHasWaiting(ctx context.Context) (bool, error) {
-	now, err := c.rdb.Time(ctx).Result()
-	if err != nil {
-		return false, err
-	}
-	var cursor uint64
-	for page := 0; page < 16; page++ {
-		keys, next, err := c.rdb.Scan(ctx, cursor, ustcPoolWaitKeyPrefix+"*", 64).Result()
-		if err != nil {
-			return false, err
-		}
-		if len(keys) > 0 {
-			pipeline := c.rdb.Pipeline()
-			counts := make([]*redis.IntCmd, 0, len(keys))
-			for _, key := range keys {
-				counts = append(counts, pipeline.ZCount(ctx, key, fmt.Sprint(now.UnixMilli()+1), "+inf"))
-			}
-			if _, err = pipeline.Exec(ctx); err != nil {
-				return false, err
-			}
-			for _, count := range counts {
-				if count.Val() > 0 {
-					return true, nil
-				}
-			}
-		}
-		if next == 0 {
-			return false, nil
-		}
-		cursor = next
-	}
-	return true, nil
+	count, err := ustcHasWaitingScript.Run(ctx, c.rdb, []string{ustcPoolWaitActiveKey}).Int64()
+	return count > 0, err
 }

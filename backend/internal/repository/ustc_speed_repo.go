@@ -155,6 +155,13 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 	if strings.HasSuffix(q.Metric, "tps") {
 		out.Unit = "tps"
 	}
+	if q.Analysis {
+		var err error
+		out.Analysis, err = r.ustcSpeedAnalysis(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+	}
 	s := &out.Summary
 	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(COALESCE((payload->>'output_tokens')::bigint,0)),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success') FROM ustc_speed_samples WHERE `+where, args...).Scan(&s.Samples, &s.Successful, &s.Failed, &s.RateLimited, &s.Skipped, &s.Cancelled, &s.ProbeSamples, &s.RealSamples, &s.OutputTokens, &s.LatestAt, &s.LatestRealAt, &s.LatestProbeAt)
 	if err != nil {
