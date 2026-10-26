@@ -109,6 +109,22 @@
         </details>
       </section>
 
+      <UsageStatsCards v-if="!embedded" :stats="overview?.stats ?? null" :show-account-cost="false" data-testid="benchmark-stats">
+        <template #requests-note>{{ (overview?.summary.skipped ?? 0) > 0 ? t('admin.ustcSpeed.stats.skipped', { count: overview?.summary.skipped ?? 0 }) : t('usage.inSelectedRange') }}</template>
+        <template #tokens-value="{ formatTokens }">{{ overview?.stats?.total_tokens == null ? '—' : formatTokens(overview.stats.total_tokens) }}</template>
+        <template #tokens-detail="{ formatTokens }">
+          <p class="text-xs text-gray-500">{{ t('usage.in') }}: {{ overview?.stats?.total_input_tokens == null ? '—' : formatTokens(overview.stats.total_input_tokens) }} / {{ t('usage.out') }}: {{ overview?.stats?.total_output_tokens == null ? '—' : formatTokens(overview.stats.total_output_tokens) }}</p>
+          <p v-if="overview?.stats && (overview.stats.input_samples < overview.stats.total_requests || overview.stats.output_samples < overview.stats.total_requests)" class="mt-0.5 text-[11px] text-gray-400">{{ t('admin.ustcSpeed.stats.tokenCoverage', { input: overview.stats.input_samples, output: overview.stats.output_samples, total: overview.stats.total_requests }) }}</p>
+        </template>
+        <template #cost-value>{{ overview?.stats?.total_provider_cost == null ? '—' : overview.stats.total_provider_cost.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 }) }}</template>
+        <template #cost-detail>
+          <p class="text-xs text-gray-400">{{ overview?.stats?.total_provider_cost == null ? t('admin.ustcSpeed.stats.costUnavailable') : t('admin.ustcSpeed.stats.upstreamAmount') }}</p>
+          <p v-if="overview?.stats && overview.stats.cost_samples > 0 && overview.stats.cost_samples < overview.stats.total_requests" class="mt-0.5 text-[11px] text-gray-400">{{ t('admin.ustcSpeed.stats.costCoverage', { known: overview.stats.cost_samples, total: overview.stats.total_requests }) }}</p>
+        </template>
+        <template #duration-value="{ formatDuration }">{{ overview?.stats?.average_duration_ms == null ? '—' : formatDuration(overview.stats.average_duration_ms) }}</template>
+        <template #duration-note><p v-if="overview?.stats && overview.stats.duration_samples < overview.stats.total_requests" class="text-[11px] text-gray-400">{{ t('admin.ustcSpeed.stats.durationCoverage', { known: overview.stats.duration_samples, total: overview.stats.total_requests }) }}</p></template>
+      </UsageStatsCards>
+
       <template v-if="isOverview">
         <div v-if="overview?.truncated || (overview?.dropped_samples ?? 0) > 0" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
           <span v-if="overview?.truncated">{{ t('admin.ustcSpeed.overview.truncated') }}</span>
@@ -342,6 +358,7 @@
         @submit="saveTask"
       />
       <USTCSpeedSampleDialog :show="sampleDialogOpen" :sample="selectedSample" :loading="sampleDetailLoading" @close="sampleDialogOpen = false" />
+      <USTCSpeedHourlyTooltip ref="hourlyTooltipRef" />
       <ConfirmDialog
         :show="Boolean(pendingAction)"
         :title="confirmationTitle"
@@ -357,6 +374,7 @@
 
 <script setup lang="ts">
 import { Chart as ChartJS, BarController, BarElement, CategoryScale, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip } from 'chart.js'
+import type { Chart as ChartInstance, TooltipModel } from 'chart.js'
 import { Chart as SpeedChart } from 'vue-chartjs'
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -368,6 +386,8 @@ import USTCSpeedTaskDialog from '@/components/admin/ustc-speed/USTCSpeedTaskDial
 import USTCSpeedSampleDialog from '@/components/admin/ustc-speed/USTCSpeedSampleDialog.vue'
 import USTCSpeedSamples from '@/components/admin/ustc-speed/USTCSpeedSamples.vue'
 import USTCSpeedTaskProgress from '@/components/admin/ustc-speed/USTCSpeedTaskProgress.vue'
+import USTCSpeedHourlyTooltip from '@/components/admin/ustc-speed/USTCSpeedHourlyTooltip.vue'
+import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
 import USTCSpeedAnalysis from '@/components/admin/ustc-speed/USTCSpeedAnalysis.vue'
 import { adminUSTCSpeedAPI } from '@/api/admin/ustcSpeed'
 import { getSpeedOverview } from '@/api/admin/usage'
@@ -458,6 +478,7 @@ const filters = reactive<SampleFilterState>({
 
 const dimensions = reactive<{ accounts: USTCSpeedAccountDimension[]; models: string[] }>({ accounts: [], models: [] })
 const overview = ref<USTCSpeedOverview | null>(null)
+const hourlyTooltipRef = ref<InstanceType<typeof USTCSpeedHourlyTooltip> | null>(null)
 const appliedQuery = ref<USTCSpeedQuery | null>(null)
 const loading = ref(false)
 let overviewRequestSeq = 0
@@ -912,6 +933,21 @@ const hourlyChartData = computed<any>(() => {
   }
 })
 
+function showHourlyTooltip({ chart, tooltip }: { chart: ChartInstance; tooltip: TooltipModel<'line'> }) {
+  if (!tooltip.opacity) { hourlyTooltipRef.value?.hide(); return }
+  const hour = tooltip.dataPoints[0]?.dataIndex
+  if (hour === undefined) { hourlyTooltipRef.value?.reset(); return }
+  // Chart.js omits null points from dataPoints. Keep every visible model in
+  // the list and distinguish missing observations from measured zero speed.
+  const rows = hourlySeries.value.flatMap((series, index) => {
+    if (!chart.isDatasetVisible(index)) return []
+    const point = series.hours[hour]
+    return [{ key: series.key, label: series.label, value: formatHourlyValue(hourlyValue(point)), color: chartPalette[index % chartPalette.length], detail: point ? [t('admin.ustcSpeed.hourly.samples', { count: point.valid_count }), t('admin.ustcSpeed.hourly.days', { count: point.day_count })].join(' · ') : t('admin.ustcSpeed.hourly.noHourData') }]
+  })
+  const rect = chart.canvas.getBoundingClientRect()
+  hourlyTooltipRef.value?.show(rect.left + tooltip.caretX * rect.width / chart.width, rect.top + tooltip.caretY * rect.height / chart.height, `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`, rows)
+}
+
 const hourlyChartOptions = computed<any>(() => {
   const theme = chartTheme.value
   return {
@@ -921,27 +957,8 @@ const hourlyChartOptions = computed<any>(() => {
     plugins: {
       legend: { position: 'bottom' as const, labels: { color: theme.text, usePointStyle: true, pointStyle: 'circle' as const, boxWidth: 7, padding: 16, font: { size: 11 } } },
       tooltip: {
-        backgroundColor: theme.tooltipBg,
-        titleColor: theme.tooltipTitle,
-        bodyColor: theme.tooltipBody,
-        borderColor: theme.grid,
-        borderWidth: 1,
-        padding: 10,
-        callbacks: {
-          title: (items: Array<{ dataIndex: number }>) => {
-            const hour = items[0]?.dataIndex
-            return hour === undefined ? '' : `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`
-          },
-          label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) => `${context.dataset.label ?? ''}: ${formatHourlyValue(context.parsed.y)}`,
-          afterLabel: (context: { datasetIndex: number; dataIndex: number }) => {
-            const point = hourlySeries.value[context.datasetIndex]?.hours[context.dataIndex]
-            if (!point) return ''
-            return [
-              t('admin.ustcSpeed.hourly.samples', { count: point.valid_count }),
-              t('admin.ustcSpeed.hourly.days', { count: point.day_count }),
-            ]
-          },
-        },
+        enabled: false,
+        external: showHourlyTooltip,
       },
     },
     scales: {
@@ -1075,6 +1092,7 @@ async function loadDimensions() {
 
 async function loadOverview() {
   if (overviewViewDisposed || !props.active) return
+  hourlyTooltipRef.value?.reset()
   const requestSeq = ++overviewRequestSeq
   overviewAbortController?.abort()
   const controller = new AbortController()
@@ -1506,6 +1524,7 @@ watch(() => [buildQuery(), props.active, props.refreshVersion], () => {
   if (!overviewReady) return
   if (props.active) void loadOverview()
   else {
+    hourlyTooltipRef.value?.reset()
     overviewRequestSeq++
     overviewAbortController?.abort()
     overviewAbortController = null
