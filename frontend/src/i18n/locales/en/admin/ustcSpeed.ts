@@ -31,7 +31,7 @@ export default {
       usageTtftMs: 'Recorded first-token wait', ttftMs: 'Time to first text', firstOutputMs: 'Time to first output (incl. reasoning)', totalMs: 'Total request time', outputMs: 'Time after first output',
       headersMs: 'Upstream response headers', tailMs: 'Wait after last output', maxGapMs: 'Longest pause during output', unitTps: 'tokens / second', unitMs: 'milliseconds'
     },
-    interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
+    interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', m30: '30 minutes', h1: '1 hour', h6: '6 hours', d1: '1 day' },
     aggregate: { label: 'Statistic', p50: 'P50 median', mean: 'Mean', p10: 'P10 slow range', p90: 'P90' },
     overview: {
       successRate: 'Probe success rate', rateLimitedRate: 'Upstream 429 rate',

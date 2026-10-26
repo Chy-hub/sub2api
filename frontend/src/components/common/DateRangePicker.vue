@@ -45,7 +45,7 @@
               v-model="localStartDate"
               :max="localEndDate || tomorrow()"
               class="date-picker-input"
-              @change="onDateChange"
+              @change="onCustomDateChange"
             />
           </div>
           <div class="date-picker-separator">
@@ -59,13 +59,13 @@
               :min="localStartDate"
               :max="tomorrow()"
               class="date-picker-input"
-              @change="onDateChange"
+              @change="onCustomDateChange"
             />
           </div>
         </div>
 
         <!-- Apply button -->
-        <div class="date-picker-actions">
+        <div v-if="!autoApply" class="date-picker-actions">
           <button @click="apply" class="date-picker-apply">
             {{ t('dates.apply') }}
           </button>
@@ -89,6 +89,7 @@ interface DatePreset {
 interface Props {
   startDate: string
   endDate: string
+  autoApply?: boolean
 }
 
 interface Emits {
@@ -242,6 +243,7 @@ const selectPreset = (preset: DatePreset) => {
   localStartDate.value = range.start
   localEndDate.value = range.end
   activePreset.value = preset.value
+  if (props.autoApply) apply()
 }
 
 const onDateChange = () => {
@@ -256,11 +258,20 @@ const onDateChange = () => {
   }
 }
 
+const onCustomDateChange = () => {
+  onDateChange()
+  // Keep the calendar open while editing both endpoints. Incomplete or
+  // temporarily inverted ranges must not trigger a request.
+  if (props.autoApply && localStartDate.value && localEndDate.value && localStartDate.value <= localEndDate.value) {
+    emitRange()
+  }
+}
+
 const toggle = () => {
   isOpen.value = !isOpen.value
 }
 
-const apply = () => {
+const emitRange = () => {
   emit('update:startDate', localStartDate.value)
   emit('update:endDate', localEndDate.value)
   emit('change', {
@@ -268,6 +279,10 @@ const apply = () => {
     endDate: localEndDate.value,
     preset: activePreset.value
   })
+}
+
+const apply = () => {
+  emitRange()
   isOpen.value = false
 }
 
