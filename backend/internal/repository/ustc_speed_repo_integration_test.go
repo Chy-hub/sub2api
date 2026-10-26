@@ -639,6 +639,7 @@ func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	newSchedule := time.Now().Add(3 * time.Hour).Truncate(time.Microsecond)
 	task.NextRunAt = &newSchedule
 	task.CronExpression = "0 */3 * * *"
+	task.IgnoreTaskConstraints = true
 	require.NoError(t, repo.SaveTask(ctx, &task))
 	require.Equal(t, originalRevision+1, task.Revision)
 	claimed, err = repo.ClaimTask(ctx, task.ID, "new-run", time.Minute, true, task.Revision)
@@ -651,6 +652,7 @@ func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	require.Equal(t, "cancelled", got.LastStatus)
 	require.Empty(t, got.LastDetail, "a stale run must not overwrite the newer revision detail")
 	require.Equal(t, task.CronExpression, got.CronExpression)
+	require.True(t, got.IgnoreTaskConstraints, "the policy is persisted for future scheduled runs")
 
 	claimed, err = repo.ClaimTask(ctx, task.ID, "stale-reader", time.Minute, true, originalRevision)
 	require.NoError(t, err)

@@ -74,6 +74,10 @@
 
         <section class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.schedule') }}</h3>
+          <label class="flex items-start gap-3 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-900/40">
+            <input v-model="form.ignore_task_constraints" data-testid="ignore-task-constraints" type="checkbox" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+            <span><span class="block font-medium text-gray-800 dark:text-gray-200">{{ t('admin.ustcSpeed.task.ignoreConstraints') }}</span><span class="mt-1 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.ignoreConstraintsHint') }}</span></span>
+          </label>
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <label class="block space-y-1.5">
               <span class="block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.ustcSpeed.task.field.interval') }}</span>
@@ -254,6 +258,7 @@ const defaults = (): USTCSpeedTaskInput => ({
   name: '',
   enabled: false,
   all_accounts: false,
+  ignore_task_constraints: false,
   account_ids: [],
   models: [],
   interval_seconds: 1800,

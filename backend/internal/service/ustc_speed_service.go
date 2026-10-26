@@ -300,6 +300,9 @@ func (s *USTCSpeedService) Overview(ctx context.Context, q USTCSpeedQuery) (*UST
 	}
 	realQuery := q
 	realQuery.Source = "real"
+	// A short live fallback is not the selected historical benchmark period.
+	// Keep comparative analysis unavailable rather than compare different scopes.
+	realQuery.Analysis = false
 	realQuery.TaskID = 0
 	realQuery.Profile = ""
 	fresh := now.Add(-time.Duration(policy.RealFallbackMaxAgeSeconds) * time.Second)

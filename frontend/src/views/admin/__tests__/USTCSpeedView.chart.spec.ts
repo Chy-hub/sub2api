@@ -306,7 +306,7 @@ describe('USTCSpeedView mixed chart and applied date range', () => {
 
     await groupSelect.setValue('time')
     await flushPromises()
-    expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual(['total_ms', 'output_ms'])
+    expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual(['output_ms'])
 
     const sourceSelect = wrapper.findAll('select').find((select) => select.find('option[value="all"]').exists())!
     await sourceSelect.setValue('all')
@@ -314,9 +314,9 @@ describe('USTCSpeedView mixed chart and applied date range', () => {
     await flushPromises()
 
     expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual([
-      'total_ms', 'output_ms', 'headers_ms', 'tail_ms', 'max_gap_ms',
+      'output_ms', 'headers_ms', 'tail_ms', 'max_gap_ms',
     ])
-    expect(getOverview.mock.calls.at(-1)?.[0]).toMatchObject({ source: 'all', metric: 'total_ms' })
+    expect(getOverview.mock.calls.at(-1)?.[0]).toMatchObject({ source: 'all', metric: 'output_ms' })
 
     await groupSelect.setValue('ttft')
     await flushPromises()

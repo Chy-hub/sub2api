@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -25,12 +26,12 @@ func TestUSTCSpeedWaitingGuardIncludesOtherPoolsAndIgnoresExpiredLeases(t *testi
 	ctx := context.Background()
 	now := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
 	server.SetTime(now)
-	_, err := client.ZAdd(ctx, ustcPoolWaitKeyPrefix+"expired", redis.Z{Score: float64(now.UnixMilli()), Member: "expired-user"}).Result()
+	_, err := client.ZAdd(ctx, ustcPoolWaitActiveKey, redis.Z{Score: float64(now.UnixMilli()), Member: "expired-user"}).Result()
 	require.NoError(t, err)
 	waiting, err := cache.USTCHasWaiting(ctx)
 	require.NoError(t, err)
 	require.False(t, waiting)
-	_, err = client.ZAdd(ctx, ustcPoolWaitKeyPrefix+"other-instance-pool", redis.Z{Score: float64(now.Add(time.Minute).UnixMilli()), Member: "waiting-user"}).Result()
+	_, err = client.ZAdd(ctx, ustcPoolWaitActiveKey, redis.Z{Score: float64(now.Add(time.Minute).UnixMilli()), Member: "waiting-user"}).Result()
 	require.NoError(t, err)
 	waiting, err = cache.USTCHasWaiting(ctx)
 	require.NoError(t, err)
@@ -122,7 +123,7 @@ func TestUSTCPoolWaitAcquireRetryKeepsTheOriginalPermit(t *testing.T) {
 	ctx := context.Background()
 	key := ustcPoolWaitKeyPrefix + "retry"
 	reserve := func(token string) int {
-		allowed, err := reserveUSTCPoolWaitScript.Run(ctx, client, []string{key}, 1, token, 10000).Int()
+		allowed, err := reserveUSTCPoolWaitScript.Run(ctx, client, []string{key, ustcPoolWaitActiveKey}, 1, token, 10000).Int()
 		require.NoError(t, err)
 		return allowed
 	}
@@ -205,4 +206,28 @@ func TestUSTCPoolWaitValidatesTTLAndNonpositiveLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, allowed)
 	require.Nil(t, release)
+}
+
+func TestUSTCSpeedWaitingGuardIgnoresUnrelatedRedisKeyCount(t *testing.T) {
+	cache, client, _ := newUSTCPoolWaitTestCache(t)
+	ctx := context.Background()
+	pipeline := client.Pipeline()
+	for i := 0; i < 4096; i++ {
+		pipeline.Set(ctx, fmt.Sprintf("unrelated:%d", i), "value", 0)
+	}
+	_, err := pipeline.Exec(ctx)
+	require.NoError(t, err)
+	waiting, err := cache.USTCHasWaiting(ctx)
+	require.NoError(t, err)
+	require.False(t, waiting, "unrelated Redis keys are not evidence of queued users")
+	allowed, release, err := cache.AcquireUSTCPoolWait(ctx, "pool-a", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, allowed)
+	waiting, err = cache.USTCHasWaiting(ctx)
+	require.NoError(t, err)
+	require.True(t, waiting)
+	release()
+	waiting, err = cache.USTCHasWaiting(ctx)
+	require.NoError(t, err)
+	require.False(t, waiting, "the last user's release immediately unblocks probes")
 }
