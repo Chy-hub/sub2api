@@ -25,7 +25,7 @@
         </div>
       </header>
 
-      <section v-if="!embedded" class="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+      <section v-if="!embedded" data-testid="benchmark-filters" class="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
         <div class="flex flex-wrap items-end gap-3">
           <label class="min-w-[190px] flex-1 space-y-1.5">
             <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.title') }}</span>
@@ -61,11 +61,8 @@
           </div>
           <div class="min-w-[235px] space-y-1.5">
             <span class="block text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.filter.timeRange') }}</span>
-            <DateRangePicker ref="datePickerRef" v-model:start-date="startDate" v-model:end-date="endDate" @change="applyDateRange" />
+            <DateRangePicker v-model:start-date="startDate" v-model:end-date="endDate" auto-apply @change="applyDateRange" />
           </div>
-          <button type="button" class="btn btn-primary h-[42px]" :disabled="loading" @click="applyAllFilters">
-            {{ t('admin.ustcSpeed.action.apply') }}
-          </button>
         </div>
 
         <details class="mt-4 border-t border-gray-100 pt-3 dark:border-dark-700">
@@ -106,7 +103,7 @@
             </label>
             <label class="filter-field">
               <span>{{ t('admin.ustcSpeed.filter.timezone') }}</span>
-              <input v-model.trim="filters.timezone" class="filter-input" />
+              <input v-model.trim.lazy="filters.timezone" class="filter-input" />
             </label>
           </div>
         </details>
@@ -130,7 +127,7 @@
             <div class="flex flex-wrap items-end gap-2">
               <label class="filter-field min-w-36">
                 <span>{{ t('admin.ustcSpeed.analysis.view') }}</span>
-                <select v-model="analysisView" class="filter-input" data-testid="analysis-view" @change="loadOverview">
+                <select v-model="analysisView" class="filter-input" data-testid="analysis-view">
                   <option value="trend">{{ t('admin.ustcSpeed.analysis.trend') }}</option>
                   <option value="compare">{{ t('admin.ustcSpeed.analysis.compare') }}</option>
                   <option value="distribution">{{ t('admin.ustcSpeed.analysis.distribution') }}</option>
@@ -138,7 +135,7 @@
               </label>
               <label v-if="analysisView !== 'trend'" class="filter-field min-w-36">
                 <span>{{ t('admin.ustcSpeed.analysis.baseline') }}</span>
-                <select v-model="comparison" class="filter-input" data-testid="analysis-comparison" @change="loadOverview">
+                <select v-model="comparison" class="filter-input" data-testid="analysis-comparison">
                   <option v-for="option in ['previous', 'week', 'month', 'year', 'none']" :key="option" :value="option">{{ t(`admin.ustcSpeed.analysis.comparison.${option}`) }}</option>
                 </select>
               </label>
@@ -151,7 +148,7 @@
               </label>
               <label class="filter-field min-w-48">
                 <span>{{ t('admin.ustcSpeed.metric.metric') }}</span>
-                <select v-model="metric" class="filter-input" data-testid="chart-metric" @change="loadOverview">
+                <select v-model="metric" class="filter-input" data-testid="chart-metric">
                   <option v-for="option in metricOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
               </label>
@@ -163,12 +160,14 @@
               </label>
               <label v-if="analysisView === 'trend'" class="filter-field min-w-32">
                 <span>{{ t('admin.ustcSpeed.interval.label') }}</span>
-                <select v-model="filters.interval" class="filter-input" @change="loadOverview">
+                <select v-model="filters.interval" class="filter-input">
                   <option value="auto">{{ t('admin.ustcSpeed.interval.auto') }}</option>
                   <option value="1m">{{ t('admin.ustcSpeed.interval.m1') }}</option>
                   <option value="5m">{{ t('admin.ustcSpeed.interval.m5') }}</option>
                   <option value="15m">{{ t('admin.ustcSpeed.interval.m15') }}</option>
+                  <option value="30m">{{ t('admin.ustcSpeed.interval.m30') }}</option>
                   <option value="1h">{{ t('admin.ustcSpeed.interval.h1') }}</option>
+                  <option value="6h">{{ t('admin.ustcSpeed.interval.h6') }}</option>
                   <option value="1d">{{ t('admin.ustcSpeed.interval.d1') }}</option>
                   <option value="raw">{{ t('admin.ustcSpeed.interval.raw') }}</option>
                 </select>
@@ -239,9 +238,9 @@
             </div>
             <label class="filter-field min-w-40">
               <span>{{ t('admin.ustcSpeed.hourly.metric') }}</span>
-              <select v-model="hourlyMetric" class="filter-input" data-testid="hourly-metric" @change="loadOverview">
-                <option value="generation_tps">{{ t('admin.ustcSpeed.hourly.metricGeneration') }}</option>
+              <select v-model="hourlyMetric" class="filter-input" data-testid="hourly-metric">
                 <option value="overall_tps">{{ t('admin.ustcSpeed.hourly.metricOverall') }}</option>
+                <option value="generation_tps">{{ t('admin.ustcSpeed.hourly.metricGeneration') }}</option>
               </select>
             </label>
           </div>
@@ -358,7 +357,7 @@
 <script setup lang="ts">
 import { Chart as ChartJS, BarController, BarElement, CategoryScale, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip } from 'chart.js'
 import { Chart as SpeedChart } from 'vue-chartjs'
-import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -375,6 +374,7 @@ import type {
   USTCSpeedAggregate,
   USTCSpeedComparison,
   USTCSpeedHourPoint,
+  USTCSpeedInterval,
   USTCSpeedMetric,
   USTCSpeedOverview,
   USTCSpeedPoint,
@@ -406,7 +406,7 @@ type SampleFilterState = {
   inputMax: number | undefined
   outputMin: number | undefined
   outputMax: number | undefined
-  interval: 'raw' | '1m' | '5m' | '15m' | '1h' | '1d' | 'auto'
+  interval: USTCSpeedInterval
   aggregate: USTCSpeedAggregate
   timezone: string
 }
@@ -429,14 +429,12 @@ const localDate = (date: Date): string => {
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
-const today = localDate(new Date())
-const weekAgoDate = new Date()
-weekAgoDate.setDate(weekAgoDate.getDate() - 6)
-const startDate = ref(localDate(weekAgoDate))
-const endDate = ref(today)
+const initialNow = new Date()
+const startDate = ref(localDate(new Date(initialNow.getTime() - 24 * 60 * 60 * 1000)))
+const endDate = ref(localDate(initialNow))
 // The shared picker exposes only calendar dates. Its "last 24 hours" preset is
 // translated into an exact rolling window instead of two whole days.
-const lastHours = ref<number | null>(null)
+const lastHours = ref<number | null>(24)
 const filters = reactive<SampleFilterState>({
   source: props.embedded ? 'real' : 'probe',
   model: '',
@@ -458,19 +456,19 @@ const filters = reactive<SampleFilterState>({
 const dimensions = reactive<{ accounts: USTCSpeedAccountDimension[]; models: string[] }>({ accounts: [], models: [] })
 const overview = ref<USTCSpeedOverview | null>(null)
 const appliedQuery = ref<USTCSpeedQuery | null>(null)
-const datePickerRef = ref<InstanceType<typeof DateRangePicker> | null>(null)
 const loading = ref(false)
 let overviewRequestSeq = 0
 let overviewAbortController: AbortController | null = null
 let overviewViewDisposed = false
+let overviewReady = false
 const chartGroup = ref<ChartGroup>('tps')
 const analysisView = ref<'trend' | 'compare' | 'distribution'>('trend')
 const comparison = ref<USTCSpeedComparison>('previous')
-const metric = ref<USTCSpeedMetric>('generation_tps')
+const metric = ref<USTCSpeedMetric>('overall_tps')
 // The hourly view answers a different question ("when is the upstream fastest?")
 // than the trend chart, so it keeps its own TPS metric instead of inheriting
 // latency/diagnostic metrics that real usage records cannot provide.
-const hourlyMetric = ref<'generation_tps' | 'overall_tps'>('generation_tps')
+const hourlyMetric = ref<'generation_tps' | 'overall_tps'>('overall_tps')
 const exporting = ref(false)
 const selectedSample = ref<USTCSpeedSample | null>(null)
 const sampleDialogOpen = ref(false)
@@ -522,8 +520,8 @@ const metricOptions = computed(() => {
   const probeMetrics = !props.embedded
   const options: Record<ChartGroup, Array<{ value: USTCSpeedMetric; label: string }>> = {
     tps: [
-      { value: 'generation_tps', label: t('admin.ustcSpeed.metric.generationTps') },
       { value: 'overall_tps', label: t('admin.ustcSpeed.metric.overallTps') },
+      { value: 'generation_tps', label: t('admin.ustcSpeed.metric.generationTps') },
     ],
     ttft: [
       { value: 'ttft_ms', label: t(props.embedded ? 'admin.ustcSpeed.metric.usageTtftMs' : 'admin.ustcSpeed.metric.ttftMs') },
@@ -545,7 +543,7 @@ function normalizeMetric() {
 }
 const aggregationLabel = computed(() => {
   const interval = overview.value?.interval ?? filters.interval
-  const intervalKeys = { auto: 'auto', raw: 'raw', '1m': 'm1', '5m': 'm5', '15m': 'm15', '1h': 'h1', '1d': 'd1' }
+  const intervalKeys = { auto: 'auto', raw: 'raw', '1m': 'm1', '5m': 'm5', '15m': 'm15', '30m': 'm30', '1h': 'h1', '6h': 'h6', '1d': 'd1' }
   if (interval === 'raw') return t('admin.ustcSpeed.interval.raw')
   return t('admin.ustcSpeed.overview.aggregation', {
     interval: t(`admin.ustcSpeed.interval.${intervalKeys[interval]}`),
@@ -642,7 +640,7 @@ const chartTimeBounds = computed(() => {
   const end = overview.value?.range_end ? Date.parse(overview.value.range_end) : nextDay.getTime()
   return Number.isFinite(start) && Number.isFinite(end) && end > start ? { start, end } : null
 })
-const bucketDurations: Record<string, number> = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '1d': 86400000 }
+const bucketDurations: Record<string, number> = { '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '6h': 21600000, '1d': 86400000 }
 const bucketMilliseconds = computed(() => bucketDurations[overview.value?.interval ?? ''] || 0)
 function plottedTime(point: RenderPoint): number {
   const time = Date.parse(point.time)
@@ -1117,25 +1115,19 @@ async function loadCurrentSection() {
 }
 
 function refreshCurrent() { void loadCurrentSection() }
-function applyFilters() {
-  void loadCurrentSection()
-}
-// The filter bar's Apply button must commit a pending date selection too;
-// otherwise the picker's local dates are discarded and the page reloads the
-// previous range.
-function applyAllFilters() {
-  if (datePickerRef.value) datePickerRef.value.apply()
-  else applyFilters()
-}
 function applyDateRange(range: { startDate: string; endDate: string; preset?: string | null }) {
+  const requestSeq = overviewRequestSeq
   startDate.value = range.startDate
   endDate.value = range.endDate
   lastHours.value = range.preset === 'last24Hours' ? 24 : null
-  applyFilters()
+  // Selecting the rolling preset again must advance its window even when the
+  // calendar dates have not changed. Changed filters already trigger the watch.
+  void nextTick(() => {
+    if (overviewReady && requestSeq === overviewRequestSeq) void loadOverview()
+  })
 }
 function handleChartGroupChange() {
   metric.value = metricOptions.value[0].value
-  void loadOverview()
 }
 
 const rateLimitedPercent = computed(() => {
@@ -1295,9 +1287,10 @@ async function executePendingAction() {
   try {
     if (action.kind === 'delete') {
       await adminUSTCSpeedAPI.deleteTask(action.task.id)
-      if (filters.taskId === action.task.id) filters.taskId = undefined
+      const changesFilter = filters.taskId === action.task.id
+      if (changesFilter) filters.taskId = undefined
       appStore.showToast('success', t('admin.ustcSpeed.task.deleted'))
-      await Promise.all([loadTasks(), loadOverview()])
+      await Promise.all([loadTasks(), ...(changesFilter ? [] : [loadOverview()])])
     } else {
       const result = await adminUSTCSpeedAPI.runTask(action.task.id)
       appStore.showToast('success', t('admin.ustcSpeed.task.runQueued', { round: result.round_id }))
@@ -1376,7 +1369,6 @@ async function openPoint(point: RenderPoint) {
   filters.source = 'probe'
   if (point.accountId) filters.accountIds = [point.accountId]
   filters.interval = 'raw'
-  await loadOverview()
   appStore.showToast('info', t('admin.ustcSpeed.overview.probeDrilldown'))
 }
 
@@ -1446,8 +1438,10 @@ async function exportSamples(format: ExportFormat) {
 }
 
 watch(() => route.path, () => { if (!props.embedded) void loadCurrentSection() })
-watch(() => [props.usageFilters, props.active, props.refreshVersion], () => {
-  if (!props.embedded) return
+// Vue batches simultaneous date/filter changes into one query; loadOverview
+// aborts superseded requests so only the latest selection can update the chart.
+watch(() => [buildQuery(), props.active, props.refreshVersion], () => {
+  if (!overviewReady) return
   if (props.active) void loadOverview()
   else {
     overviewRequestSeq++
@@ -1456,12 +1450,10 @@ watch(() => [props.usageFilters, props.active, props.refreshVersion], () => {
     loading.value = false
   }
 }, { deep: true })
-watch(() => filters.aggregate, () => {
-  if (isOverview.value) void loadOverview()
-})
 onMounted(async () => {
   if (!props.embedded) await Promise.all([loadDimensions(), loadSettings(), loadTasks(), loadRuntime()])
   if (overviewViewDisposed) return
+  overviewReady = true
   await loadCurrentSection()
 })
 onUnmounted(() => {
