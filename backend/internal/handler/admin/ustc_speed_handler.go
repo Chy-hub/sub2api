@@ -428,7 +428,7 @@ func parseSpeedQuery(c *gin.Context, now time.Time, maxRangeDays int) (service.U
 	}
 	metric := strings.TrimSpace(c.Query("metric"))
 	if metric == "" {
-		metric = "generation_tps"
+		metric = "overall_tps"
 	}
 	if !oneOf(metric, "generation_tps", "overall_tps", "ttft_ms", "first_output_ms", "total_ms", "output_ms", "headers_ms", "tail_ms", "max_gap_ms") {
 		return query, errors.New("invalid metric")
@@ -437,7 +437,7 @@ func parseSpeedQuery(c *gin.Context, now time.Time, maxRangeDays int) (service.U
 	if interval == "" {
 		interval = "auto"
 	}
-	if !oneOf(interval, "raw", "1m", "5m", "15m", "1h", "1d", "auto") {
+	if _, ok := service.USTCSpeedIntervalSeconds(interval); !ok && interval != "raw" && interval != "auto" {
 		return query, errors.New("invalid interval")
 	}
 	aggregate := strings.TrimSpace(c.Query("aggregate"))
@@ -489,7 +489,7 @@ func parseSpeedQuery(c *gin.Context, now time.Time, maxRangeDays int) (service.U
 	if hourlyMetric == "" {
 		hourlyMetric = metric
 		if !strings.HasSuffix(hourlyMetric, "tps") {
-			hourlyMetric = "generation_tps"
+			hourlyMetric = "overall_tps"
 		}
 	}
 	if !oneOf(hourlyMetric, "generation_tps", "overall_tps") {

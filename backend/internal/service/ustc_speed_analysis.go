@@ -71,9 +71,9 @@ func USTCSpeedAnalysisWindow(q USTCSpeedQuery, now time.Time) USTCSpeedAnalysis 
 	if out.Comparison == "" {
 		out.Comparison = "previous"
 	}
-	// At most 120 comparison buckets, with a one-minute minimum. Buckets are
-	// aligned by elapsed time since each period's start, not by unrelated dates.
-	out.BucketSeconds = max(60, int((end.Sub(start).Seconds()+119)/120))
+	// Use the same readable automatic intervals as the main trend. Comparison
+	// buckets align by elapsed time from each period's start.
+	out.BucketSeconds, _ = USTCSpeedIntervalSeconds(USTCSpeedAutoInterval(end.Sub(start)))
 	if out.Comparison == "none" || !end.After(start) {
 		return out
 	}

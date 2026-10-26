@@ -31,7 +31,7 @@ export default {
       usageTtftMs: '记录首字等待', ttftMs: '首字耗时（正文）', firstOutputMs: '首次输出耗时（含思考）', totalMs: '请求总耗时', outputMs: '首字后耗时',
       headersMs: '上游响应头耗时', tailMs: '末次输出后等待', maxGapMs: '流内最大输出停顿', unitTps: 'token / 秒', unitMs: '毫秒'
     },
-    interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
+    interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', m30: '30 分钟', h1: '1 小时', h6: '6 小时', d1: '1 天' },
     aggregate: { label: '统计口径', p50: 'P50 中位数', mean: '平均值', p10: 'P10 慢速水平', p90: 'P90' },
     overview: {
       successRate: '检测成功率', rateLimitedRate: '上游限流率',

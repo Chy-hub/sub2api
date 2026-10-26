@@ -13,7 +13,7 @@ export type USTCSpeedMetric =
   | 'headers_ms'
   | 'tail_ms'
   | 'max_gap_ms'
-export type USTCSpeedInterval = 'raw' | '1m' | '5m' | '15m' | '1h' | '1d' | 'auto'
+export type USTCSpeedInterval = 'raw' | '1m' | '5m' | '15m' | '30m' | '1h' | '6h' | '1d' | 'auto'
 export type USTCSpeedAggregate = 'p50' | 'mean' | 'p10' | 'p90'
 export type USTCSpeedComparison = 'previous' | 'week' | 'month' | 'year' | 'none'
 

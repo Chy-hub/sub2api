@@ -200,16 +200,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 	}
 	interval := q.Interval
 	if interval == "auto" || interval == "" {
-		switch duration := q.End.Sub(q.Start); {
-		case duration <= 48*time.Hour:
-			interval = "1m"
-		case duration <= 8*24*time.Hour:
-			interval = "5m"
-		case duration <= 31*24*time.Hour:
-			interval = "15m"
-		default:
-			interval = "1h"
-		}
+		interval = service.USTCSpeedAutoInterval(q.End.Sub(q.Start))
 	}
 	out.Interval = interval
 	profileExpr := "profile"
@@ -263,7 +254,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		}
 		return out, nil
 	}
-	seconds, ok := map[string]int{"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}[interval]
+	seconds, ok := service.USTCSpeedIntervalSeconds(interval)
 	if !ok {
 		return nil, fmt.Errorf("invalid speed interval")
 	}
@@ -325,7 +316,7 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 		metric = q.Metric
 	}
 	if metric != "generation_tps" && metric != "overall_tps" {
-		metric = "generation_tps"
+		metric = "overall_tps"
 	}
 	value := speedMetricValue(metric)
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
