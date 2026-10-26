@@ -7,7 +7,7 @@ import DateRangePicker from '@/components/common/DateRangePicker.vue'
 const { benchmark, usage, dimensions, settings, tasks, runtime, toast } = vi.hoisted(() => ({
   benchmark: vi.fn(), usage: vi.fn(), dimensions: vi.fn(), settings: vi.fn(), tasks: vi.fn(), runtime: vi.fn(), toast: vi.fn(),
 }))
-vi.mock('@/api/admin/ustcSpeed', () => ({ adminUSTCSpeedAPI: { getOverview: benchmark, getDimensions: dimensions, getSettings: settings, listTasks: tasks, getRuntime: runtime } }))
+vi.mock('@/api/admin/ustcSpeed', () => ({ adminUSTCSpeedAPI: { getOverview: benchmark, getDimensions: dimensions, getSettings: settings, listTasks: tasks, getRuntime: runtime, listSamples: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }))
 vi.mock('@/api/admin/usage', () => ({ getSpeedOverview: usage, adminUsageAPI: { getSpeedOverview: usage }, default: { getSpeedOverview: usage } }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showToast: toast }) }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ path: '/admin/ustc-speed', query: {} }), useRouter: () => ({ push: vi.fn() }) }))
@@ -51,7 +51,7 @@ describe('separate usage and benchmark views', () => {
     runtime.mockReset().mockResolvedValue({ items: [] })
     toast.mockReset()
   })
-  afterEach(() => { for (const wrapper of wrappers.splice(0)) wrapper.unmount(); vi.restoreAllMocks() })
+  afterEach(() => { for (const wrapper of wrappers.splice(0)) wrapper.unmount(); vi.restoreAllMocks(); vi.useRealTimers() })
 
   it('shows benchmark data and task management together and provides no real/mixed source or Time option', async () => {
     const wrapper = render()
@@ -185,5 +185,27 @@ describe('separate usage and benchmark views', () => {
     await group.setValue('ttft'); await flushPromises()
     await wrapper.get('[data-testid="hourly-metric"]').setValue('generation_tps'); await flushPromises()
     expect(benchmark.mock.calls.at(-1)?.[0]).toMatchObject({ metric: 'ttft_ms', hourly_metric: 'generation_tps', source: 'probe' })
+  })
+
+  it('polls active progress and refreshes results as test items complete', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-26T04:00:00Z'))
+    const progress = { run_id: 'run', state: 'running', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), total: 4, completed: 0, successful: 0, failed: 0, skipped: 0, cancelled: 0, active: [] }
+    const task = { id: 7, name: 'Live test', models: ['model-a'], account_ids: [], all_accounts: true, enabled: true, interval_seconds: 1800, last_status: 'running', lease_until: '2026-10-26T04:01:00Z', progress }
+    tasks.mockResolvedValue({ items: [task] })
+    const wrapper = render()
+    await flushPromises()
+    expect(benchmark).toHaveBeenCalledTimes(1)
+    tasks.mockResolvedValueOnce({ items: [{ ...task, progress: { ...progress, completed: 1, successful: 1, updated_at: '2026-10-26T04:00:02Z' } }] })
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('1')
+    expect(benchmark).toHaveBeenCalledTimes(2)
+    tasks.mockResolvedValueOnce({ items: [{ ...task, last_status: 'partial', progress: { ...progress, state: 'partial', completed: 4, successful: 2, skipped: 1, failed: 1, finished_at: '2026-10-26T04:00:04Z' } }] })
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('4')
+    expect(wrapper.get('[data-testid="task-run-state"]').text()).toContain('status.partial')
+    expect(benchmark).toHaveBeenCalledTimes(3)
   })
 })

@@ -112,6 +112,36 @@ type USTCSpeedTask struct {
 	LastDetail                string     `json:"last_detail,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
+
+	Progress   *USTCSpeedTaskProgress `json:"progress,omitempty"`
+	LeaseUntil *time.Time             `json:"lease_until,omitempty"`
+}
+
+type USTCSpeedActiveProbe struct {
+	AccountID   int64     `json:"account_id"`
+	AccountName string    `json:"account_name"`
+	Model       string    `json:"model"`
+	Phase       string    `json:"phase"`
+	StartedAt   time.Time `json:"started_at"`
+}
+
+// Progress counts account/model test items, including skips and cancellations.
+// It is operational state, separate from task configuration and speed metrics.
+type USTCSpeedTaskProgress struct {
+	RunID        string                 `json:"run_id"`
+	State        string                 `json:"state"`
+	StartedAt    time.Time              `json:"started_at"`
+	UpdatedAt    time.Time              `json:"updated_at"`
+	FinishedAt   *time.Time             `json:"finished_at,omitempty"`
+	Total        int                    `json:"total"`
+	Completed    int                    `json:"completed"`
+	Successful   int                    `json:"successful"`
+	Failed       int                    `json:"failed"`
+	Skipped      int                    `json:"skipped"`
+	Cancelled    int                    `json:"cancelled"`
+	CurrentModel string                 `json:"current_model,omitempty"`
+	Reason       string                 `json:"reason,omitempty"`
+	Active       []USTCSpeedActiveProbe `json:"active"`
 }
 
 type USTCSpeedSettings struct {
@@ -136,7 +166,7 @@ type USTCSpeedQuery struct {
 	Hourly   bool
 	// HourlyMetric selects the speed metric for the hourly view independently of
 	// the trend chart. It is limited to TPS metrics; empty falls back to Metric
-	// when that is a TPS metric, otherwise to generation_tps.
+	// when that is a TPS metric, otherwise to overall_tps.
 	HourlyMetric string
 	// LastHours switches the range from calendar days to an exact rolling
 	// window ending now. Zero keeps the date-based Start/End range.
@@ -268,6 +298,7 @@ type USTCSpeedRepository interface {
 	DeleteTask(context.Context, int64) error
 	ClaimTask(context.Context, int64, string, time.Duration, bool, int64) (bool, error)
 	FinishTask(context.Context, int64, string, time.Time, string, string) error
+	UpdateTaskProgress(context.Context, int64, string, *USTCSpeedTaskProgress) error
 	AcquireKey(context.Context, string, string, time.Duration, int) (bool, error)
 	ReleaseKey(context.Context, string, string) error
 	GetRuntime(context.Context, string) (*USTCSpeedRuntime, error)
