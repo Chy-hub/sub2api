@@ -23,13 +23,14 @@ func TestUsageSpeedQueryKeepsUsageDetailFilters(t *testing.T) {
 		"user_id": {"3"}, "api_key_id": {"7"}, "account_id": {"9"}, "group_id": {"2"},
 		"model": {"requested-model"}, "request_type": {"stream"}, "stream": {"false"},
 		"billing_type": {"1"}, "billing_mode": {"token"}, "native_compaction_v2": {"true"}, "upstream_model_mismatch": {"false"},
-		"analysis": {"true"}, "comparison": {"week"}, "source": {"probe"}, "task_id": {"99"}, "profile": {"legacy"},
+		"analysis": {"true"}, "comparison": {"week"}, "source": {"probe"}, "task_id": {"99"}, "profile": {"legacy"}, "status": {"success"},
 	}), time.Now())
 	require.NoError(t, err, "usage analysis supports the same calendar ranges as usage records")
 	require.Equal(t, "real", q.Source)
 	require.Equal(t, "requested-model", q.Model)
 	require.Zero(t, q.TaskID)
 	require.Empty(t, q.Profile)
+	require.Empty(t, q.Status, "benchmark statuses do not apply to recorded usage")
 	require.Equal(t, "all", q.Stream, "request_type takes precedence over the legacy stream flag")
 	require.True(t, q.Analysis)
 	require.Equal(t, "week", q.Comparison)

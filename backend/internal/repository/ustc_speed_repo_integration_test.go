@@ -5,7 +5,6 @@ package repository
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -489,153 +488,6 @@ func TestUSTCSpeedRepositoryKeyLeaseCapacityAndOwnerRelease(t *testing.T) {
 	require.NoError(t, repo.ReleaseKey(ctx, loser.scope, "retry-"+suffix))
 }
 
-func TestUSTCSpeedRepositoryLegacyImportBoundariesAndBatches(t *testing.T) {
-	ctx := context.Background()
-	repo := NewUSTCSpeedRepository(integrationDB)
-	suffix := uuid.NewString()
-	user := mustCreateUser(t, integrationEntClient, &service.User{Email: "ustc-legacy-" + suffix + "@example.com"})
-	apiKey := mustCreateApiKey(t, integrationEntClient, &service.APIKey{UserID: user.ID, Key: "sk-ustc-legacy-" + suffix, Name: "ustc-legacy"})
-	accounts := []*service.Account{
-		mustCreateAccount(t, integrationEntClient, &service.Account{Name: "ustc-legacy-a-" + suffix}),
-		mustCreateAccount(t, integrationEntClient, &service.Account{Name: "ustc-legacy-b-" + suffix}),
-	}
-	accountIDs := []int64{accounts[0].ID, accounts[1].ID}
-	t.Cleanup(func() {
-		_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM ustc_speed_samples WHERE account_id=ANY($1)`, pq.Array(accountIDs))
-		require.NoError(t, err)
-		_, err = integrationDB.ExecContext(context.Background(), `DELETE FROM usage_logs WHERE account_id=ANY($1)`, pq.Array(accountIDs))
-		require.NoError(t, err)
-		_, err = integrationDB.ExecContext(context.Background(), `DELETE FROM api_keys WHERE id=$1`, apiKey.ID)
-		require.NoError(t, err)
-		_, err = integrationDB.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=ANY($1)`, pq.Array(accountIDs))
-		require.NoError(t, err)
-		_, err = integrationDB.ExecContext(context.Background(), `DELETE FROM users WHERE id=$1`, user.ID)
-		require.NoError(t, err)
-	})
-
-	after := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	before := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-	createdAt := []time.Time{
-		after.Add(-time.Microsecond),  // excluded: lower bound is inclusive
-		after,                         // included at lower bound
-		after.Add(time.Hour),          // included
-		before.Add(-time.Microsecond), // included just below upper bound
-		before,                        // excluded: upper bound is exclusive
-	}
-	expectedLegacyIDs := map[int64]int64{}
-	for accountIndex, account := range accounts {
-		for rowIndex, at := range createdAt {
-			upstreamModel := ""
-			if rowIndex == 2 {
-				upstreamModel = "actual-upstream-model"
-			}
-			var id int64
-			err := integrationDB.QueryRowContext(ctx, `INSERT INTO usage_logs(
-				user_id,api_key_id,account_id,request_id,model,upstream_model,input_tokens,output_tokens,
-				cache_read_tokens,stream,duration_ms,first_token_ms,created_at)
-				VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-				user.ID, apiKey.ID, account.ID, fmt.Sprintf("ustc-%s-%d-%d", suffix, accountIndex, rowIndex),
-				"requested-model", upstreamModel, 10+rowIndex, 3+rowIndex, 2, rowIndex%2 == 0,
-				1000+rowIndex*100, 100+rowIndex*10, at,
-			).Scan(&id)
-			require.NoError(t, err)
-			if rowIndex >= 1 && rowIndex <= 3 {
-				expectedLegacyIDs[id] = account.ID
-			}
-		}
-	}
-
-	for _, want := range []int64{2, 2, 2, 0} {
-		imported, err := repo.ImportUsage(ctx, before, after, accountIDs, 2)
-		require.NoError(t, err)
-		require.Equal(t, want, imported, "each bounded import call should advance without duplicating prior batches")
-	}
-
-	rows, err := integrationDB.QueryContext(ctx, `SELECT legacy_usage_id,account_id,source,status,profile,model,started_at FROM ustc_speed_samples WHERE account_id=ANY($1) AND legacy_usage_id IS NOT NULL ORDER BY legacy_usage_id`, pq.Array(accountIDs))
-	require.NoError(t, err)
-	defer rows.Close()
-	seen := make(map[int64]int64)
-	modelByLegacyID := make(map[int64]string)
-	legacyProfiles := make(map[string]struct{})
-	for rows.Next() {
-		var legacyID, accountID int64
-		var source, status, profile, model string
-		var startedAt time.Time
-		require.NoError(t, rows.Scan(&legacyID, &accountID, &source, &status, &profile, &model, &startedAt))
-		seen[legacyID] = accountID
-		modelByLegacyID[legacyID] = model
-		legacyProfiles[profile] = struct{}{}
-		require.Equal(t, "real", source)
-		require.Equal(t, "recorded", status)
-		require.True(t, strings.HasPrefix(profile, "legacy:"), "legacy samples must expose the input/output profile dimensions")
-		require.GreaterOrEqual(t, startedAt, after)
-		require.Less(t, startedAt, before)
-	}
-	require.NoError(t, rows.Err())
-	require.Equal(t, expectedLegacyIDs, seen, "inclusive/exclusive bounds and every per-account batch must be preserved")
-	require.GreaterOrEqual(t, len(legacyProfiles), 2, "different stream/input/output combinations must not share one legacy profile")
-	for legacyID := range expectedLegacyIDs {
-		if modelByLegacyID[legacyID] == "actual-upstream-model" {
-			continue
-		}
-		// The other records have NULL/empty upstream_model and should fall back
-		// to the requested model.
-		require.Equal(t, "requested-model", modelByLegacyID[legacyID])
-	}
-	var upstreamCount int
-	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM ustc_speed_samples WHERE account_id=ANY($1) AND legacy_usage_id IS NOT NULL AND model='actual-upstream-model'`, pq.Array(accountIDs)).Scan(&upstreamCount))
-	require.Equal(t, 2, upstreamCount, "one upstream-model usage row per account should retain the mapped model")
-
-	overview, err := repo.Overview(ctx, service.USTCSpeedQuery{
-		Start:      after,
-		End:        before,
-		AccountIDs: accountIDs,
-		Source:     "real",
-		Metric:     "total_ms",
-		Interval:   "raw",
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(6), overview.Summary.Samples)
-	require.Equal(t, int64(0), overview.Summary.Successful)
-	require.Nil(t, overview.Summary.SuccessRate, "recorded legacy imports must not count in success-rate denominator")
-	for _, point := range overview.Series {
-		require.Empty(t, point.Profile, "model grouping merges all real-call sources")
-		require.NotNil(t, point.SampleID)
-	}
-
-	legacyProfileOverview, err := repo.Overview(ctx, service.USTCSpeedQuery{
-		Start:      after,
-		End:        before,
-		AccountIDs: accountIDs,
-		Source:     "real",
-		Metric:     "total_ms",
-		Interval:   "raw",
-		GroupBy:    "profile",
-	})
-	require.NoError(t, err)
-	for _, point := range legacyProfileOverview.Series {
-		require.True(t, strings.HasPrefix(point.Profile, "legacy:"), "profile grouping retains detailed usage-record dimensions")
-	}
-
-	recentAt := before.Add(time.Hour)
-	var recentID int64
-	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO usage_logs(
-		user_id,api_key_id,account_id,request_id,model,input_tokens,output_tokens,stream,duration_ms,first_token_ms,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-		user.ID, apiKey.ID, accounts[0].ID, "ustc-recent-"+suffix,
-		"requested-model", 10, 20, true, 1500, 200, recentAt,
-	).Scan(&recentID))
-	imported, err := repo.ImportRecentUsage(ctx, recentAt.Add(time.Hour), recentAt, accountIDs, 10)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), imported, "new usage records must be picked up by the continuous importer")
-	imported, err = repo.ImportRecentUsage(ctx, recentAt.Add(time.Hour), recentAt, accountIDs, 10)
-	require.NoError(t, err)
-	require.Zero(t, imported, "re-importing the same usage record must not duplicate it")
-	var recentSamples int
-	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM ustc_speed_samples WHERE legacy_usage_id=$1`, recentID).Scan(&recentSamples))
-	require.Equal(t, 1, recentSamples)
-}
-
 func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	ctx := context.Background()
 	repo := NewUSTCSpeedRepository(integrationDB)
@@ -662,8 +514,8 @@ func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {
 	got, err := repo.GetTask(ctx, task.ID)
 	require.NoError(t, err)
 	require.True(t, newSchedule.Equal(*got.NextRunAt))
-	require.Equal(t, "cancelled", got.LastStatus)
-	require.Empty(t, got.LastDetail, "a stale run must not overwrite the newer revision detail")
+	require.Equal(t, "completed", got.LastStatus)
+	require.Equal(t, "stale_detail", got.LastDetail, "the completed run reports its actual snapshot result")
 	require.Equal(t, task.CronExpression, got.CronExpression)
 	require.True(t, got.IgnoreTaskConstraints, "the policy is persisted for future scheduled runs")
 

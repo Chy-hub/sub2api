@@ -50,11 +50,12 @@ export default {
       validPoints: 'Valid metric points',
       auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by model series.', seriesBreakdown: 'Grouped by model and source',
       fallbackApplied: 'Probes are throttled or paused because of rate limits or capacity. Showing recent real calls from the last {minutes} minutes temporarily; the series remains labeled as real.',
-      truncated: 'The backend truncated trend data to limit response size.', dropped: '{count} samples were omitted from the chart due to data limits.',
+      truncated: 'Only the latest 5,000 trend points are shown; summaries and analysis use the full range.', dropped: '{count} samples were omitted from the chart due to data limits.',
       noReal: 'No real call samples exist in this time range.', noProbe: 'No probe samples exist in this time range.',
       ageUnknown: 'Time unknown', profile: 'Profile', configuration: 'Config {number}', account: 'Account', source: 'Source', coverage: 'Valid account coverage'
     },
     analysis: {
+      lengthUnknown: 'Unknown length',
       view: 'Analysis', trend: 'Timeline', compare: 'Period comparison', distribution: 'Distribution & variability', baseline: 'Compare with',
       comparison: { previous: 'Previous equal period', week: 'Same time last week', month: 'Same time last month', year: 'Same time last year', none: 'No comparison' },
       compareHint: 'Compare the same model over two periods aligned to their respective starts. Check both the average and the slow tail. An unfinished day is compared only with the corresponding elapsed portion.',
@@ -73,6 +74,7 @@ export default {
       method: 'Statistics use all filtered valid calls with equal call weights, separated by model and source. Bucket means and quantiles are never averaged. Real generation TPS is approximated from usage records; recorded first-token timing does not distinguish reasoning from text.'
     },
     hourly: {
+      minimumSamples: 'This percentile needs at least {count} valid samples per hour.', truncated: 'Hourly data was truncated. Narrow the model or time filters.',
       models: '{count} models', noHourData: 'No valid observations in this hour',
       title: 'Calls by hour of day', description: 'Calls in the applied range are folded onto one local day; multi-day observations in the same hour are combined with the selected statistic.',
       samples: '{count} valid observations', days: '{count} days covered', noData: 'No valid calls in this range to compare by hour.',
@@ -134,7 +136,7 @@ export default {
       manualRun: 'Run now', nextRun: 'Next run', lastRun: 'Last run', lastStatus: 'Last result',
       target: 'Targets', schedule: 'Schedule and time window', request: 'Request settings', safety: 'Capacity and rate limits',
       intervalUnit: { seconds: 'seconds', minutes: 'minutes', hours: 'hours' }, everyInterval: 'Every {count} {unit}', editSchedule: 'Change interval',
-      fallback: 'Real data fallback', advanced: 'Advanced settings', advancedSchedule: 'Advanced scheduling',
+      advanced: 'Advanced settings', advancedSchedule: 'Advanced scheduling',
       field: {
         name: 'Name', interval: 'Probe interval', jitter: 'Round jitter (seconds)', timezone: 'Time zone',
         cronExpression: 'Cron expression (5 fields)',
@@ -146,19 +148,18 @@ export default {
         reserveConcurrency: 'Reserve concurrency', maxActive: 'Maximum active requests', skipWaiting: 'Skip probes while users are waiting',
         backoffAfter429: '429s before backing off', backoffWindow: '429 observation window (seconds)', backoffMultiplier: 'Backoff multiplier',
         maxInterval: 'Maximum probe interval (seconds)', pauseAfter429: 'Consecutive 429s before pausing', recoverySuccesses: 'Successes required to recover',
-        realFallback: 'Use real calls while probes are paused', realFallbackAge: 'Maximum age of real data (seconds)', realFallbackSamples: 'Minimum real samples',
       },
       hint: {
+        editSnapshot: 'An active run finishes with its original settings. Edits apply to the next run; disabling or deleting cancels it.', sameHours: 'Equal start/end times mean all day. Cron schedules do not apply jitter.',
         perKeyConcurrency: 'Background concurrency is fixed at one request per physical key. Global concurrency is also bounded by this task and system settings.',
         capacities: 'Account capabilities come from the dimensions API. The server checks model access and shared capacity before sending requests.',
         physicalKeyGroup: 'Physical key group #{id}',
         days: 'Leave all days selected to run every day.',
         cronExpression: 'Leave empty to use the interval. Cron is interpreted in this task time zone; fields are minute, hour, day, month, weekday.',
         cronOverridesInterval: 'Cron schedule takes precedence over the interval when set.',
-        realFallback: 'Real calls keep their own source and conditions; they are not added to probe success rates.',
         zeroUnlimited: 'An active-request limit of 0 adds no task-specific limit. RPM reserve may be 0; at least one concurrency slot must be reserved.'
       },
-      validation: { name: 'Enter a task name.', models: 'Select at least one model.', accounts: 'Select accounts or enable automatic account inclusion.', numbers: 'Enter valid numeric settings.' },
+      validation: { range: '{field} must be a valid value from {min} to {max}.', days: 'Select at least one day; keep all selected to run daily.', request: 'Prompt or request parameters exceed their limits.', timezone: 'Enter a valid timezone.', name: 'Enter a task name.', models: 'Select at least one model.', accounts: 'Select accounts or enable automatic account inclusion.', numbers: 'Enter valid numeric settings.' },
       defaultPrompt: 'Briefly explain a scientific concept you know well.',
       apis: { chat: 'Chat Completions', responses: 'Responses' },
       thinking: { off: 'Off', on: 'On', auto: 'Automatic (no extra setting)' },
@@ -178,7 +179,7 @@ export default {
     },
     settings: {
       title: 'Background concurrency', description: 'Set the interval per task. Requests follow shared RPM, concurrency and the saved task policy.',
-      captureEnabled: 'Sync real calls from usage records', concurrency: 'Maximum background probe concurrency',
+      concurrency: 'Maximum background probe concurrency',
       perKey: 'Background concurrency is limited to one request per physical key.', saved: 'Global settings saved.',
       disableCapture: 'When off, no new usage records are imported for real-call speed. Probe tasks are unaffected.'
     },

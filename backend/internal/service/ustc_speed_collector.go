@@ -266,6 +266,14 @@ func (c *USTCSpeedCollector) processSSELineLocked(line []byte, at time.Time) {
 	if line[0] == ':' { // heartbeat/comment
 		return
 	}
+	if line[0] == '{' || line[0] == '[' {
+		tooLarge := c.eventTooLarge
+		c.dispatchSSEEventLocked(at)
+		if !tooLarge && len(line) <= maxUSTCSSEventBytes {
+			c.processSSEDataLocked("", line, at)
+		}
+		return
+	}
 	field := line
 	value := []byte(nil)
 	if i := bytes.IndexByte(line, ':'); i >= 0 {
@@ -274,10 +282,6 @@ func (c *USTCSpeedCollector) processSSELineLocked(line []byte, at time.Time) {
 		if len(value) > 0 && value[0] == ' ' {
 			value = value[1:]
 		}
-	} else if len(line) > 0 && line[0] == '{' {
-		// Accept providers that emit a bare JSON line inside an event stream.
-		field = []byte("data")
-		value = line
 	}
 	if c.eventTooLarge {
 		return
@@ -674,16 +678,7 @@ func (c *USTCSpeedCollector) buildObservationLocked(at time.Time) USTCSpeedObser
 			obs.TTFTMS = &ttft
 		}
 	}
-	if c.outputTokensKnown && c.outputTokens >= 2 && c.hasOutput && !c.lastOutputAt.IsZero() {
-		outputDuration, ok := ustcElapsedMS(c.firstOutputAt, c.lastOutputAt)
-		hiddenReasoning := c.reasoningKnown && c.reasoningTokens > 0 && c.reasoningChars == 0
-		if ok && outputDuration > 0 && !hiddenReasoning {
-			tps := float64(c.outputTokens-1) / (outputDuration / 1000)
-			if isFinitePositive(tps) {
-				obs.GenerationTPS = &tps
-			}
-		}
-	}
+	obs.GenerationTPS = USTCGenerationTPS(obs, c.streaming)
 	if c.outputTokensKnown && c.outputTokens >= 2 {
 		if total, ok := ustcElapsedMS(c.start, at); ok && total > 0 {
 			tps := float64(c.outputTokens) / (total / 1000)

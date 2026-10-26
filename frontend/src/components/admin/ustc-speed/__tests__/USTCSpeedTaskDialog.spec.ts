@@ -53,9 +53,6 @@ const makeTask = (intervalSeconds: number, maxIntervalSeconds: number, jitterSec
   max_interval_seconds: maxIntervalSeconds,
   pause_after_429: 6,
   recovery_successes: 1,
-  real_fallback: false,
-  real_fallback_max_age_seconds: 3600,
-  real_fallback_min_samples: 5,
 })
 
 const mountDialog = (task: ReturnType<typeof makeTask>) => mount(USTCSpeedTaskDialog, {
@@ -90,7 +87,7 @@ it('uses schedulable admission defaults when creating a task', async () => {
     interval_seconds: 1800,
     max_start_skew_seconds: 5,
     max_parallel_accounts: 4,
-    reserve_concurrency: 1,
+    reserve_concurrency: 2,
   })
   expect(field('admin.ustcSpeed.task.field.maxStartSkew').get('input').attributes('max')).toBe('30')
 })
@@ -155,5 +152,28 @@ it('saves the task constraint policy without discarding its schedule or reserve 
   expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
     ignore_task_constraints: true, interval_seconds: 1800, reserve_concurrency: 1,
   })
+  wrapper.unmount()
+})
+
+it.each([
+  ['maxTokens', 8], ['timeout', 2], ['firstOutputTimeout', 61],
+  ['pauseAfter429', 1], ['maxInterval', 120],
+])('rejects invalid %s before submitting even when browser validation is bypassed', async (key, value) => {
+  vi.spyOn(HTMLFormElement.prototype, 'reportValidity').mockReturnValue(true)
+  const wrapper = mountDialog(makeTask(1800, 7200))
+  const field = wrapper.findAll('label').find((item) => item.text().includes(`admin.ustcSpeed.task.field.${key}`))!
+  await field.get('input[type="number"]').setValue(String(value))
+  await wrapper.get('button.btn-primary').trigger('click')
+  expect(wrapper.emitted('submit')).toBeUndefined()
+  expect(wrapper.text()).toContain('admin.ustcSpeed.task.validation.range')
+  wrapper.unmount()
+})
+
+it('uses server task defaults and presents empty legacy weekdays as every day', async () => {
+  vi.spyOn(HTMLFormElement.prototype, 'reportValidity').mockReturnValue(true)
+  const task = { ...makeTask(2700, 9000), days_of_week: [], temperature: 0, timeout_seconds: 90 }
+  const wrapper = mount(USTCSpeedTaskDialog, { props: { show: true, task: null, defaults: task as any, accounts: [account], models: ['fixture-model'] }, global: { stubs: { BaseDialog: BaseDialogStub } } })
+  await wrapper.get('button.btn-primary').trigger('click')
+  expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ interval_seconds: 2700, timeout_seconds: 90, temperature: 0, days_of_week: [0, 1, 2, 3, 4, 5, 6] })
   wrapper.unmount()
 })

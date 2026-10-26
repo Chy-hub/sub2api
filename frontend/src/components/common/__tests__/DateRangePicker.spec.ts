@@ -34,13 +34,39 @@ const formatLocalDate = (date: Date): string => {
 }
 
 describe('DateRangePicker', () => {
-  it('uses last 24 hours as the default recognized preset', () => {
+  it('does not infer rolling 24 hours for a manually selected yesterday-through-today range', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 26, 15, 30))
+    const wrapper = mount(DateRangePicker, {
+      props: { startDate: '2026-10-25', endDate: '2026-10-26', preset: 'last24Hours' },
+      global: { stubs: { Icon: true } },
+    })
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('input[type="date"]')[0]!.setValue('2026-10-25')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    expect(wrapper.emitted('change')?.at(-1)).toEqual([{ startDate: '2026-10-25', endDate: '2026-10-26', preset: null }])
+    expect(wrapper.emitted('update:preset')?.at(-1)).toEqual([null])
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('treats an uncontrolled yesterday-through-today value as calendar dates', () => {
+    const now = new Date()
+    const yesterday = new Date(now)
+    yesterday.setDate(yesterday.getDate() - 1)
+    const wrapper = mount(DateRangePicker, { props: { startDate: formatLocalDate(yesterday), endDate: formatLocalDate(now) }, global: { stubs: { Icon: true } } })
+    expect(wrapper.text()).not.toContain('Last 24 Hours')
+    wrapper.unmount()
+  })
+
+  it('uses an explicit rolling preset without inferring it from calendar dates', () => {
     const now = new Date()
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
 
     const wrapper = mount(DateRangePicker, {
       props: {
         startDate: formatLocalDate(yesterday),
+        preset: 'last24Hours',
         endDate: formatLocalDate(now)
       },
       global: {
