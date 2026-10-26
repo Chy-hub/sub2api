@@ -391,6 +391,16 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if err != nil {
 		return query, err
 	}
+	hourlyMetric := strings.TrimSpace(c.Query("hourly_metric"))
+	if hourlyMetric == "" {
+		hourlyMetric = metric
+		if !strings.HasSuffix(hourlyMetric, "tps") {
+			hourlyMetric = "generation_tps"
+		}
+	}
+	if !oneOf(hourlyMetric, "generation_tps", "overall_tps") {
+		return query, errors.New("hourly_metric must be generation_tps or overall_tps")
+	}
 	taskID, err := parseOptionalPositiveInt64(c.Query("task_id"), "task_id")
 	if err != nil {
 		return query, err
@@ -438,7 +448,7 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 		AccountIDs: accountIDs, TaskID: taskID, Reasoning: reasoning, Stream: stream, Profile: profile,
 		InputMin: inputMin, InputMax: inputMax, OutputMin: outputMin, OutputMax: outputMax,
 		Metric: metric, Interval: interval, Aggregate: aggregate, Limit: limit, Offset: offset,
-		Timezone: timezone, Hourly: hourly, LastHours: lastHours,
+		Timezone: timezone, Hourly: hourly, HourlyMetric: hourlyMetric, LastHours: lastHours,
 	}
 	return query, nil
 }

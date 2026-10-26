@@ -27,9 +27,9 @@ export default {
     },
     metric: {
       view: 'Main chart', metric: 'Metric', tps: 'TPS trend', ttft: 'TTFT trend', time: 'Time stages',
-      generationTps: 'Generation speed (excl. first-token wait)', overallTps: 'Average speed (incl. first-token wait)',
-      ttftMs: 'Upstream time to first text', firstOutputMs: 'Upstream time to first output', totalMs: 'Actual task duration', outputMs: 'Actual output duration',
-      headersMs: 'Upstream response headers', tailMs: 'Wait after the last output', maxGapMs: 'Longest pause during output', unitTps: 'tokens / second', unitMs: 'milliseconds'
+      generationTps: 'Generation speed (excl. first-token wait)', overallTps: 'End-to-end speed (incl. first-token wait)',
+      ttftMs: 'Time to first text', firstOutputMs: 'Time to first output (incl. reasoning)', totalMs: 'Total request time', outputMs: 'Time after first output',
+      headersMs: 'Upstream response headers', tailMs: 'Wait after last output', maxGapMs: 'Longest pause during output', unitTps: 'tokens / second', unitMs: 'milliseconds'
     },
     interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
     aggregate: { label: 'Statistic', p50: 'P50 median', mean: 'Mean', p10: 'P10 slow range', p90: 'P90' },
@@ -53,14 +53,14 @@ export default {
       ageUnknown: 'Time unknown', profile: 'Profile', configuration: 'Config {number}', account: 'Account', source: 'Source', coverage: 'Valid account coverage'
     },
     hourly: {
-      title: 'Calls by hour of day', description: 'Valid calls in the applied range, grouped by local hour. Use it to choose when to run long work.',
-      samples: '{count} valid observations', noData: 'No valid calls in this range to compare by hour.',
-      metric: 'Metric'
+      title: 'Calls by hour of day', description: 'Calls in the applied range are folded onto one local day; multi-day observations in the same hour are combined with the selected statistic.',
+      samples: '{count} valid observations', days: '{count} days covered', noData: 'No valid calls in this range to compare by hour.',
+      metric: 'Metric', metricGeneration: 'TPS (generation)', metricOverall: 'End-to-end speed'
     },
     samples: {
       tableTitle: 'Calls and probe samples', total: '{count} total', noData: 'No samples match these filters.',
       startedAt: 'Started', model: 'Model', account: 'Account', source: 'Source', status: 'Status',
-      generationTps: 'Generation TPS', ttft: 'Upstream first text', duration: 'Upstream request time', tokens: 'Input / output',
+      generationTps: 'Generation TPS', ttft: 'Upstream first text', duration: 'Total request time', tokens: 'Input / output',
       profile: 'Profile', reasoning: 'Reasoning', stream: 'Stream', action: 'Action',
       loading: 'Loading samples…', exportLimit: 'More samples could not be loaded. The downloaded file contains the samples already fetched.',
       id: 'Sample ID', inputTokens: 'Input tokens', outputTokens: 'Output tokens'
