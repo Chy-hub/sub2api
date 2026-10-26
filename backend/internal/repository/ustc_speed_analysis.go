@@ -32,7 +32,7 @@ func (r *ustcSpeedRepository) ustcSpeedAnalysis(ctx context.Context, q service.U
 	}
 	bucketParam := param(out.BucketSeconds)
 	// Metric is checked against the fixed allowlist by Overview before use.
-	value := speedMetricValue(q.Metric)
+	value := speedMetricValue(q, q.Metric)
 	stats := `COUNT(*) AS count,COUNT(value) AS valid_count,AVG(value) AS mean,
  percentile_cont(0.1) WITHIN GROUP(ORDER BY value) AS p10,
  percentile_cont(0.5) WITHIN GROUP(ORDER BY value) AS p50,
@@ -41,20 +41,22 @@ func (r *ustcSpeedRepository) ustcSpeedAnalysis(ctx context.Context, q service.U
 	// Benchmark results focus on service speed. Task-length breakdowns belong
 	// only to real usage analysis; PostgreSQL skips the unreferenced lengths CTE.
 	lengthsJSON := "'[]'::jsonb"
+	lengthBuckets := "NULL::int AS input_bucket,NULL::int AS output_bucket"
 	if q.UsageFilters != nil {
 		lengthsJSON = "COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY model,source,dimension,bucket,period) FROM lengths l),'[]'::jsonb)"
+		lengthBuckets = `CASE WHEN input_tokens IS NULL THEN -1
+ WHEN input_tokens<1024 THEN 0 WHEN input_tokens<4096 THEN 1
+ WHEN input_tokens<16384 THEN 2 WHEN input_tokens<65536 THEN 3 ELSE 4 END AS input_bucket,
+ CASE WHEN output_tokens IS NULL THEN -1
+ WHEN output_tokens<128 THEN 0 WHEN output_tokens<512 THEN 1
+ WHEN output_tokens<2048 THEN 2 WHEN output_tokens<8192 THEN 3 ELSE 4 END AS output_bucket`
 	}
 	query := `WITH windows(period,from_at,to_at) AS (VALUES ` + windows + `),
  observations AS MATERIALIZED (
  SELECT period,model,source,
  floor(extract(epoch FROM started_at-from_at)/` + bucketParam + `)::int AS bucket,
  CASE WHEN status IN ('success','recorded') AND ` + value + `>=0 AND ` + value + `<'Infinity'::float8 THEN ` + value + ` END AS value,
- CASE WHEN NOT COALESCE((payload->>'input_tokens_known')::boolean,false) THEN -1
- WHEN (payload->>'input_tokens')::bigint<1024 THEN 0 WHEN (payload->>'input_tokens')::bigint<4096 THEN 1
- WHEN (payload->>'input_tokens')::bigint<16384 THEN 2 WHEN (payload->>'input_tokens')::bigint<65536 THEN 3 ELSE 4 END AS input_bucket,
- CASE WHEN NOT COALESCE((payload->>'token_count_known')::boolean,false) THEN -1
- WHEN (payload->>'output_tokens')::bigint<128 THEN 0 WHEN (payload->>'output_tokens')::bigint<512 THEN 1
- WHEN (payload->>'output_tokens')::bigint<2048 THEN 2 WHEN (payload->>'output_tokens')::bigint<8192 THEN 3 ELSE 4 END AS output_bucket
+ ` + lengthBuckets + `
  FROM ` + speedObservationTable(q) + ` JOIN windows ON started_at>=from_at AND started_at<to_at WHERE ` + where + `),
  groups AS (SELECT period,model,source,` + stats + ` FROM observations GROUP BY period,model,source),
  bounds AS (SELECT model,source,MIN(value) AS lo,MAX(value) AS hi FROM observations WHERE value IS NOT NULL GROUP BY model,source),

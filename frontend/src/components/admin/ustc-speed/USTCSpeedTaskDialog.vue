@@ -8,6 +8,8 @@
   >
     <form ref="formElement" class="space-y-5" @submit.prevent="submit">
       <div class="space-y-4">
+        <p v-if="task" class="text-xs text-gray-500">{{ t('admin.ustcSpeed.task.hint.editSnapshot') }}</p>
+        <p class="text-xs text-gray-500">{{ t('admin.ustcSpeed.task.hint.sameHours') }}</p>
         <section class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.target') }}</h3>
           <label class="block space-y-1.5">
@@ -99,7 +101,7 @@
                 </select>
               </span>
             </label>
-            <NumberField v-model="form.jitter_seconds" :label="t('admin.ustcSpeed.task.field.jitter')" :min="0" />
+            <NumberField v-model="form.jitter_seconds" :label="t('admin.ustcSpeed.task.field.jitter')" :min="0" :max="Math.max(0, form.interval_seconds - 1)" v-if="!form.cron_expression" />
             <TextField v-model="form.timezone" :label="t('admin.ustcSpeed.task.field.timezone')" />
             <TextField v-model="form.active_start" :label="t('admin.ustcSpeed.task.field.activeStart')" type="time" />
             <TextField v-model="form.active_end" :label="t('admin.ustcSpeed.task.field.activeEnd')" type="time" />
@@ -148,12 +150,12 @@
               <option value="xhigh">{{ t('admin.ustcSpeed.task.effort.xhigh') }}</option>
             </select>
           </label>
-          <NumberField v-model="form.max_tokens" :label="t('admin.ustcSpeed.task.field.maxTokens')" :min="1" />
-          <NumberField v-model="form.temperature" :label="t('admin.ustcSpeed.task.field.temperature')" :min="0" :step="0.1" />
+          <NumberField v-model="form.max_tokens" :label="t('admin.ustcSpeed.task.field.maxTokens')" :min="16" :max="8192" />
+          <NumberField v-model="form.temperature" :label="t('admin.ustcSpeed.task.field.temperature')" :min="0" :max="2" :step="0.1" />
           <NumberField v-model="topPValue" :label="t('admin.ustcSpeed.task.field.topP')" :min="0" :max="1" :step="0.05" optional />
-          <NumberField v-model="seedValue" :label="t('admin.ustcSpeed.task.field.seed')" :min="0" optional />
-          <NumberField v-model="form.timeout_seconds" :label="t('admin.ustcSpeed.task.field.timeout')" :min="1" />
-          <NumberField v-model="form.first_output_timeout_seconds" :label="t('admin.ustcSpeed.task.field.firstOutputTimeout')" :min="1" />
+          <NumberField v-model="seedValue" :label="t('admin.ustcSpeed.task.field.seed')" v-if="form.api_mode !== 'responses'" optional />
+          <NumberField v-model="form.timeout_seconds" :label="t('admin.ustcSpeed.task.field.timeout')" :min="5" :max="180" />
+          <NumberField v-model="form.first_output_timeout_seconds" :label="t('admin.ustcSpeed.task.field.firstOutputTimeout')" :min="1" :max="form.timeout_seconds" />
         </div>
         <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
           <input v-model="form.stream" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
@@ -187,16 +189,16 @@
           </label>
           <p class="-mt-3 text-xs text-gray-500">{{ t('admin.ustcSpeed.task.hint.perKeyConcurrency') }} {{ t('admin.ustcSpeed.task.hint.zeroUnlimited') }}</p>
           <div class="grid gap-4 md:grid-cols-3">
-            <NumberField v-model="form.backoff_after_429" :label="t('admin.ustcSpeed.task.field.backoffAfter429')" :min="1" />
-            <NumberField v-model="form.backoff_window_seconds" :label="t('admin.ustcSpeed.task.field.backoffWindow')" :min="1" />
-            <NumberField v-model="form.backoff_multiplier" :label="t('admin.ustcSpeed.task.field.backoffMultiplier')" :min="1" :step="0.5" />
-            <NumberField v-model="form.max_interval_seconds" :label="t('admin.ustcSpeed.task.field.maxInterval')" :min="1" />
-            <NumberField v-model="form.pause_after_429" :label="t('admin.ustcSpeed.task.field.pauseAfter429')" :min="1" />
-            <NumberField v-model="form.recovery_successes" :label="t('admin.ustcSpeed.task.field.recoverySuccesses')" :min="1" />
+            <NumberField v-model="form.backoff_after_429" :label="t('admin.ustcSpeed.task.field.backoffAfter429')" :min="1" :max="20" />
+            <NumberField v-model="form.backoff_window_seconds" :label="t('admin.ustcSpeed.task.field.backoffWindow')" :min="60" :max="86400" />
+            <NumberField v-model="form.backoff_multiplier" :label="t('admin.ustcSpeed.task.field.backoffMultiplier')" :min="1" :max="10" :step="0.5" />
+            <NumberField v-model="form.max_interval_seconds" :label="t('admin.ustcSpeed.task.field.maxInterval')" :min="form.interval_seconds" :max="86400" />
+            <NumberField v-model="form.pause_after_429" :label="t('admin.ustcSpeed.task.field.pauseAfter429')" :min="form.backoff_after_429" :max="40" />
+            <NumberField v-model="form.recovery_successes" :label="t('admin.ustcSpeed.task.field.recoverySuccesses')" :min="1" :max="20" />
           </div>
           <div class="grid gap-4 md:grid-cols-2">
             <TextAreaField v-model="promptVariantsText" :label="t('admin.ustcSpeed.task.field.promptVariants')" />
-            <TextAreaField v-model="stopText" :label="t('admin.ustcSpeed.task.field.stop')" />
+            <TextAreaField v-if="form.api_mode !== 'responses'" v-model="stopText" :label="t('admin.ustcSpeed.task.field.stop')" />
           </div>
         </div>
       </details>
@@ -232,6 +234,7 @@ const props = defineProps<{
   accounts: USTCSpeedAccountDimension[]
   models: string[]
   saving?: boolean
+  defaults?: USTCSpeedTaskInput
 }>()
 
 const emit = defineEmits<{
@@ -255,38 +258,36 @@ const defaults = (): USTCSpeedTaskInput => ({
   interval_seconds: 1800,
   jitter_seconds: 180,
   cron_expression: '',
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+  timezone: 'Asia/Shanghai',
   active_start: '00:00',
   active_end: '23:59',
-  days_of_week: [0, 1, 2, 3, 4, 5, 6],
   api_mode: 'chat_completions',
   stream: true,
-  prompt: t('admin.ustcSpeed.task.defaultPrompt'),
+  prompt: 'Generate a numbered list of 120 practical suggestions for keeping a personal research notebook. Each item must be one short English sentence. Start immediately with item 1; do not add an introduction or conclusion.',
   prompt_variants: [],
   max_tokens: 512,
-  temperature: 0.2,
+  temperature: 0,
   top_p: null,
   seed: null,
   stop: [],
   thinking_mode: 'off',
   reasoning_effort: '',
-  timeout_seconds: 120,
-  first_output_timeout_seconds: 45,
+  timeout_seconds: 60,
+  first_output_timeout_seconds: 30,
   max_parallel_accounts: 4,
   max_start_skew_seconds: 5,
-  reserve_rpm: 2,
-  reserve_concurrency: 1,
-  max_active_requests: 0,
+  reserve_rpm: 4,
+  reserve_concurrency: 2,
+  max_active_requests: 16,
   skip_if_user_waiting: true,
   backoff_after_429: 3,
   backoff_window_seconds: 900,
   backoff_multiplier: 2,
   max_interval_seconds: 7200,
   pause_after_429: 6,
-  recovery_successes: 1,
-  real_fallback: false,
-  real_fallback_max_age_seconds: 3600,
-  real_fallback_min_samples: 5,
+  recovery_successes: 2,
+  ...props.defaults,
+  days_of_week: props.defaults?.days_of_week?.length ? [...props.defaults.days_of_week] : [0,1,2,3,4,5,6],
 })
 
 const form = ref<USTCSpeedTaskInput>(defaults())
@@ -361,7 +362,7 @@ watch(() => [props.show, props.task] as const, ([show, task]) => {
     ...task,
     account_ids: task.account_ids ?? [],
     models: task.models ?? [],
-    days_of_week: task.days_of_week ?? [],
+    days_of_week: task.days_of_week?.length ? [...task.days_of_week] : [0,1,2,3,4,5,6],
     prompt_variants: task.prompt_variants ?? [],
     stop: task.stop ?? [],
     top_p: task.top_p ?? null,
@@ -412,8 +413,6 @@ function submit() {
     form.value.max_interval_seconds,
     form.value.pause_after_429,
     form.value.recovery_successes,
-    form.value.real_fallback_max_age_seconds,
-    form.value.real_fallback_min_samples,
     ...(form.value.top_p === null ? [] : [form.value.top_p]),
     ...(form.value.seed === null ? [] : [form.value.seed]),
   ]
@@ -425,12 +424,34 @@ function submit() {
     validationError.value = t('admin.ustcSpeed.task.validation.numbers')
     return
   }
+  const bounds: Array<[keyof USTCSpeedTaskInput, string, number, number, boolean]> = [
+    ['interval_seconds','interval',60,86400,true], ['jitter_seconds','jitter',0,form.value.cron_expression ? Infinity : form.value.interval_seconds-1,true],
+    ['max_tokens','maxTokens',16,8192,true], ['temperature','temperature',0,2,false],
+    ['timeout_seconds','timeout',5,180,true], ['first_output_timeout_seconds','firstOutputTimeout',1,form.value.timeout_seconds,true],
+    ['max_parallel_accounts','maxParallel',1,16,true], ['max_start_skew_seconds','maxStartSkew',1,30,true],
+    ['reserve_rpm','reserveRpm',0,Infinity,true], ['reserve_concurrency','reserveConcurrency',1,Infinity,true], ['max_active_requests','maxActive',0,Infinity,true],
+    ['backoff_after_429','backoffAfter429',1,20,true], ['backoff_window_seconds','backoffWindow',60,86400,true],
+    ['backoff_multiplier','backoffMultiplier',1,10,false], ['max_interval_seconds','maxInterval',form.value.interval_seconds,86400,true],
+    ['pause_after_429','pauseAfter429',form.value.backoff_after_429,40,true], ['recovery_successes','recoverySuccesses',1,20,true],
+  ]
+  for (const [key,label,min,max,integer] of bounds) {
+    const value = Number(form.value[key])
+    if (value < min || value > max || (integer && !Number.isInteger(value))) {
+      validationError.value = t('admin.ustcSpeed.task.validation.range', { field: t(`admin.ustcSpeed.task.field.${label}`), min, max: Number.isFinite(max) ? max : '∞' })
+      return
+    }
+  }
+  if (form.value.top_p != null && (form.value.top_p <= 0 || form.value.top_p > 1)) { validationError.value = '0 < Top P ≤ 1'; return }
+  if (form.value.seed != null && !Number.isSafeInteger(form.value.seed)) { validationError.value = t('admin.ustcSpeed.task.validation.numbers'); return }
+  if (!form.value.days_of_week.length) { validationError.value = t('admin.ustcSpeed.task.validation.days'); return }
+  if (!form.value.prompt.trim() || new TextEncoder().encode(form.value.prompt).length > 128000 || form.value.prompt_variants.length > 16 || form.value.stop.length > 8) { validationError.value = t('admin.ustcSpeed.task.validation.request'); return }
+  try { new Intl.DateTimeFormat('en', { timeZone: form.value.timezone }) } catch { validationError.value = t('admin.ustcSpeed.task.validation.timezone'); return }
   if (formElement.value && !formElement.value.reportValidity()) return
   if (!form.value.name.trim()) {
     validationError.value = t('admin.ustcSpeed.task.validation.name')
     return
   }
-  if (!form.value.models.length) {
+  if (!form.value.models.length || form.value.models.length > 20) {
     validationError.value = t('admin.ustcSpeed.task.validation.models')
     return
   }

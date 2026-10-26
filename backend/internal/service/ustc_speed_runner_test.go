@@ -339,7 +339,6 @@ func TestUSTCSpeedManualProbeUsesSharedAdmissionAndOneRequest(t *testing.T) {
 	speed, _, repo, cache, upstream, account := newUSTCSpeedRunnerFixture()
 	task := DefaultUSTCSpeedTask()
 	task.ID = 71
-	task.RealFallback = false
 	status, _ := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-1", time.Now())
 	require.Equal(t, "success", status)
 	calls, bodies := upstream.snapshot()
@@ -398,7 +397,6 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 			tc.setup(gateway, repo, cache, account)
 			task := DefaultUSTCSpeedTask()
 			task.ID = 72
-			task.RealFallback = false
 			status, _ := speed.runProbe(context.Background(), task, &account, "deepseek-flash", "synthetic prompt", "round-2", time.Now())
 			require.Equal(t, "skipped", status)
 			calls, _ := upstream.snapshot()
@@ -464,7 +462,6 @@ func TestUSTCSpeedBackoffPauseExpiryStillRequiresGlobalLease(t *testing.T) {
 	speed, _, repo, _, upstream, account := newUSTCSpeedRunnerFixture()
 	task := DefaultUSTCSpeedTask()
 	task.ID = 73
-	task.RealFallback = false
 	task.PauseAfter429 = task.BackoffAfter429
 	now := time.Now()
 	last429 := now.Add(-3 * time.Hour)
@@ -554,7 +551,6 @@ func TestUSTCSpeedManualRunBypassesActiveWindow(t *testing.T) {
 	task := DefaultUSTCSpeedTask()
 	task.Models = []string{"deepseek-flash"}
 	task.AllAccounts = true
-	task.RealFallback = false
 	task.MaxParallelAccounts = 1
 
 	location, err := time.LoadLocation(task.Timezone)
@@ -613,7 +609,7 @@ func TestUSTCSpeedSavedPolicyBypassesTaskConstraintsOnly(t *testing.T) {
 			gateway.rpmCache = &ustcSpeedWaitCapacityCache{ustcTestCapacityCache: cache, waiting: true}
 			cache.used[USTCKeyScope(&account)] = tc.used
 			task := DefaultUSTCSpeedTask()
-			task.ID, task.Revision, task.Models, task.AllAccounts, task.RealFallback = 9, 1, []string{"deepseek-flash"}, true, false
+			task.ID, task.Revision, task.Models, task.AllAccounts = 9, 1, []string{"deepseek-flash"}, true
 			task.ReserveRPM, task.ReserveConcurrency = 20, 20
 			task.IgnoreTaskConstraints = tc.ignore
 			task.Timezone = "UTC"

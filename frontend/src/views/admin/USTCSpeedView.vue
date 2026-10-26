@@ -8,7 +8,6 @@
           <p class="mt-1 max-w-3xl text-sm text-gray-500 dark:text-gray-400">{{ pageDescription }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
-          <template v-if="isOverview">
             <button type="button" class="btn btn-secondary" :disabled="loading" @click="refreshCurrent">
               {{ loading ? t('admin.ustcSpeed.action.loading') : t('admin.ustcSpeed.action.refresh') }}
             </button>
@@ -18,7 +17,6 @@
             <button type="button" class="btn btn-secondary" :disabled="exporting" @click="exportSamples('json')">
               {{ t('admin.ustcSpeed.action.exportJson') }}
             </button>
-          </template>
           <button v-if="isTasks" type="button" class="btn btn-primary" @click="openTaskDialog()">
             {{ t('admin.ustcSpeed.action.addTask') }}
           </button>
@@ -61,7 +59,7 @@
           </div>
           <div class="min-w-[235px] space-y-1.5">
             <span class="block text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.filter.timeRange') }}</span>
-            <DateRangePicker v-model:start-date="startDate" v-model:end-date="endDate" auto-apply @change="applyDateRange" />
+            <DateRangePicker v-model:start-date="startDate" v-model:end-date="endDate" v-model:preset="datePreset" auto-apply @change="applyDateRange" />
           </div>
         </div>
 
@@ -125,7 +123,6 @@
         <template #duration-note><p v-if="overview?.stats && overview.stats.duration_samples < overview.stats.total_requests" class="text-[11px] text-gray-400">{{ t('admin.ustcSpeed.stats.durationCoverage', { known: overview.stats.duration_samples, total: overview.stats.total_requests }) }}</p></template>
       </UsageStatsCards>
 
-      <template v-if="isOverview">
         <div v-if="overview?.truncated || (overview?.dropped_samples ?? 0) > 0" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
           <span v-if="overview?.truncated">{{ t('admin.ustcSpeed.overview.truncated') }}</span>
           <span v-if="overview?.truncated && (overview?.dropped_samples ?? 0) > 0"> </span>
@@ -204,8 +201,8 @@
           </div>
           <div class="grid gap-3 border-t border-gray-100 bg-gray-50/70 px-5 py-3 text-sm dark:border-dark-700 dark:bg-dark-900/30 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
             <SummaryValue :label="t('admin.ustcSpeed.overview.samples')" :value="formatNumber(overview?.summary.samples)" />
-            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.successRate')" :value="formatPercent(overview?.summary.success_rate)" />
-            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.rateLimitedRate')" :value="formatPercent(rateLimitedPercent)" />
+            <SummaryValue v-if="!embedded && !appliedQuery?.status" :label="t('admin.ustcSpeed.overview.successRate')" :value="formatPercent(overview?.summary.success_rate)" />
+            <SummaryValue v-if="!embedded && !appliedQuery?.status" :label="t('admin.ustcSpeed.overview.rateLimitedRate')" :value="formatPercent(rateLimitedPercent)" />
             <SummaryValue :label="t('admin.ustcSpeed.overview.validPoints')" :value="formatNumber(validMetricPointCount)" />
             <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.skipped')" :value="formatNumber(overview?.summary.skipped)" />
             <SummaryValue :label="t('admin.ustcSpeed.overview.latest')" :value="formatAge(overview?.summary.latest_at)" />
@@ -251,6 +248,8 @@
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.hourly.title') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.description') }}</p>
+              <p v-if="filters.aggregate !== 'mean'" class="mt-1 text-xs text-gray-400">{{ t('admin.ustcSpeed.hourly.minimumSamples', { count: filters.aggregate === 'p50' ? 5 : 20 }) }}</p>
+              <p v-if="overview.hourly_truncated" class="mt-1 text-xs text-amber-600">{{ t('admin.ustcSpeed.hourly.truncated') }}</p>
               <p v-if="appliedQuery" class="mt-1 text-xs text-gray-400 dark:text-gray-500">{{ appliedRangeLabel }}</p>
             </div>
             <label class="filter-field min-w-40">
@@ -263,7 +262,7 @@
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="loading" class="flex h-[220px] items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
-            <div v-else-if="!hourlySeries.length" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
+            <div v-else-if="!hourlyChartData" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
             <div v-else class="h-[260px] min-w-0">
               <SpeedChart type="line" :data="hourlyChartData" :options="hourlyChartOptions" />
             </div>
@@ -304,7 +303,6 @@
             </div>
           </div>
         </details>
-      </template>
 
       <template v-if="!embedded">
 
@@ -353,6 +351,7 @@
         :task="selectedTask"
         :accounts="dimensions.accounts"
         :models="modelOptions"
+        :defaults="taskDefaults"
         :saving="taskSaving"
         @close="taskDialogOpen = false"
         @submit="saveTask"
@@ -378,6 +377,7 @@ import type { Chart as ChartInstance, TooltipModel } from 'chart.js'
 import { Chart as SpeedChart } from 'vue-chartjs'
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { csvCell } from '@/utils/spreadsheet'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
@@ -441,7 +441,6 @@ const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 
-const isOverview = computed(() => true)
 const isTasks = computed(() => !props.embedded)
 const pageTitle = computed(() => t('admin.ustcSpeed.title'))
 const pageDescription = computed(() => t('admin.ustcSpeed.description'))
@@ -458,6 +457,7 @@ const endDate = ref(localDate(initialNow))
 // The shared picker exposes only calendar dates. Its "last 24 hours" preset is
 // translated into an exact rolling window instead of two whole days.
 const lastHours = ref<number | null>(24)
+const datePreset = ref<string | null>('last24Hours')
 const filters = reactive<SampleFilterState>({
   source: props.embedded ? 'real' : 'probe',
   model: '',
@@ -499,6 +499,7 @@ const sampleDialogOpen = ref(false)
 const sampleDetailLoading = ref(false)
 
 const tasks = ref<USTCSpeedTask[]>([])
+const taskDefaults = ref<USTCSpeedTaskInput>()
 const tasksLoading = ref(false)
 const tasksPollError = ref(false)
 const monitorNow = ref(Date.now())
@@ -508,7 +509,7 @@ let tasksRequestSeq = 0
 const taskDialogOpen = ref(false)
 const selectedTask = ref<USTCSpeedTask | null>(null)
 const taskSaving = ref(false)
-const settings = ref<USTCSpeedSettings>({ capture_enabled: false, max_background_concurrency: 4 })
+const settings = ref<USTCSpeedSettings>({ max_background_concurrency: 4 })
 const settingsLoading = ref(false)
 const settingsSaving = ref(false)
 const settingsLoaded = ref(false)
@@ -622,6 +623,7 @@ function readValue(point: USTCSpeedPoint): number | null {
 
 interface RenderPoint {
   time: string
+  bucketEnd?: string
   value: number | null
   p10: number | null
   p50: number | null
@@ -651,6 +653,7 @@ function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
     }
     series.points.push({
       time: point.time,
+      bucketEnd: point.bucket_end,
       value: readValue(point),
       p10: point.p10,
       p50: point.p50,
@@ -689,7 +692,7 @@ function plottedTime(point: RenderPoint): number {
   const time = Date.parse(point.time)
   if (!bucketMilliseconds.value) return time
   const start = Math.max(time, chartTimeBounds.value?.start ?? time)
-  const end = Math.min(time + bucketMilliseconds.value, chartTimeBounds.value?.end ?? Infinity)
+  const end = Math.min(point.bucketEnd ? Date.parse(point.bucketEnd) : time + bucketMilliseconds.value, chartTimeBounds.value?.end ?? Infinity)
   return start + Math.max(0, end - start) / 2
 }
 const chartPalette = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#ef4444', '#6366f1', '#14b8a6']
@@ -824,7 +827,7 @@ const chartOptions = computed<any>(() => {
             const timestamp = Date.parse(point.time)
             if (!bucketMilliseconds.value) return formatChartTooltipLabel(timestamp)
             const start = Math.max(timestamp, chartTimeBounds.value?.start ?? timestamp)
-            const end = Math.min(timestamp + bucketMilliseconds.value, chartTimeBounds.value?.end ?? Infinity)
+            const end = Math.min(point.bucketEnd ? Date.parse(point.bucketEnd) : timestamp + bucketMilliseconds.value, chartTimeBounds.value?.end ?? Infinity)
             return `${formatChartTooltipLabel(start)} — ${formatChartTooltipLabel(end)}`
           },
           label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) => `${context.dataset.label ?? ''}: ${formatChartValue(context.parsed.y)}`,
@@ -888,7 +891,7 @@ const hourlySeries = computed<HourlySeries[]>(() => {
   const sources = sourceCountsByModel(points)
   const grouped = new Map<string, HourlySeries>()
   for (const point of points) {
-    if (point.hour < 0 || point.hour > 23 || hourlyValue(point) === null) continue
+    if (point.hour < 0 || point.hour > 23) continue
     const key = JSON.stringify([point.model, point.source, point.profile])
     const series = grouped.get(key) ?? {
       key,
@@ -905,12 +908,14 @@ const hourlySeries = computed<HourlySeries[]>(() => {
 function hourlyValue(point: USTCSpeedHourPoint | undefined): number | null {
   if (!point) return null
   const aggregate = overview.value?.aggregate ?? filters.aggregate
+  const minimum = aggregate === 'p10' || aggregate === 'p90' ? 20 : aggregate === 'p50' ? 5 : 1
+  if (point.valid_count < minimum) return null
   const value = point[aggregate] ?? point.value
   return value !== null && Number.isFinite(value) ? value : null
 }
 
 const hourlyChartData = computed<any>(() => {
-  if (!hourlySeries.value.length) return null
+  if (!hourlySeries.value.some((series) => series.hours.some((point) => hourlyValue(point) !== null))) return null
   return {
     labels: Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`),
     datasets: hourlySeries.value.map((series, index) => {
@@ -927,7 +932,7 @@ const hourlyChartData = computed<any>(() => {
         pointHitRadius: 8,
         tension: 0.2,
         fill: false,
-        spanGaps: true,
+        spanGaps: false,
       }
     }),
   }
@@ -1085,6 +1090,7 @@ async function loadDimensions() {
     const result = await adminUSTCSpeedAPI.getDimensions()
     dimensions.accounts = (result.accounts ?? []).map((account) => ({ ...account, models: account.models ?? [] }))
     dimensions.models = result.models ?? []
+    taskDefaults.value = result.task_defaults
   } catch {
     toastError(t('admin.ustcSpeed.error.loadDimensions'))
   }
@@ -1322,8 +1328,10 @@ async function saveTask(value: USTCSpeedTaskInput) {
     taskDialogOpen.value = false
     appStore.showToast('success', t('admin.ustcSpeed.task.saved'))
     await Promise.all([loadTasks(), loadOverview()])
-  } catch {
-    toastError(t('admin.ustcSpeed.error.saveTask'))
+  } catch (error) {
+    const failure = error as { message?: unknown; response?: { data?: { message?: unknown } } }
+    const detail = failure?.response?.data?.message ?? failure?.message
+    toastError(typeof detail === 'string' && detail.trim() ? `${t('admin.ustcSpeed.error.saveTask')} ${detail}` : t('admin.ustcSpeed.error.saveTask'))
   } finally {
     taskSaving.value = false
   }
@@ -1452,11 +1460,6 @@ async function openPoint(point: RenderPoint) {
   appStore.showToast('info', t('admin.ustcSpeed.overview.probeDrilldown'))
 }
 
-function escapeCsv(value: unknown): string {
-  const text = value === null || value === undefined ? '' : String(value)
-  return `"${text.replace(/"/g, '""')}"`
-}
-
 function csvFor(items: USTCSpeedSample[]): string {
   const columns: Array<[string, (item: USTCSpeedSample) => unknown]> = [
     [t('admin.ustcSpeed.samples.id'), (item) => item.id],
@@ -1475,7 +1478,7 @@ function csvFor(items: USTCSpeedSample[]): string {
     [t('admin.ustcSpeed.samples.outputTokens'), (item) => item.token_count_known === true ? item.output_tokens : ''],
     [t('admin.ustcSpeed.detail.reasoningTokens'), (item) => item.reasoning_tokens],
   ]
-  return [columns.map(([label]) => escapeCsv(label)).join(','), ...items.map((item) => columns.map(([, read]) => escapeCsv(read(item))).join(','))].join('\r\n')
+  return [columns.map(([label]) => csvCell(label)).join(','), ...items.map((item) => columns.map(([, read]) => csvCell(read(item))).join(','))].join('\r\n')
 }
 
 function downloadFile(contents: string, fileName: string, mime: string) {

@@ -155,7 +155,13 @@ func (s *USTCSpeedService) speedTaskCurrent(ctx context.Context, task USTCSpeedT
 		return true // Direct collector/runner fixtures have no persisted task.
 	}
 	current, err := s.repo.GetTask(ctx, task.ID)
-	return err == nil && current != nil && current.Revision == task.Revision
+	if err != nil || current == nil {
+		return false
+	}
+	if current.Revision == task.Revision {
+		return true
+	}
+	return current.LeaseRevision != nil && *current.LeaseRevision == task.Revision && current.LeaseUntil != nil && current.LeaseUntil.After(time.Now()) && !(task.Enabled && !current.Enabled)
 }
 
 func nextUSTCSpeedTask(task USTCSpeedTask, now time.Time) time.Time {
@@ -164,9 +170,6 @@ func nextUSTCSpeedTask(task USTCSpeedTask, now time.Time) time.Time {
 			location, err := time.LoadLocation(task.Timezone)
 			if err == nil {
 				next := schedule.Next(now.In(location))
-				if task.JitterSeconds > 0 {
-					next = next.Add(time.Duration(rand.IntN(task.JitterSeconds+1)) * time.Second)
-				}
 				return next
 			}
 		}
@@ -512,10 +515,10 @@ func speedProbeBody(task USTCSpeedTask, model, prompt string) ([]byte, error) {
 	if task.TopP != nil {
 		body["top_p"] = *task.TopP
 	}
-	if task.Seed != nil {
+	if task.APIMode != "responses" && task.Seed != nil {
 		body["seed"] = *task.Seed
 	}
-	if len(task.Stop) > 0 {
+	if task.APIMode != "responses" && len(task.Stop) > 0 {
 		body["stop"] = task.Stop
 	}
 	return json.Marshal(body)
@@ -526,7 +529,7 @@ func speedProbeURL(account *Account, mode string) (string, error) {
 		base = "https://" + base
 	}
 	parsed, err := url.Parse(base)
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "api.llm.ustc.edu.cn") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "api.llm.ustc.edu.cn") || (parsed.Port() != "" && parsed.Port() != "443") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", speedBadRequest("invalid USTC account endpoint")
 	}
 	if !strings.HasSuffix(parsed.Path, "/v1") {
