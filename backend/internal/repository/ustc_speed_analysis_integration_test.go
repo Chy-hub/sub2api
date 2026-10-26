@@ -73,6 +73,8 @@ func TestUSTCSpeedAnalysisUsesCallsAndCompleteHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, out.Truncated)
 	require.Len(t, out.Series, 5000)
+	require.EqualValues(t, 5022, out.Stats.TotalRequests, "cards aggregate the full filtered range independently of chart limits")
+	require.EqualValues(t, 6000, *out.Stats.TotalTokens)
 	for _, row := range out.Analysis.Groups {
 		if row.Period == "current" {
 			require.EqualValues(t, 5021, row.ValidCount)

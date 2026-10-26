@@ -195,6 +195,22 @@ type USTCSpeedSummary struct {
 	LatestProbeAt *time.Time `json:"latest_probe_at"`
 }
 
+// These counters describe actual benchmark requests. Skipped test items never
+// contribute requests, tokens, cost or duration. Nullable totals distinguish
+// missing upstream usage/cost metadata from a measured zero.
+type USTCSpeedStats struct {
+	TotalRequests     int64    `json:"total_requests"`
+	TotalInputTokens  *int64   `json:"total_input_tokens"`
+	TotalOutputTokens *int64   `json:"total_output_tokens"`
+	TotalTokens       *int64   `json:"total_tokens"`
+	TotalProviderCost *float64 `json:"total_provider_cost"`
+	AverageDurationMS *float64 `json:"average_duration_ms"`
+	InputSamples      int64    `json:"input_samples"`
+	OutputSamples     int64    `json:"output_samples"`
+	CostSamples       int64    `json:"cost_samples"`
+	DurationSamples   int64    `json:"duration_samples"`
+}
+
 type USTCSpeedPoint struct {
 	Time        time.Time `json:"time"`
 	AccountID   int64     `json:"account_id"`
@@ -246,6 +262,7 @@ type USTCSpeedOverview struct {
 	GroupBy               string               `json:"group_by"`
 	Aggregate             string               `json:"aggregate"`
 	Summary               USTCSpeedSummary     `json:"summary"`
+	Stats                 *USTCSpeedStats      `json:"stats,omitempty"`
 	Series                []USTCSpeedPoint     `json:"series"`
 	Hourly                []USTCSpeedHourPoint `json:"hourly,omitempty"`
 	Truncated             bool                 `json:"truncated"`
