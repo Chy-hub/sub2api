@@ -707,9 +707,9 @@ describe('admin UsageView errors tab filter forwarding', () => {
     vm.filters.group_id = 3
     await flushPromises()
 
-    // 切换到「错误请求」标签（第二个 tab 按钮）触发 loadAdminErrors
+    // 切换到「错误请求」标签（第三个 tab 按钮）触发 loadAdminErrors
     const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
-    await tabs[1].trigger('click')
+    await tabs[2].trigger('click')
     await flushPromises()
 
     expect(listErrorLogs).toHaveBeenCalledWith(expect.objectContaining({
@@ -760,8 +760,8 @@ describe('admin UsageView ranking tab', () => {
     expect(wrapper.find('[data-test="ranking"]').exists()).toBe(false)
 
     const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
-    expect(tabs).toHaveLength(3)
-    await tabs[2].trigger('click')
+    expect(tabs).toHaveLength(4)
+    await tabs[3].trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="ranking"]').exists()).toBe(true)
 
@@ -839,4 +839,47 @@ describe('admin UsageView model audit export', () => {
 		expect(row.slice(4, 8)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'Yes'])
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
+})
+
+describe('admin UsageView speed analysis tab', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
+    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    getStats.mockReset().mockResolvedValue({ total_requests: 0 })
+    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], models: [], groups: [] })
+    getModelStats.mockReset().mockResolvedValue({ models: [] })
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('adds speed beside details, shares filters and drills back into the original records', async () => {
+    const SpeedStub = defineComponent({
+      props: ['embedded', 'active', 'usageFilters', 'refreshVersion'], emits: ['show-records'],
+      template: '<div data-test="speed-pane">{{ JSON.stringify(usageFilters) }}<button data-test="speed-records" @click="$emit(\'show-records\', { model: \'selected-model\', account_id: 8 })">records</button></div>',
+    })
+    const wrapper = mount(UsageView, { global: { stubs: {
+      AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub, UsageTable: true,
+      UsageSpeedAnalysis: SpeedStub, UsageExportProgress: true, UsageCleanupDialog: true, UserBalanceHistoryModal: true,
+      Pagination: true, Select: true, DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+      ModelDistributionChart: true, GroupDistributionChart: true, EndpointDistributionChart: true,
+      UserTokenRanking: true, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+    } } })
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    expect(wrapper.find('[data-test="speed-pane"]').exists()).toBe(false)
+    const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
+    expect(tabs[0].text()).toBe('usage.tabs.usage')
+    expect(tabs[1].text()).toBe('usage.tabs.speed')
+    ;(wrapper.vm as any).filters.user_id = 3
+    await tabs[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="speed-pane"]').text()).toContain('"user_id":3')
+    expect(wrapper.find('[data-testid="usage-column-settings"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'DateRangePicker' }).isVisible()).toBe(true)
+    await wrapper.get('[data-test="speed-records"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.vm as any).activeTab).toBe('usage')
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ user_id: 3, account_id: 8, model: 'selected-model' }), expect.anything())
+    wrapper.unmount()
+  })
 })

@@ -168,7 +168,7 @@ export default {
     apiKeys: 'API Keys',
     batchImage: 'Batch Images',
     usage: 'Usage',
-    ustcSpeed: 'Speed Observatory',
+    ustcSpeed: 'Benchmark',
     redeem: 'Redeem',
     affiliate: 'Affiliate Rebates',
     affiliateManagement: 'Affiliate Rebates',

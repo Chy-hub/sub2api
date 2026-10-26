@@ -642,7 +642,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
-      title: 'USTC Speed Observatory',
+      title: 'USTC Benchmark',
       titleKey: 'admin.ustcSpeed.title',
       descriptionKey: 'admin.ustcSpeed.description'
     }
@@ -654,14 +654,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin/ustc-speed/tasks',
     name: 'AdminUSTCSpeedTasks',
-    component: () => import('@/views/admin/USTCSpeedView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'USTC Speed Tasks',
-      titleKey: 'admin.ustcSpeed.tasksTitle',
-      descriptionKey: 'admin.ustcSpeed.description'
-    }
+    redirect: (to) => ({ path: '/admin/ustc-speed', query: to.query, hash: '#benchmark-tasks' })
   },
   {
     path: '/admin/affiliates',

@@ -32,12 +32,18 @@ func (r *ustcSpeedRepository) ustcSpeedAnalysis(ctx context.Context, q service.U
 	}
 	bucketParam := param(out.BucketSeconds)
 	// Metric is checked against the fixed allowlist by Overview before use.
-	value := "(payload->>'" + q.Metric + "')::double precision"
+	value := speedMetricValue(q.Metric)
 	stats := `COUNT(*) AS count,COUNT(value) AS valid_count,AVG(value) AS mean,
  percentile_cont(0.1) WITHIN GROUP(ORDER BY value) AS p10,
  percentile_cont(0.5) WITHIN GROUP(ORDER BY value) AS p50,
  percentile_cont(0.9) WITHIN GROUP(ORDER BY value) AS p90,
  stddev_pop(value) AS stddev,MIN(value) AS min,MAX(value) AS max`
+	// Benchmark results focus on service speed. Task-length breakdowns belong
+	// only to real usage analysis; PostgreSQL skips the unreferenced lengths CTE.
+	lengthsJSON := "'[]'::jsonb"
+	if q.UsageFilters != nil {
+		lengthsJSON = "COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY model,source,dimension,bucket,period) FROM lengths l),'[]'::jsonb)"
+	}
 	query := `WITH windows(period,from_at,to_at) AS (VALUES ` + windows + `),
  observations AS MATERIALIZED (
  SELECT period,model,source,
@@ -49,7 +55,7 @@ func (r *ustcSpeedRepository) ustcSpeedAnalysis(ctx context.Context, q service.U
  CASE WHEN NOT COALESCE((payload->>'token_count_known')::boolean,false) THEN -1
  WHEN (payload->>'output_tokens')::bigint<128 THEN 0 WHEN (payload->>'output_tokens')::bigint<512 THEN 1
  WHEN (payload->>'output_tokens')::bigint<2048 THEN 2 WHEN (payload->>'output_tokens')::bigint<8192 THEN 3 ELSE 4 END AS output_bucket
- FROM ustc_speed_samples JOIN windows ON started_at>=from_at AND started_at<to_at WHERE ` + where + `),
+ FROM ` + speedObservationTable(q) + ` JOIN windows ON started_at>=from_at AND started_at<to_at WHERE ` + where + `),
  groups AS (SELECT period,model,source,` + stats + ` FROM observations GROUP BY period,model,source),
  bounds AS (SELECT model,source,MIN(value) AS lo,MAX(value) AS hi FROM observations WHERE value IS NOT NULL GROUP BY model,source),
  binned AS (SELECT o.period,o.model,o.source,lo,hi,
@@ -64,7 +70,7 @@ func (r *ustcSpeedRepository) ustcSpeedAnalysis(ctx context.Context, q service.U
  SELECT jsonb_build_object(
  'groups',COALESCE((SELECT jsonb_agg(to_jsonb(g) ORDER BY model,source,period) FROM groups g),'[]'::jsonb),
  'distribution',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY model,source,period,bin) FROM distribution d),'[]'::jsonb),
- 'lengths',COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY model,source,dimension,bucket,period) FROM lengths l),'[]'::jsonb),
+ 'lengths',` + lengthsJSON + `,
  'trend',COALESCE((SELECT jsonb_agg(to_jsonb(t) ORDER BY model,source,period,bucket) FROM trend t),'[]'::jsonb))`
 	var raw []byte
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&raw); err != nil {

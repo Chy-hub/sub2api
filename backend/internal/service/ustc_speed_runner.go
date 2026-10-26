@@ -326,15 +326,7 @@ func (s *USTCSpeedService) recordSkip(task USTCSpeedTask, account *Account, mode
 	slog.Info("ustc_speed_probe_skip", "task_id", task.ID, "account_id", account.ID, "model", model, "round", round, "reason", reason)
 	now := time.Now()
 	sample := USTCSpeedSample{TaskID: &task.ID, RoundID: round, AccountID: account.ID, AccountName: account.Name, KeyScope: USTCKeyScope(account), Model: account.GetMappedModel(model), Source: "probe", Status: "skipped", Reason: reason, Stream: task.Stream, APIMode: task.APIMode, Profile: "probe:skipped", Reasoning: "unknown", StartedAt: now, FinishedAt: now}
-	if task.RealFallback {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		q := USTCSpeedQuery{Start: now.Add(-time.Duration(task.RealFallbackMaxAgeSeconds) * time.Second), End: now.Add(time.Nanosecond), Model: model, Source: "real", AccountIDs: []int64{account.ID}, Limit: 1}
-		_, total, err := s.repo.ListSamples(ctx, q)
-		cancel()
-		if err == nil && total >= int64(task.RealFallbackMinSamples) {
-			sample.Reason += "_using_real_data"
-		}
-	}
+
 	s.persist(sample)
 }
 func speedBackoff(task USTCSpeedTask, runtime *USTCSpeedRuntime, now time.Time) (bool, string) {

@@ -57,7 +57,7 @@
         </table>
       </div>
 
-      <details class="rounded-xl border border-gray-100 dark:border-dark-700">
+      <details v-if="showTaskMix" class="rounded-xl border border-gray-100 dark:border-dark-700">
         <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ustcSpeed.analysis.mixTitle') }}</summary>
         <div class="space-y-3 border-t border-gray-100 p-4 dark:border-dark-700">
           <p class="text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.analysis.mixHint') }}</p>
@@ -72,7 +72,7 @@
         </div>
       </details>
     </template>
-    <p class="text-xs leading-5 text-gray-400 dark:text-gray-500">{{ t('admin.ustcSpeed.analysis.method') }}</p>
+    <p class="text-xs leading-5 text-gray-400 dark:text-gray-500">{{ t(showTaskMix ? 'admin.ustcSpeed.analysis.method' : 'admin.ustcSpeed.analysis.benchmarkMethod') }}</p>
   </div>
 </template>
 
@@ -84,7 +84,7 @@ import { useI18n } from 'vue-i18n'
 import type { USTCSpeedAggregate, USTCSpeedAnalysis, USTCSpeedAnalysisStats, USTCSpeedMetric } from '@/api/admin/ustcSpeed'
 
 ChartJS.register(BarController, BarElement, CategoryScale, Legend, LinearScale, Tooltip)
-const props = defineProps<{ analysis?: USTCSpeedAnalysis; view: 'compare' | 'distribution'; metric: USTCSpeedMetric; aggregate: USTCSpeedAggregate; timezone: string }>()
+const props = defineProps<{ analysis?: USTCSpeedAnalysis; view: 'compare' | 'distribution'; metric: USTCSpeedMetric; aggregate: USTCSpeedAggregate; timezone: string; showTaskMix?: boolean }>()
 const { t, locale } = useI18n()
 const selectedKey = ref('')
 const lengthDimension = ref<'input' | 'output'>('input')

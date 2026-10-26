@@ -1,12 +1,12 @@
 export default {
   ustcSpeed: {
-    title: 'USTC Speed Observatory',
-    description: 'Observe upstream first-output latency, generation speed, and request stage timing from real calls and probes.',
+    title: 'USTC Benchmark',
+    description: 'Scheduled benchmarks of upstream speed, first-token wait and stability.',
     samplesTitle: 'Call Details',
     tasksTitle: 'Probe Tasks and Settings',
-    overviewDescription: 'Real work calls are the default view. Probe data can be viewed alone or overlaid as separate series.',
+    overviewDescription: 'Benchmark observations of upstream speed, first-token wait and stability.',
     samplesDescription: 'Search captured calls and probe samples using the current filters.',
-    tasksDescription: 'Manage scheduled probes, manual runs, global capture settings, and account cooldowns.',
+    tasksDescription: 'Configure scheduled checks and manual runs, and inspect capacity and cooldown state.',
     nav: { overview: 'Trends', tasks: 'Tasks and Settings' },
     action: {
       refresh: 'Refresh', apply: 'Apply filters', exportCsv: 'Export CSV', exportJson: 'Export JSON',
@@ -16,7 +16,7 @@ export default {
     },
     source: { label: 'Data source', real: 'Real calls', probe: 'Probes', all: 'Real + probes (separate series)' },
     filter: {
-      model: 'Model', allModels: 'All models', account: 'Account', allAccounts: 'All accounts',
+      model: 'Model', allTasks: 'All benchmark tasks', allModels: 'All models', account: 'Account', allAccounts: 'All accounts',
       timeRange: 'Time range', advanced: 'Advanced filters', reasoning: 'Reasoning', all: 'All',
       reasoningOn: 'Reasoning on', reasoningOff: 'Reasoning off', reasoningUnknown: 'Unknown', stream: 'Streaming',
       streaming: 'Streaming', nonStreaming: 'Non-streaming', status: 'Result status', anyStatus: 'All statuses',
@@ -34,6 +34,8 @@ export default {
     interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
     aggregate: { label: 'Statistic', p50: 'P50 median', mean: 'Mean', p10: 'P10 slow range', p90: 'P90' },
     overview: {
+      successRate: 'Probe success rate', rateLimitedRate: 'Upstream 429 rate',
+      latest: 'Latest observation',
       chartTitle: 'Speed and wait trends',
       aggregation: '{interval} · {statistic}', bucketSamples: '{count} valid observations in this point',
       distribution: 'P10–P90 spread', spread: 'P10 / P50 / P90: {p10} / {p50} / {p90}',
@@ -57,7 +59,7 @@ export default {
       comparison: { previous: 'Previous equal period', week: 'Same time last week', month: 'Same time last month', year: 'Same time last year', none: 'No comparison' },
       compareHint: 'Compare the same model over two periods aligned to their respective starts. Check both the average and the slow tail. An unfinished day is compared only with the corresponding elapsed portion.',
       distributionHint: 'The same average can hide different experiences. Bar height is the share of calls: check for a larger slow tail or wider spread. Both periods use identical bins.',
-      unavailable: 'No analysis is available for this scope. A short live-traffic fallback does not participate in historical benchmark comparisons.',
+      unavailable: 'No valid observations are available for this scope. Adjust the range or filters.',
       subject: 'Series', mean: 'Call average', previousMean: 'Baseline average', median: 'Typical result · P50', medianHint: 'Half of calls are above this value; half below',
       slowTps: 'Slow speed · P10', slowLatency: 'Slow wait · P90', variation: 'Coefficient of variation', variationHint: 'Standard deviation ÷ mean; lower means a tighter spread',
       change: 'Mean change', versus: 'Versus baseline {change}', current: 'Current period', previous: 'Baseline period',
@@ -67,6 +69,7 @@ export default {
       mixTitle: 'Check task mix: did input or output lengths change?',
       mixHint: 'Even with the same model and accounts, a change in task lengths can change the average. Existing token counts show the mix and within-bucket mean changes. This checks comparability and does not establish causality.',
       length: 'Token range (upper bound excluded)', currentShare: 'Current share', previousShare: 'Baseline share', withinChange: 'Within-bucket change',
+      benchmarkMethod: 'Equal weights per benchmark call show observed upstream speed and stability. Skipped probes are excluded from upstream failure rates; missing values stay empty.',
       method: 'Statistics use all filtered valid calls with equal call weights, separated by model and source. Bucket means and quantiles are never averaged. Real generation TPS is approximated from usage records; recorded first-token timing does not distinguish reasoning from text.'
     },
     hourly: {
@@ -156,7 +159,7 @@ export default {
       weekday: { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' }
     },
     settings: {
-      title: 'Real-call sync and background concurrency', description: 'Real-call speed is computed from existing usage records and synced in the background. Set probe frequency in each task; shared RPM, concurrency, and 429 protections still apply.',
+      title: 'Background concurrency', description: 'Set the interval per task. Requests follow shared RPM, concurrency and the saved task policy.',
       captureEnabled: 'Sync real calls from usage records', concurrency: 'Maximum background probe concurrency',
       perKey: 'Background concurrency is limited to one request per physical key.', saved: 'Global settings saved.',
       disableCapture: 'When off, no new usage records are imported for real-call speed. Probe tasks are unaffected.'

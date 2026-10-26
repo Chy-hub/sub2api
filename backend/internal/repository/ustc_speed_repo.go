@@ -127,6 +127,32 @@ func ustcSpeedWhere(q service.USTCSpeedQuery) (string, []any) {
 			clauses = append(clauses, fmt.Sprintf("(COALESCE((payload->>'%s')::boolean,false) AND (payload->>'%s')::bigint %s $%d)", filter.known, filter.field, filter.op, len(args)))
 		}
 	}
+	if f := q.UsageFilters; f != nil {
+		for _, field := range []struct {
+			name  string
+			value int64
+		}{{"user_id", f.UserID}, {"api_key_id", f.APIKeyID}, {"account_id", f.AccountID}, {"group_id", f.GroupID}} {
+			if field.value > 0 {
+				add(field.name, field.value)
+			}
+		}
+		if f.RequestID != "" {
+			add("request_id", f.RequestID)
+		}
+		clauses, args = appendRequestTypeOrStreamWhereCondition(clauses, args, f.RequestType, f.Stream)
+		clauses, args = appendNativeCompactionV2WhereCondition(clauses, args, f.NativeCompactionV2, "")
+		if f.BillingType != nil {
+			add("billing_type", int16(*f.BillingType))
+		}
+		// The projection contains text-only calls, so null billing_mode means token.
+		if f.BillingMode != "" {
+			args = append(args, f.BillingMode)
+			clauses = append(clauses, fmt.Sprintf("COALESCE(NULLIF(billing_mode,''),'token')=$%d", len(args)))
+		}
+		if f.UpstreamModelMismatch != nil {
+			clauses = append(clauses, upstreamModelMismatchCondition("upstream_model_mismatch", *f.UpstreamModelMismatch))
+		}
+	}
 	return strings.Join(clauses, " AND "), args
 }
 
@@ -163,7 +189,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		}
 	}
 	s := &out.Summary
-	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(COALESCE((payload->>'output_tokens')::bigint,0)),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success') FROM ustc_speed_samples WHERE `+where, args...).Scan(&s.Samples, &s.Successful, &s.Failed, &s.RateLimited, &s.Skipped, &s.Cancelled, &s.ProbeSamples, &s.RealSamples, &s.OutputTokens, &s.LatestAt, &s.LatestRealAt, &s.LatestProbeAt)
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(COALESCE((payload->>'output_tokens')::bigint,0)),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success') FROM `+speedObservationTable(q)+` WHERE `+where, args...).Scan(&s.Samples, &s.Successful, &s.Failed, &s.RateLimited, &s.Skipped, &s.Cancelled, &s.ProbeSamples, &s.RealSamples, &s.OutputTokens, &s.LatestAt, &s.LatestRealAt, &s.LatestProbeAt)
 	if err != nil {
 		return nil, err
 	}
@@ -192,11 +218,11 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		// series per model instead of splitting "historical" from "captured".
 		profileExpr = "''::text"
 	}
-	value := "(payload->>'" + q.Metric + "')::double precision"
+	value := speedMetricValue(q.Metric)
 	// Failed/cancelled observations remain in status summaries, not healthy-speed quantiles.
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
 	if interval == "raw" {
-		rows, err := r.db.QueryContext(ctx, `SELECT id,started_at,account_id,account_name,model,source,`+profileExpr+`,round_id,`+valid+` FROM ustc_speed_samples WHERE `+where+` ORDER BY started_at DESC,id DESC LIMIT 5001`, args...)
+		rows, err := r.db.QueryContext(ctx, `SELECT id,started_at,account_id,account_name,model,source,`+profileExpr+`,round_id,`+valid+` FROM `+speedObservationTable(q)+` WHERE `+where+` ORDER BY started_at DESC,id DESC LIMIT 5001`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +268,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		return nil, fmt.Errorf("invalid speed interval")
 	}
 	bucket := fmt.Sprintf("to_timestamp(floor(extract(epoch from started_at)/%d)*%d)", seconds, seconds)
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT bucket,0::bigint,''::text,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,model,source,profile ORDER BY bucket,model,source,profile LIMIT 5001`, args...)
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT bucket,0::bigint,''::text,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,model,source,profile ORDER BY bucket,model,source,profile LIMIT 5001`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -301,9 +327,9 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	if metric != "generation_tps" && metric != "overall_tps" {
 		metric = "generation_tps"
 	}
-	value := "(payload->>'" + metric + "')::double precision"
+	value := speedMetricValue(metric)
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY hour,model,source,profile LIMIT 2000`, hourArgs...)
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY hour,model,source,profile LIMIT 2000`, hourArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +411,7 @@ func (r *ustcSpeedRepository) GetSample(ctx context.Context, id int64) (*service
 	return &s, err
 }
 func (r *ustcSpeedRepository) Models(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT model FROM ustc_speed_samples WHERE model<>'' ORDER BY model LIMIT 512`)
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT model FROM ustc_speed_samples WHERE source='probe' AND model<>'' ORDER BY model LIMIT 512`)
 	if err != nil {
 		return nil, err
 	}

@@ -1,12 +1,12 @@
 export default {
   ustcSpeed: {
-    title: 'USTC 速度观测',
-    description: '基于真实调用与检测样本观察上游首字延迟、生成速度和请求阶段耗时。',
+    title: 'USTC 基准测试',
+    description: '定时检测上游服务的生成速度、首字等待与稳定性。',
     samplesTitle: '调用明细',
     tasksTitle: '检测任务与配置',
-    overviewDescription: '真实工作调用是默认视图。基准探测可单独查看，也可按来源分开展示。',
+    overviewDescription: '基准检测专门观察上游服务的速度、首字等待和稳定性。',
     samplesDescription: '按当前条件检索已采集的调用与检测样本。',
-    tasksDescription: '管理定时检测、手动运行、全局采集设置和账号冷却状态。',
+    tasksDescription: '配置定时检测与手动运行，查看容量和冷却状态。',
     nav: { overview: '趋势分析', tasks: '检测任务与配置' },
     action: {
       refresh: '刷新', apply: '应用筛选', exportCsv: '导出 CSV', exportJson: '导出 JSON',
@@ -16,7 +16,7 @@ export default {
     },
     source: { label: '数据来源', real: '真实调用', probe: '基准检测', all: '真实 + 基准（分开展示）' },
     filter: {
-      model: '模型', allModels: '全部模型', account: '账号', allAccounts: '全部账号',
+      model: '模型', allTasks: '全部检测任务', allModels: '全部模型', account: '账号', allAccounts: '全部账号',
       timeRange: '时间范围', advanced: '高级筛选', reasoning: '思考模式', all: '全部',
       reasoningOn: '开启思考', reasoningOff: '关闭思考', reasoningUnknown: '未知', stream: '流式',
       streaming: '流式', nonStreaming: '非流式', status: '结果状态', anyStatus: '全部状态',
@@ -34,6 +34,8 @@ export default {
     interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
     aggregate: { label: '统计口径', p50: 'P50 中位数', mean: '平均值', p10: 'P10 慢速水平', p90: 'P90' },
     overview: {
+      successRate: '检测成功率', rateLimitedRate: '上游限流率',
+      latest: '最新观测',
       chartTitle: '速度与等待趋势',
       aggregation: '{interval} · {statistic}', bucketSamples: '该点包含 {count} 个有效观测',
       distribution: 'P10–P90 分布区间', spread: 'P10 / P50 / P90：{p10} / {p50} / {p90}',
@@ -57,7 +59,7 @@ export default {
       comparison: { previous: '上一等长时段', week: '上周同期', month: '上月同期', year: '去年同期', none: '不对照' },
       compareHint: '判断同一模型是否变慢：按两段时期各自的起点对齐，同时比较平均表现与慢速尾部。今天尚未结束时，对照也只取对应的已过去时段。',
       distributionHint: '平均值相同，体验也可能不同。柱高表示调用占比，查看慢请求是否更多、分布是否更分散；两个周期使用相同区间。',
-      unavailable: '当前没有可用于分析的数据。基准临时回退的短时真实数据不参与周期对比。',
+      unavailable: '当前范围没有可用于分析的有效观测，请调整时间或筛选条件。',
       subject: '分析对象', mean: '调用平均', previousMean: '对照平均', median: '典型表现 · P50', medianHint: '一半调用高于此值，一半低于此值',
       slowTps: '慢速水平 · P10', slowLatency: '慢等待水平 · P90', variation: '波动系数', variationHint: '标准差 ÷ 均值；同一指标下越小越集中',
       change: '均值变化', versus: '相对对照 {change}', current: '当前时段', previous: '对照时段',
@@ -67,6 +69,7 @@ export default {
       mixTitle: '核对调用构成：均值变化是否伴随任务长度变化',
       mixHint: '相同的模型和账号，输入或输出长度占比变化仍会改变平均表现。这里沿用已有 token 数分桶，并列出桶内均值变化，帮助核对两段时期是否可比；不将相关性解释为原因。',
       length: 'token 范围（左闭右开）', currentShare: '当前占比', previousShare: '对照占比', withinChange: '桶内均值变化',
+      benchmarkMethod: '按基准调用等权统计，展示可观测的上游速度与稳定性；跳过不计作上游失败，缺测不补零。',
       method: '统计直接使用筛选后的全部有效调用，每次调用等权，模型和来源分开；不平均时间桶的均值或分位数。真实生成 TPS 来自使用记录的近似计算，记录首字不区分思考与正文。'
     },
     hourly: {
@@ -156,7 +159,7 @@ export default {
       weekday: { sun: '周日', mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六' }
     },
     settings: {
-      title: '真实调用同步与后台并发', description: '真实调用速度由现有使用记录计算并在后台同步。定时频率在各检测任务中配置，实际发起仍受共享 RPM、并发及 429 保护。',
+      title: '后台检测并发', description: '定时频率在各检测任务中配置，实际发起遵循共享 RPM、并发与任务保护设置。',
       captureEnabled: '从使用记录同步真实调用', concurrency: '后台检测最大并发',
       perKey: '每把物理 Key 的后台并发上限为 1。', saved: '全局设置已保存。',
       disableCapture: '关闭后不再从使用记录导入新的真实调用速度数据；检测任务不受影响。'

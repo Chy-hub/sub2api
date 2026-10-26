@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from '../client'
+import type { USTCSpeedOverview, USTCSpeedQuery } from './ustcSpeed'
 import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
 import type { EndpointStat } from '@/types'
 
@@ -207,8 +208,14 @@ export async function cancelCleanupTask(taskId: number): Promise<{ id: number; s
   return data
 }
 
+export async function getSpeedOverview(params: USTCSpeedQuery, options?: { signal?: AbortSignal }): Promise<USTCSpeedOverview> {
+  const { data } = await apiClient.get<USTCSpeedOverview>('/admin/usage/speed', { params, signal: options?.signal })
+  return data
+}
+
 export const adminUsageAPI = {
   list,
+  getSpeedOverview,
   getStats,
   searchUsers,
   searchApiKeys,
