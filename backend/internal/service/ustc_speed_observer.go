@@ -12,11 +12,12 @@ import (
 
 type ustcSpeedProbeKey struct{}
 type ustcSpeedProbeContext struct {
-	sample    USTCSpeedSample
-	result    chan USTCSpeedSample
-	first     chan struct{}
-	firstOnce sync.Once
-	guard     func() bool
+	sample      USTCSpeedSample
+	result      chan USTCSpeedSample
+	first       chan struct{}
+	firstOnce   sync.Once
+	guard       func() bool
+	blockReason string
 }
 
 type ustcSpeedWatch struct {
@@ -142,6 +143,9 @@ func (w *ustcSpeedWatch) finish(at time.Time, readErr error) {
 		case w.local:
 			sample.Status = "skipped"
 			sample.Reason = "local_capacity"
+			if w.probe != nil && w.probe.blockReason != "" {
+				sample.Reason = w.probe.blockReason
+			}
 		case sample.HTTPStatus == 429:
 			sample.Status = "rate_limited"
 			sample.Reason = "upstream_429"

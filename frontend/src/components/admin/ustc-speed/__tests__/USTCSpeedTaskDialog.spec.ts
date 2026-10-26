@@ -146,3 +146,14 @@ it('clamps jitter below a one-minute interval when the interval is changed', asy
   expect(submitted.jitter_seconds).toBe(59)
   expect(submitted.jitter_seconds).toBeLessThan(submitted.interval_seconds)
 })
+
+it('saves the task constraint policy without discarding its schedule or reserve values', async () => {
+  vi.spyOn(HTMLFormElement.prototype, 'reportValidity').mockReturnValue(true)
+  const wrapper = mountDialog(makeTask(1800, 7200))
+  await wrapper.get('[data-testid="ignore-task-constraints"]').setValue(true)
+  await wrapper.get('button.btn-primary').trigger('click')
+  expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
+    ignore_task_constraints: true, interval_seconds: 1800, reserve_concurrency: 1,
+  })
+  wrapper.unmount()
+})

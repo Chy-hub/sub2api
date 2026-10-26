@@ -26,9 +26,9 @@ export default {
       timezone: '时区', statusRecorded: '已记录（结果未知）'
     },
     metric: {
-      view: '主图', metric: '指标', tps: 'TPS 趋势', ttft: 'TTFT 趋势', time: 'Time 耗时',
+      view: '主图', metric: '指标', tps: 'TPS', ttft: 'TTFT', time: 'Time 耗时',
       generationTps: '生成速度（不含首字等待）', overallTps: '端到端速度（含首字等待）',
-      ttftMs: '首字耗时（正文）', firstOutputMs: '首次输出耗时（含思考）', totalMs: '请求总耗时', outputMs: '首字后耗时',
+      usageTtftMs: '记录首字等待', ttftMs: '首字耗时（正文）', firstOutputMs: '首次输出耗时（含思考）', totalMs: '请求总耗时', outputMs: '首字后耗时',
       headersMs: '上游响应头耗时', tailMs: '末次输出后等待', maxGapMs: '流内最大输出停顿', unitTps: 'token / 秒', unitMs: '毫秒'
     },
     interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
@@ -51,6 +51,23 @@ export default {
       truncated: '后端为控制返回量截断了趋势数据。', dropped: '有 {count} 个样本因数据限制未进入图表。',
       noReal: '当前时间范围内没有真实调用样本。', noProbe: '当前时间范围内没有基准检测样本。',
       ageUnknown: '时间未知', profile: '配置', configuration: '配置 {number}', account: '账号', source: '来源', coverage: '有效账号覆盖'
+    },
+    analysis: {
+      view: '分析视角', trend: '时间趋势', compare: '周期对比', distribution: '分布与波动', baseline: '对照周期',
+      comparison: { previous: '上一等长时段', week: '上周同期', month: '上月同期', year: '去年同期', none: '不对照' },
+      compareHint: '判断同一模型是否变慢：按两段时期各自的起点对齐，同时比较平均表现与慢速尾部。今天尚未结束时，对照也只取对应的已过去时段。',
+      distributionHint: '平均值相同，体验也可能不同。柱高表示调用占比，查看慢请求是否更多、分布是否更分散；两个周期使用相同区间。',
+      unavailable: '当前没有可用于分析的数据。基准临时回退的短时真实数据不参与周期对比。',
+      subject: '分析对象', mean: '调用平均', previousMean: '对照平均', median: '典型表现 · P50', medianHint: '一半调用高于此值，一半低于此值',
+      slowTps: '慢速水平 · P10', slowLatency: '慢等待水平 · P90', variation: '波动系数', variationHint: '标准差 ÷ 均值；同一指标下越小越集中',
+      change: '均值变化', versus: '相对对照 {change}', current: '当前时段', previous: '对照时段',
+      currentRange: '当前：{range}', previousRange: '对照：{range}', validSamples: '有效调用：当前 {current} / 对照 {previous}',
+      samplePair: '当前 / 对照有效调用', sampleCaution: '中位数至少需要 5 个有效调用，慢速尾部和波动系数至少需要 20 个；不足时留空。变化百分比是观测结果，不代表统计显著。',
+      elapsedAxis: '距各自时段起点的时间', elapsed: '距起点 {hours} 小时', shareAxis: '有效调用占比（%）',
+      mixTitle: '核对调用构成：均值变化是否伴随任务长度变化',
+      mixHint: '相同的模型和账号，输入或输出长度占比变化仍会改变平均表现。这里沿用已有 token 数分桶，并列出桶内均值变化，帮助核对两段时期是否可比；不将相关性解释为原因。',
+      length: 'token 范围（左闭右开）', currentShare: '当前占比', previousShare: '对照占比', withinChange: '桶内均值变化',
+      method: '统计直接使用筛选后的全部有效调用，每次调用等权，模型和来源分开；不平均时间桶的均值或分位数。真实生成 TPS 来自使用记录的近似计算，记录首字不区分思考与正文。'
     },
     hourly: {
       title: '调用时段分布', description: '所选时间范围内的调用按本地小时折叠：多天数据合并到同一天，同一时段按当前统计口径汇总。',
@@ -83,8 +100,10 @@ export default {
       providerCost: '上游成本', legacyNotice: '真实调用速度由使用记录中的总耗时、首字时间和 token 数计算。事件级阶段耗时、输出停顿和可靠的结果状态只对检测任务样本可用。', measurementUsageLog: '使用记录'
     },
     task: {
+      ignoreConstraints: '忽略任务约束', ignoreConstraintsHint: '按普通模型调用限制执行；忽略本任务的活动时段、账号并行数、起跑差、后台检测并发保护、用户排队保护、RPM/并发预留、活动请求上限及额外 429 退避/暂停。保留检测频率、目标、请求参数与超时，账号正常额度和共享准入照常生效。',
       title: '检测任务', add: '新建检测任务', edit: '编辑检测任务', deleteTitle: '删除检测任务',
       deleteMessage: '删除“{name}”？已保存的样本不会随任务删除。', runTitle: '运行检测任务',
+      runIgnoringMessage: '将“{name}”加入队列，按已保存的“忽略任务约束”设置执行，并遵循正常模型调用限制。',
       runMessage: '将任务“{name}”加入后台队列。服务端仍会执行用户优先、容量和 429 保护。',
       runQueued: '检测任务已加入队列（轮次 {round}）。', saved: '检测任务已保存。', deleted: '检测任务已删除。',
       enabled: '启用定时运行', disabledByDefault: '新建任务默认停用，不会自动发起上游请求。',
@@ -124,6 +143,7 @@ export default {
       thinking: { off: '关闭', on: '开启', auto: '自动（不额外指定）' },
       effort: { none: '未设置', low: '低', medium: '中', high: '高', xhigh: '极高' },
       reason: {
+        accountUnavailable: '账号当前不可调度', quotaBlocked: '账号额度阻塞', capacityUnavailable: '共享容量读取失败', capacityCooldown: '共享容量冷却中', capacityExhausted: '共享容量已用完', rpmReserved: '剩余 RPM 不足以满足用户预留', concurrencyReserved: '剩余并发不足以满足用户预留', activeRequestLimit: '达到任务活动请求上限', queueStateUnavailable: '用户队列状态读取失败', usersWaiting: '有真实用户正在排队',
         userLoad: '用户繁忙或容量不足', backgroundCapacity: '后台并发已满', sharedAdmission: '共享准入未通过',
         paused429: '429 暂停中', backoff429: '429 缓测中', limitsUnknown: '额度信息未知', modelNotSupported: '账号不支持该模型',
         roundStartSkew: '起跑差超过限制', runtimeUnavailable: '运行状态读取失败', gatewayUnavailable: '网关不可用',

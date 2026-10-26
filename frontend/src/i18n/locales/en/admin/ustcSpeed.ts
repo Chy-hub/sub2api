@@ -28,7 +28,7 @@ export default {
     metric: {
       view: 'Main chart', metric: 'Metric', tps: 'TPS trend', ttft: 'TTFT trend', time: 'Time stages',
       generationTps: 'Generation speed (excl. first-token wait)', overallTps: 'End-to-end speed (incl. first-token wait)',
-      ttftMs: 'Time to first text', firstOutputMs: 'Time to first output (incl. reasoning)', totalMs: 'Total request time', outputMs: 'Time after first output',
+      usageTtftMs: 'Recorded first-token wait', ttftMs: 'Time to first text', firstOutputMs: 'Time to first output (incl. reasoning)', totalMs: 'Total request time', outputMs: 'Time after first output',
       headersMs: 'Upstream response headers', tailMs: 'Wait after last output', maxGapMs: 'Longest pause during output', unitTps: 'tokens / second', unitMs: 'milliseconds'
     },
     interval: { label: 'Time interval', auto: 'Automatic', raw: 'Raw samples', m1: '1 minute', m5: '5 minutes', m15: '15 minutes', h1: '1 hour', d1: '1 day' },
@@ -51,6 +51,23 @@ export default {
       truncated: 'The backend truncated trend data to limit response size.', dropped: '{count} samples were omitted from the chart due to data limits.',
       noReal: 'No real call samples exist in this time range.', noProbe: 'No probe samples exist in this time range.',
       ageUnknown: 'Time unknown', profile: 'Profile', configuration: 'Config {number}', account: 'Account', source: 'Source', coverage: 'Valid account coverage'
+    },
+    analysis: {
+      view: 'Analysis', trend: 'Timeline', compare: 'Period comparison', distribution: 'Distribution & variability', baseline: 'Compare with',
+      comparison: { previous: 'Previous equal period', week: 'Same time last week', month: 'Same time last month', year: 'Same time last year', none: 'No comparison' },
+      compareHint: 'Compare the same model over two periods aligned to their respective starts. Check both the average and the slow tail. An unfinished day is compared only with the corresponding elapsed portion.',
+      distributionHint: 'The same average can hide different experiences. Bar height is the share of calls: check for a larger slow tail or wider spread. Both periods use identical bins.',
+      unavailable: 'No analysis is available for this scope. A short live-traffic fallback does not participate in historical benchmark comparisons.',
+      subject: 'Series', mean: 'Call average', previousMean: 'Baseline average', median: 'Typical result · P50', medianHint: 'Half of calls are above this value; half below',
+      slowTps: 'Slow speed · P10', slowLatency: 'Slow wait · P90', variation: 'Coefficient of variation', variationHint: 'Standard deviation ÷ mean; lower means a tighter spread',
+      change: 'Mean change', versus: 'Versus baseline {change}', current: 'Current period', previous: 'Baseline period',
+      currentRange: 'Current: {range}', previousRange: 'Baseline: {range}', validSamples: 'Valid calls: {current} current / {previous} baseline',
+      samplePair: 'Current / baseline valid calls', sampleCaution: 'Medians need 5 valid calls; slow tails and variability need 20. Smaller samples leave these values blank. Percentage changes are observations, not tests of statistical significance.',
+      elapsedAxis: 'Time since each period started', elapsed: '{hours} hours since start', shareAxis: 'Share of valid calls (%)',
+      mixTitle: 'Check task mix: did input or output lengths change?',
+      mixHint: 'Even with the same model and accounts, a change in task lengths can change the average. Existing token counts show the mix and within-bucket mean changes. This checks comparability and does not establish causality.',
+      length: 'Token range (upper bound excluded)', currentShare: 'Current share', previousShare: 'Baseline share', withinChange: 'Within-bucket change',
+      method: 'Statistics use all filtered valid calls with equal call weights, separated by model and source. Bucket means and quantiles are never averaged. Real generation TPS is approximated from usage records; recorded first-token timing does not distinguish reasoning from text.'
     },
     hourly: {
       title: 'Calls by hour of day', description: 'Calls in the applied range are folded onto one local day; multi-day observations in the same hour are combined with the selected statistic.',
@@ -83,8 +100,10 @@ export default {
       providerCost: 'Provider cost', legacyNotice: 'Real-call speed is derived from usage records: total duration, first-token time, and token counts. Event-level stage timings, output gaps, and a reliable result status are available only for probe samples.', measurementUsageLog: 'Usage record'
     },
     task: {
+      ignoreConstraints: 'Ignore task constraints', ignoreConstraintsHint: 'Use normal model-call limits. Ignore task activity windows, parallel-account and start-skew limits, background-probe caps, queue protection, capacity reserves, active-request caps, and extra 429 backoff/pause. Keep the interval, targets, request parameters and timeouts; normal account quotas and shared admission apply.',
       title: 'Probe tasks', add: 'New probe task', edit: 'Edit probe task', deleteTitle: 'Delete probe task',
       deleteMessage: 'Delete “{name}”? Saved samples will remain.', runTitle: 'Run probe task',
+      runIgnoringMessage: 'Queue “{name}” with its saved ignore-task-constraints policy, subject to normal model-call limits.',
       runMessage: 'Queue “{name}” for a background run. The server will still apply user priority, capacity, and 429 protections.',
       runQueued: 'Probe task queued (round {round}).', saved: 'Probe task saved.', deleted: 'Probe task deleted.',
       enabled: 'Enable scheduled runs', disabledByDefault: 'New tasks are disabled by default and will not make upstream calls automatically.',
@@ -124,6 +143,7 @@ export default {
       thinking: { off: 'Off', on: 'On', auto: 'Automatic (no extra setting)' },
       effort: { none: 'Unset', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' },
       reason: {
+        accountUnavailable: 'Account is not schedulable', quotaBlocked: 'Account quota is blocked', capacityUnavailable: 'Shared capacity could not be read', capacityCooldown: 'Shared capacity is cooling down', capacityExhausted: 'Shared capacity is exhausted', rpmReserved: 'Insufficient RPM after user reserve', concurrencyReserved: 'Insufficient concurrency after user reserve', activeRequestLimit: 'Task active-request limit reached', queueStateUnavailable: 'User queue state could not be read', usersWaiting: 'Real users are waiting',
         userLoad: 'User load or capacity', backgroundCapacity: 'Background concurrency full', sharedAdmission: 'Shared admission blocked',
         paused429: '429 pause', backoff429: '429 backoff', limitsUnknown: 'Quota limits unknown', modelNotSupported: 'Model not supported by account',
         roundStartSkew: 'Start skew exceeded', runtimeUnavailable: 'Runtime state unavailable', gatewayUnavailable: 'Gateway unavailable',

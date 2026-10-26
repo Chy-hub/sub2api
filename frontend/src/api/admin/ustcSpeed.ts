@@ -15,6 +15,7 @@ export type USTCSpeedMetric =
   | 'max_gap_ms'
 export type USTCSpeedInterval = 'raw' | '1m' | '5m' | '15m' | '1h' | '1d' | 'auto'
 export type USTCSpeedAggregate = 'p50' | 'mean' | 'p10' | 'p90'
+export type USTCSpeedComparison = 'previous' | 'week' | 'month' | 'year' | 'none'
 
 export interface USTCSpeedAccountDimension {
   id: number
@@ -30,6 +31,8 @@ export interface USTCSpeedDimensions {
 }
 
 export interface USTCSpeedQuery {
+  analysis?: boolean
+  comparison?: USTCSpeedComparison
   start_date: string
   end_date: string
   timezone: string
@@ -160,6 +163,7 @@ export interface USTCSpeedSummary {
 }
 
 export interface USTCSpeedOverview {
+  analysis?: USTCSpeedAnalysis
   range_start: string
   range_end: string
   group_by: 'model' | 'profile'
@@ -177,10 +181,39 @@ export interface USTCSpeedOverview {
   dropped_samples: number
 }
 
+export interface USTCSpeedAnalysisStats {
+  period: 'current' | 'previous'
+  model: string
+  source: string
+  count: number
+  valid_count: number
+  mean: number | null
+  p10: number | null
+  p50: number | null
+  p90: number | null
+  stddev: number | null
+  min: number | null
+  max: number | null
+}
+
+export interface USTCSpeedAnalysis {
+  current_start: string
+  current_end: string
+  previous_start: string | null
+  previous_end: string | null
+  comparison: USTCSpeedComparison
+  bucket_seconds: number
+  groups: USTCSpeedAnalysisStats[]
+  distribution: Array<{ period: 'current' | 'previous'; model: string; source: string; bin: number; lower: number; upper: number; count: number }>
+  lengths: Array<USTCSpeedAnalysisStats & { dimension: 'input' | 'output'; bucket: number }>
+  trend: Array<USTCSpeedAnalysisStats & { bucket: number }>
+}
+
 export interface USTCSpeedTask {
   id: number
   name: string
   enabled: boolean
+  ignore_task_constraints?: boolean
   all_accounts: boolean
   account_ids: number[]
   models: string[]
