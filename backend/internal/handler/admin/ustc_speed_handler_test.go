@@ -133,6 +133,40 @@ func TestParseUSTCSpeedQueryHourly(t *testing.T) {
 	}
 }
 
+func TestParseUSTCSpeedQueryHourlyMetricIsIndependent(t *testing.T) {
+	// The hourly chart must be able to show end-to-end speed while the trend
+	// chart stays on a latency metric.
+	query, err := parseUSTCSpeedQueryValues(url.Values{"hourly": {"true"}, "metric": {"ttft_ms"}, "hourly_metric": {"overall_tps"}}, time.Now())
+	if err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	if query.Metric != "ttft_ms" || query.HourlyMetric != "overall_tps" {
+		t.Fatalf("hourly metric must not replace the trend metric: %+v", query)
+	}
+
+	query, err = parseUSTCSpeedQueryValues(url.Values{"metric": {"overall_tps"}}, time.Now())
+	if err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	if query.HourlyMetric != "overall_tps" {
+		t.Fatalf("hourly_metric should default to a TPS trend metric, got %q", query.HourlyMetric)
+	}
+
+	query, err = parseUSTCSpeedQueryValues(url.Values{"metric": {"ttft_ms"}}, time.Now())
+	if err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	if query.HourlyMetric != "generation_tps" {
+		t.Fatalf("non-TPS trend metrics should fall back to generation_tps, got %q", query.HourlyMetric)
+	}
+
+	for _, value := range []string{"ttft_ms", "total_ms", "tps"} {
+		if _, err := parseUSTCSpeedQueryValues(url.Values{"hourly_metric": {value}}, time.Now()); err == nil {
+			t.Fatalf("hourly_metric=%q must be rejected", value)
+		}
+	}
+}
+
 func TestParseUSTCSpeedQueryAccepts180CalendarDays(t *testing.T) {
 	values := url.Values{"start_date": {"2026-01-01"}, "end_date": {"2026-06-29"}}
 	if _, err := parseUSTCSpeedQueryValues(values, time.Now()); err != nil {

@@ -37,28 +37,28 @@
       <section class="space-y-3">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.detail.metrics') }}</h3>
         <dl class="grid gap-3 rounded-xl border border-gray-200 p-4 text-sm dark:border-dark-700 sm:grid-cols-2 lg:grid-cols-3">
-          <InfoField :label="t('admin.ustcSpeed.metric.headersMs')" :value="formatMilliseconds(sample.headers_ms)" />
-          <InfoField :label="t('admin.ustcSpeed.metric.firstOutputMs')" :value="formatMilliseconds(sample.first_output_ms)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.metric.headersMs')" :value="formatMilliseconds(sample.headers_ms)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.metric.firstOutputMs')" :value="formatMilliseconds(sample.first_output_ms)" />
           <InfoField :label="t('admin.ustcSpeed.metric.ttftMs')" :value="formatMilliseconds(sample.ttft_ms)" />
           <InfoField :label="t('admin.ustcSpeed.metric.outputMs')" :value="formatMilliseconds(sample.output_ms)" />
           <InfoField :label="t('admin.ustcSpeed.metric.totalMs')" :value="formatMilliseconds(sample.total_ms)" />
-          <InfoField :label="t('admin.ustcSpeed.metric.tailMs')" :value="formatMilliseconds(sample.tail_ms)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.metric.tailMs')" :value="formatMilliseconds(sample.tail_ms)" />
           <InfoField :label="t('admin.ustcSpeed.metric.generationTps')" :value="formatRate(sample.generation_tps)" />
           <InfoField :label="t('admin.ustcSpeed.metric.overallTps')" :value="formatRate(sample.overall_tps)" />
-          <InfoField :label="t('admin.ustcSpeed.metric.maxGapMs')" :value="formatMilliseconds(sample.max_gap_ms)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.metric.maxGapMs')" :value="formatMilliseconds(sample.max_gap_ms)" />
           <InfoField :label="t('admin.ustcSpeed.detail.inputTokens')" :value="formatKnownInteger(sample.input_tokens, sample.input_tokens_known)" />
           <InfoField :label="t('admin.ustcSpeed.detail.outputTokens')" :value="formatKnownInteger(sample.output_tokens, sample.token_count_known)" />
           <InfoField :label="t('admin.ustcSpeed.detail.reasoningTokens')" :value="formatKnownInteger(sample.reasoning_tokens, sample.reasoning_tokens_known)" />
           <InfoField :label="t('admin.ustcSpeed.detail.cachedTokens')" :value="formatKnownInteger(sample.cached_tokens, sample.cached_tokens_known)" />
           <InfoField :label="t('admin.ustcSpeed.detail.inputTokenCountKnown')" :value="formatKnownFlag(sample.input_tokens_known)" />
           <InfoField :label="t('admin.ustcSpeed.detail.outputTokenCountKnown')" :value="formatKnownFlag(sample.token_count_known)" />
-          <InfoField :label="t('admin.ustcSpeed.detail.events')" :value="formatInteger(sample.event_count)" />
-          <InfoField :label="t('admin.ustcSpeed.detail.chars')" :value="formatInteger(sample.output_chars)" />
-          <InfoField :label="t('admin.ustcSpeed.detail.reasoningChars')" :value="formatInteger(sample.reasoning_chars)" />
-          <InfoField :label="t('admin.ustcSpeed.detail.gapOver1s')" :value="formatInteger(sample.gap_over_1s)" />
-          <InfoField :label="t('admin.ustcSpeed.detail.gapOver2s')" :value="formatInteger(sample.gap_over_2s)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.detail.events')" :value="formatInteger(sample.event_count)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.detail.chars')" :value="formatInteger(sample.output_chars)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.detail.reasoningChars')" :value="formatInteger(sample.reasoning_chars)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.detail.gapOver1s')" :value="formatInteger(sample.gap_over_1s)" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.detail.gapOver2s')" :value="formatInteger(sample.gap_over_2s)" />
           <InfoField :label="t('admin.ustcSpeed.detail.errorCode')" :value="sample.error_code || t('admin.ustcSpeed.detail.notAvailable')" />
-          <InfoField :label="t('admin.ustcSpeed.detail.streamDone')" :value="sample.stream_done ? t('admin.ustcSpeed.detail.yes') : t('admin.ustcSpeed.detail.no')" />
+          <InfoField v-if="!isUsageRecord" :label="t('admin.ustcSpeed.detail.streamDone')" :value="sample.stream_done ? t('admin.ustcSpeed.detail.yes') : t('admin.ustcSpeed.detail.no')" />
           <InfoField :label="t('admin.ustcSpeed.detail.providerCost')" :value="sample.provider_cost === null ? t('admin.ustcSpeed.detail.notObserved') : String(sample.provider_cost)" />
         </dl>
       </section>

@@ -285,9 +285,18 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	}
 	hourArgs := append(append([]any(nil), args...), timezone)
 	timezoneParam := len(hourArgs)
-	value := "(payload->>'" + q.Metric + "')::double precision"
+	// Hourly has its own metric so it can always answer "when is the upstream
+	// fastest?" even while the trend chart shows a latency metric.
+	metric := q.HourlyMetric
+	if metric != "generation_tps" && metric != "overall_tps" {
+		metric = q.Metric
+	}
+	if metric != "generation_tps" && metric != "overall_tps" {
+		metric = "generation_tps"
+	}
+	value := "(payload->>'" + metric + "')::double precision"
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY hour,model,source,profile LIMIT 2000`, hourArgs...)
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM ustc_speed_samples WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY hour,model,source,profile LIMIT 2000`, hourArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +304,7 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	out := []service.USTCSpeedHourPoint{}
 	for rows.Next() {
 		var point service.USTCSpeedHourPoint
-		if err = rows.Scan(&point.Hour, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
+		if err = rows.Scan(&point.Hour, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.DayCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
 			return nil, err
 		}
 		switch aggregate {

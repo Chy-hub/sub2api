@@ -52,6 +52,7 @@ export interface USTCSpeedQuery {
   limit?: number
   offset?: number
   hourly?: boolean
+  hourly_metric?: 'generation_tps' | 'overall_tps'
   last_hours?: number
 }
 
@@ -132,6 +133,7 @@ export interface USTCSpeedHourPoint {
   profile: string
   count: number
   valid_count: number
+  day_count: number
   value: number | null
   mean: number | null
   p10: number | null

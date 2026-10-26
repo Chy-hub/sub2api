@@ -131,6 +131,10 @@ type USTCSpeedQuery struct {
 	// by local hour of day so users can pick a faster time to run work.
 	Timezone string
 	Hourly   bool
+	// HourlyMetric selects the speed metric for the hourly view independently of
+	// the trend chart. It is limited to TPS metrics; empty falls back to Metric
+	// when that is a TPS metric, otherwise to generation_tps.
+	HourlyMetric string
 	// LastHours switches the range from calendar days to an exact rolling
 	// window ending now. Zero keeps the date-based Start/End range.
 	LastHours int
@@ -173,19 +177,22 @@ type USTCSpeedPoint struct {
 }
 
 type USTCSpeedHourPoint struct {
-	Hour       int      `json:"hour"`
-	Model      string   `json:"model"`
-	Source     string   `json:"source"`
-	Profile    string   `json:"profile"`
-	Count      int64    `json:"count"`
-	ValidCount int64    `json:"valid_count"`
-	Value      *float64 `json:"value"`
-	Mean       *float64 `json:"mean"`
-	P10        *float64 `json:"p10"`
-	P50        *float64 `json:"p50"`
-	P90        *float64 `json:"p90"`
-	Min        *float64 `json:"min"`
-	Max        *float64 `json:"max"`
+	Hour       int    `json:"hour"`
+	Model      string `json:"model"`
+	Source     string `json:"source"`
+	Profile    string `json:"profile"`
+	Count      int64  `json:"count"`
+	ValidCount int64  `json:"valid_count"`
+	// DayCount is how many local calendar days contributed to this hour. Multi-day
+	// ranges are folded into one day before averaging.
+	DayCount int64    `json:"day_count"`
+	Value    *float64 `json:"value"`
+	Mean     *float64 `json:"mean"`
+	P10      *float64 `json:"p10"`
+	P50      *float64 `json:"p50"`
+	P90      *float64 `json:"p90"`
+	Min      *float64 `json:"min"`
+	Max      *float64 `json:"max"`
 }
 
 type USTCSpeedOverview struct {
