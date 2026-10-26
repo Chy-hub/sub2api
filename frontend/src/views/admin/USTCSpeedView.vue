@@ -169,7 +169,7 @@
               </label>
               <label class="filter-field min-w-48">
                 <span>{{ t('admin.ustcSpeed.metric.metric') }}</span>
-                <select v-model="metric" class="filter-input" @change="loadOverview">
+                <select v-model="metric" class="filter-input" data-testid="chart-metric" @change="loadOverview">
                   <option v-for="option in metricOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
               </label>
@@ -213,11 +213,15 @@
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.hourly.title') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.description') }}</p>
+              <p v-if="appliedQuery" class="mt-1 text-xs text-gray-400 dark:text-gray-500">{{ appliedRangeLabel }}</p>
             </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ t('admin.ustcSpeed.hourly.metric') }} · {{ metricLabel }}</span>
-              <span v-if="appliedQuery" class="text-xs text-gray-500 dark:text-gray-400">{{ appliedQuery.timezone }}</span>
-            </div>
+            <label class="filter-field min-w-40">
+              <span>{{ t('admin.ustcSpeed.hourly.metric') }}</span>
+              <select v-model="hourlyMetric" class="filter-input" data-testid="hourly-metric" @change="loadOverview">
+                <option value="generation_tps">{{ t('admin.ustcSpeed.hourly.metricGeneration') }}</option>
+                <option value="overall_tps">{{ t('admin.ustcSpeed.hourly.metricOverall') }}</option>
+              </select>
+            </label>
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="!hourlySeries.length" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
@@ -466,6 +470,10 @@ let overviewAbortController: AbortController | null = null
 let overviewViewDisposed = false
 const chartGroup = ref<ChartGroup>('tps')
 const metric = ref<USTCSpeedMetric>('generation_tps')
+// The hourly view answers a different question ("when is the upstream fastest?")
+// than the trend chart, so it keeps its own TPS metric instead of inheriting
+// latency/diagnostic metrics that real usage records cannot provide.
+const hourlyMetric = ref<'generation_tps' | 'overall_tps'>('generation_tps')
 const exporting = ref(false)
 const selectedSample = ref<USTCSpeedSample | null>(null)
 const sampleDialogOpen = ref(false)
@@ -511,6 +519,10 @@ const modelOptions = computed(() => [...new Set([
 ].filter(Boolean))].sort((a, b) => a.localeCompare(b)))
 
 const metricOptions = computed(() => {
+  // Real calls come from usage records: they only have one first-token
+  // timestamp and no response-header/stream-gap timing. Showing probe-only
+  // metrics in the real view produced empty or duplicate charts.
+  const probeMetrics = filters.source !== 'real'
   const options: Record<ChartGroup, Array<{ value: USTCSpeedMetric; label: string }>> = {
     tps: [
       { value: 'generation_tps', label: t('admin.ustcSpeed.metric.generationTps') },
@@ -518,32 +530,30 @@ const metricOptions = computed(() => {
     ],
     ttft: [
       { value: 'ttft_ms', label: t('admin.ustcSpeed.metric.ttftMs') },
-      { value: 'first_output_ms', label: t('admin.ustcSpeed.metric.firstOutputMs') },
+      ...(probeMetrics ? [{ value: 'first_output_ms' as const, label: t('admin.ustcSpeed.metric.firstOutputMs') }] : []),
     ],
     time: [
-      { value: 'max_gap_ms', label: t('admin.ustcSpeed.metric.maxGapMs') },
-      { value: 'tail_ms', label: t('admin.ustcSpeed.metric.tailMs') },
-      { value: 'headers_ms', label: t('admin.ustcSpeed.metric.headersMs') },
+      { value: 'total_ms', label: t('admin.ustcSpeed.metric.totalMs') },
       { value: 'output_ms', label: t('admin.ustcSpeed.metric.outputMs') },
+      ...(probeMetrics ? [
+        { value: 'headers_ms' as const, label: t('admin.ustcSpeed.metric.headersMs') },
+        { value: 'tail_ms' as const, label: t('admin.ustcSpeed.metric.tailMs') },
+        { value: 'max_gap_ms' as const, label: t('admin.ustcSpeed.metric.maxGapMs') },
+      ] : []),
     ],
   }
   return options[chartGroup.value]
 })
 
 const isTpsMetric = computed(() => (overview.value?.metric ?? metric.value).endsWith('tps'))
-const metricI18nKeys: Record<USTCSpeedMetric, string> = {
-  generation_tps: 'generationTps',
-  overall_tps: 'overallTps',
-  ttft_ms: 'ttftMs',
-  first_output_ms: 'firstOutputMs',
-  total_ms: 'totalMs',
-  output_ms: 'outputMs',
-  headers_ms: 'headersMs',
-  tail_ms: 'tailMs',
-  max_gap_ms: 'maxGapMs',
-}
-const metricLabel = computed(() => t(`admin.ustcSpeed.metric.${metricI18nKeys[overview.value?.metric ?? metric.value]}`))
 const chartUnit = computed(() => isTpsMetric.value ? t('admin.ustcSpeed.metric.unitTps') : t('admin.ustcSpeed.metric.unitMs'))
+const hourlyUnit = computed(() => t('admin.ustcSpeed.metric.unitTps'))
+
+function normalizeMetric() {
+  if (!metricOptions.value.some((option) => option.value === metric.value)) {
+    metric.value = metricOptions.value[0].value
+  }
+}
 const aggregationLabel = computed(() => {
   const interval = overview.value?.interval ?? filters.interval
   const intervalKeys = { auto: 'auto', raw: 'raw', '1m': 'm1', '5m': 'm5', '15m': 'm15', '1h': 'h1', '1d': 'd1' }
@@ -913,10 +923,14 @@ const hourlyChartOptions = computed<any>(() => {
             const hour = items[0]?.dataIndex
             return hour === undefined ? '' : `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`
           },
-          label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) => `${context.dataset.label ?? ''}: ${formatChartValue(context.parsed.y)}`,
+          label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) => `${context.dataset.label ?? ''}: ${formatHourlyValue(context.parsed.y)}`,
           afterLabel: (context: { datasetIndex: number; dataIndex: number }) => {
             const point = hourlySeries.value[context.datasetIndex]?.hours[context.dataIndex]
-            return point ? t('admin.ustcSpeed.hourly.samples', { count: point.valid_count }) : ''
+            if (!point) return ''
+            return [
+              t('admin.ustcSpeed.hourly.samples', { count: point.valid_count }),
+              t('admin.ustcSpeed.hourly.days', { count: point.day_count }),
+            ]
           },
         },
       },
@@ -930,7 +944,7 @@ const hourlyChartOptions = computed<any>(() => {
         beginAtZero: true,
         grid: { color: theme.grid, borderDash: [4, 4] },
         ticks: { color: theme.text, font: { size: 10 }, callback: (value: string | number) => Number(value).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US') },
-        title: { display: true, text: chartUnit.value, color: theme.text },
+        title: { display: true, text: hourlyUnit.value, color: theme.text },
       },
     },
   }
@@ -984,6 +998,11 @@ function formatChartValue(value: number | null): string {
   return `${value.toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 })} ${chartUnit.value}`
 }
 
+function formatHourlyValue(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—'
+  return `${value.toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 })} ${hourlyUnit.value}`
+}
+
 function buildQuery(): USTCSpeedQuery {
   return {
     start_date: startDate.value,
@@ -1006,6 +1025,7 @@ function buildQuery(): USTCSpeedQuery {
     aggregate: filters.aggregate,
     group_by: 'model',
     hourly: true,
+    hourly_metric: hourlyMetric.value,
     last_hours: lastHours.value ?? undefined,
   }
 }
@@ -1034,6 +1054,7 @@ async function loadOverview() {
   overviewAbortController = controller
   loading.value = true
   try {
+    normalizeMetric()
     const query = buildQuery()
     const result = await adminUSTCSpeedAPI.getOverview(query, { signal: controller.signal })
     if (requestSeq !== overviewRequestSeq) return
