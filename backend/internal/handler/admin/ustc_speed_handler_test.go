@@ -23,7 +23,7 @@ func TestParseUSTCSpeedQueryDefaultsToTodayInShanghai(t *testing.T) {
 	if !query.Start.Equal(wantStart) || !query.End.Equal(wantEnd) {
 		t.Fatalf("unexpected half-open range: got [%s, %s), want [%s, %s)", query.Start, query.End, wantStart, wantEnd)
 	}
-	if query.Source != "real" || query.Metric != "generation_tps" || query.Interval != "auto" || query.GroupBy != "model" || query.Aggregate != "mean" {
+	if query.Source != "real" || query.Metric != "overall_tps" || query.HourlyMetric != "overall_tps" || query.Interval != "auto" || query.GroupBy != "model" || query.Aggregate != "mean" {
 		t.Fatalf("unexpected defaults: source=%q metric=%q interval=%q group_by=%q aggregate=%q", query.Source, query.Metric, query.Interval, query.GroupBy, query.Aggregate)
 	}
 	if query.Reasoning != "all" || query.Stream != "all" || query.Limit != ustcSpeedDefaultLimit || query.Offset != 0 {
@@ -160,13 +160,22 @@ func TestParseUSTCSpeedQueryHourlyMetricIsIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse query: %v", err)
 	}
-	if query.HourlyMetric != "generation_tps" {
-		t.Fatalf("non-TPS trend metrics should fall back to generation_tps, got %q", query.HourlyMetric)
+	if query.HourlyMetric != "overall_tps" {
+		t.Fatalf("non-TPS trend metrics should fall back to overall_tps, got %q", query.HourlyMetric)
 	}
 
 	for _, value := range []string{"ttft_ms", "total_ms", "tps"} {
 		if _, err := parseUSTCSpeedQueryValues(url.Values{"hourly_metric": {value}}, time.Now()); err == nil {
 			t.Fatalf("hourly_metric=%q must be rejected", value)
+		}
+	}
+}
+
+func TestParseUSTCSpeedQueryIntermediateIntervals(t *testing.T) {
+	for _, interval := range []string{"30m", "6h"} {
+		query, err := parseUSTCSpeedQueryValues(url.Values{"interval": {interval}}, time.Now())
+		if err != nil || query.Interval != interval {
+			t.Fatalf("interval=%q should be accepted: %+v, %v", interval, query, err)
 		}
 	}
 }

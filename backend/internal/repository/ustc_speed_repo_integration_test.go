@@ -258,9 +258,22 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	autoQuery.GroupBy = ""
 	autoOverview, err := repo.Overview(ctx, autoQuery)
 	require.NoError(t, err)
-	require.Equal(t, "1m", autoOverview.Interval)
+	require.Equal(t, "15m", autoOverview.Interval)
 	require.Equal(t, "model", autoOverview.GroupBy)
 	require.Equal(t, "mean", autoOverview.Aggregate)
+	for _, interval := range []string{"30m", "6h"} {
+		autoQuery.Interval = interval
+		bucketed, err := repo.Overview(ctx, autoQuery)
+		require.NoError(t, err)
+		require.Equal(t, interval, bucketed.Interval)
+		require.Equal(t, autoOverview.Summary.Samples, bucketed.Summary.Samples)
+		require.NotEmpty(t, bucketed.Series)
+		seconds, ok := service.USTCSpeedIntervalSeconds(interval)
+		require.True(t, ok)
+		for _, point := range bucketed.Series {
+			require.Zero(t, point.Time.Unix()%int64(seconds), "bucket timestamps must match the reported interval")
+		}
+	}
 }
 
 func TestUSTCSpeedOverviewWeightsRequestsAcrossAccounts(t *testing.T) {
