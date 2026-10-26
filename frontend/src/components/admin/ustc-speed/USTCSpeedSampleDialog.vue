@@ -4,7 +4,7 @@
       {{ t('admin.ustcSpeed.detail.loading') }}
     </div>
     <div v-else-if="sample" class="space-y-5">
-      <div v-if="isLegacy" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
+      <div v-if="isUsageRecord" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
         {{ t('admin.ustcSpeed.detail.legacyNotice') }}
       </div>
       <div v-else class="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-900/50 dark:bg-sky-900/20 dark:text-sky-100">
@@ -26,7 +26,7 @@
           <InfoField :label="t('admin.ustcSpeed.samples.reasoning')" :value="sample.reasoning || t('admin.ustcSpeed.detail.notObserved')" />
           <InfoField :label="t('admin.ustcSpeed.samples.stream')" :value="sample.stream ? t('admin.ustcSpeed.filter.streaming') : t('admin.ustcSpeed.filter.nonStreaming')" />
           <InfoField :label="t('admin.ustcSpeed.detail.apiMode')" :value="sample.api_mode || t('admin.ustcSpeed.detail.notObserved')" />
-          <InfoField :label="t('admin.ustcSpeed.detail.measurementMode')" :value="sample.measurement_mode || t('admin.ustcSpeed.detail.notObserved')" />
+          <InfoField :label="t('admin.ustcSpeed.detail.measurementMode')" :value="measurementModeLabel(sample.measurement_mode)" />
           <InfoField :label="t('admin.ustcSpeed.detail.httpStatus')" :value="sample.http_status ? String(sample.http_status) : t('admin.ustcSpeed.detail.notObserved')" />
           <InfoField :label="t('admin.ustcSpeed.detail.observedModel')" :value="sample.observed_model || t('admin.ustcSpeed.detail.notObserved')" />
           <InfoField :label="t('admin.ustcSpeed.detail.finishReason')" :value="sample.finish_reason || t('admin.ustcSpeed.detail.notObserved')" />
@@ -76,7 +76,13 @@ const props = defineProps<{ show: boolean; loading: boolean; sample: USTCSpeedSa
 const emit = defineEmits<{ (event: 'close'): void }>()
 const { t, locale } = useI18n()
 
-const isLegacy = computed(() => props.sample?.measurement_mode === 'legacy_usage' || props.sample?.profile === 'legacy')
+const isUsageRecord = computed(() => props.sample?.measurement_mode === 'legacy_usage' || props.sample?.profile === 'legacy')
+
+function measurementModeLabel(mode: string | null | undefined): string {
+  if (!mode) return t('admin.ustcSpeed.detail.notObserved')
+  if (mode === 'legacy_usage') return t('admin.ustcSpeed.detail.measurementUsageLog')
+  return mode
+}
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return t('admin.ustcSpeed.detail.notObserved')

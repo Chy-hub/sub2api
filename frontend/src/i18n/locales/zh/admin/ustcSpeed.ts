@@ -39,7 +39,7 @@ export default {
       distribution: 'P10–P90 分布区间', spread: 'P10 / P50 / P90：{p10} / {p50} / {p90}',
       lowSamples: '有效观测不足 5 个，该点仅供参考。',
       lastHours: '最近 {hours} 小时',
-      usageRecords: '查看使用记录', probeDrilldown: '已切换到原始基准观测，点击数据点查看速度测量。', legacyMeasurement: '历史近似口径',
+      usageRecords: '查看使用记录', probeDrilldown: '已切换到原始基准观测，点击数据点查看速度测量。',
       noSeries: '当前条件下没有可绘制的观测数据。', noSeriesHint: '数据为空时不补零、不插值。请调整时间范围或筛选条件。',
       samples: '样本数', successful: '成功', rateLimited: '限流', realSamples: '真实调用', probeSamples: '基准检测', outputTokens: '输出 token',
       failed: '错误', skipped: '跳过', cancelled: '取消',
@@ -47,7 +47,6 @@ export default {
       realAge: '最新真实调用距今 {age}', probeAge: '最新基准检测距今 {age}',
       validPoints: '有效指标点',
       auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各模型系列的样本数。', seriesBreakdown: '按模型与来源分组',
-      legacyNotice: '包含历史用量导入数据。旧 TTFT/TPS 是近似口径，状态为“结果未知”，不能当作成功或失败。',
       fallbackApplied: '基准检测因限流或资源繁忙正在缓测/暂停，当前临时显示最近 {minutes} 分钟的真实调用；图例仍标记为真实来源。',
       truncated: '后端为控制返回量截断了趋势数据。', dropped: '有 {count} 个样本因数据限制未进入图表。',
       noReal: '当前时间范围内没有真实调用样本。', noProbe: '当前时间范围内没有基准检测样本。',
@@ -81,7 +80,7 @@ export default {
       reasoningChars: '思考字符', gapOver1s: '超过 1 秒的间隔', gapOver2s: '超过 2 秒的间隔', streamDone: '流正常结束',
       yes: '是', no: '否', notObserved: '未观测', notAvailable: '不适用', reason: '原因', task: '任务 ID',
       round: '轮次 ID', startedAt: '开始时间', finishedAt: '结束时间', errorCode: '错误代码',
-      providerCost: '上游成本', legacyNotice: '此样本来自上线前的历史用量记录。旧版首字与 TPS 为近似口径，不能视作精确预填充或完整客户端耗时；结果状态未知，缺失指标保持为空。'
+      providerCost: '上游成本', legacyNotice: '真实调用速度由使用记录中的总耗时、首字时间和 token 数计算。事件级阶段耗时、输出停顿和可靠的结果状态只对检测任务样本可用。', measurementUsageLog: '使用记录'
     },
     task: {
       title: '检测任务', add: '新建检测任务', edit: '编辑检测任务', deleteTitle: '删除检测任务',
@@ -137,10 +136,10 @@ export default {
       weekday: { sun: '周日', mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六' }
     },
     settings: {
-      title: '采集与后台并发设置', description: '速度数据长期保留。定时频率在各检测任务中配置，实际发起仍受共享 RPM、并发及 429 保护。',
-      captureEnabled: '采集真实调用性能指标', concurrency: '后台检测最大并发',
+      title: '真实调用同步与后台并发', description: '真实调用速度由现有使用记录计算并在后台同步。定时频率在各检测任务中配置，实际发起仍受共享 RPM、并发及 429 保护。',
+      captureEnabled: '从使用记录同步真实调用', concurrency: '后台检测最大并发',
       perKey: '每把物理 Key 的后台并发上限为 1。', saved: '全局设置已保存。',
-      disableCapture: '关闭后不再采集新的真实调用性能指标。'
+      disableCapture: '关闭后不再从使用记录导入新的真实调用速度数据；检测任务不受影响。'
     },
     runtime: {
       title: '账号运行状态', description: '显示共享 429 冷却、暂停和后台占用状态。',

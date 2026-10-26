@@ -150,26 +150,26 @@ func ValidateUSTCSpeedTask(t *USTCSpeedTask) error {
 }
 
 type USTCSpeedService struct {
-	repo         USTCSpeedRepository
-	accounts     AccountRepository
-	gateway      *OpenAIGatewayService
-	cfg          atomic.Pointer[USTCSpeedSettings]
-	stopped      atomic.Bool
-	dropped      atomic.Uint64
-	queue        chan USTCSpeedSample
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	jobsMu       sync.Mutex
-	jobs         map[int64]context.CancelFunc
-	historyScope string
-	historyDone  bool
-	captureSince atomic.Int64
+	repo           USTCSpeedRepository
+	accounts       AccountRepository
+	gateway        *OpenAIGatewayService
+	cfg            atomic.Pointer[USTCSpeedSettings]
+	stopped        atomic.Bool
+	dropped        atomic.Uint64
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	jobsMu         sync.Mutex
+	jobs           map[int64]context.CancelFunc
+	historyScope   string
+	historyDone    bool
+	recentCaughtUp bool
+	captureSince   atomic.Int64
 }
 
 func NewUSTCSpeedService(repo USTCSpeedRepository, accounts AccountRepository, gateway *OpenAIGatewayService) *USTCSpeedService {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &USTCSpeedService{repo: repo, accounts: accounts, gateway: gateway, queue: make(chan USTCSpeedSample, 1024), ctx: ctx, cancel: cancel, jobs: map[int64]context.CancelFunc{}}
+	s := &USTCSpeedService{repo: repo, accounts: accounts, gateway: gateway, ctx: ctx, cancel: cancel, jobs: map[int64]context.CancelFunc{}}
 	cfg := DefaultUSTCSpeedSettings()
 	s.cfg.Store(&cfg)
 	return s
@@ -178,8 +178,7 @@ func (s *USTCSpeedService) Start() {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	s.refreshSettings(ctx)
 	cancel()
-	s.wg.Add(3)
-	go s.writeLoop()
+	s.wg.Add(2)
 	go s.schedulerLoop()
 	go s.historyLoop()
 }
@@ -197,34 +196,6 @@ func (s *USTCSpeedService) Stop() {
 }
 func (s *USTCSpeedService) captureEnabled() bool {
 	return s != nil && !s.stopped.Load() && s.cfg.Load().CaptureEnabled
-}
-func (s *USTCSpeedService) submit(sample USTCSpeedSample) {
-	if s == nil || s.stopped.Load() {
-		return
-	}
-	select {
-	case s.queue <- sample:
-	default:
-		s.dropped.Add(1)
-	}
-}
-func (s *USTCSpeedService) writeLoop() {
-	defer s.wg.Done()
-	for {
-		select {
-		case sample := <-s.queue:
-			s.persist(sample)
-		case <-s.ctx.Done():
-			for {
-				select {
-				case sample := <-s.queue:
-					s.persist(sample)
-				default:
-					return
-				}
-			}
-		}
-	}
 }
 func (s *USTCSpeedService) persist(sample USTCSpeedSample) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -515,15 +486,60 @@ func (s *USTCSpeedService) historyLoop() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	turn := 0
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
+			turn++
 			ctx, cancel := context.WithTimeout(s.ctx, 2*time.Minute)
+			if turn%10 == 1 || !s.recentCaughtUp {
+				s.importRecentUsage(ctx)
+			}
 			s.importHistory(ctx)
 			cancel()
 		}
+	}
+}
+
+// importRecentUsage is the only source of new real-call samples: user traffic
+// is intentionally not observed on the gateway, so speed metrics reuse the
+// duration, first-token, and token counts already stored in usage records. A
+// rolling 24-hour window catches up after restarts while keeping each pass
+// bounded; imported rows are deduplicated by usage-log ID.
+func (s *USTCSpeedService) importRecentUsage(ctx context.Context) {
+	if !s.captureEnabled() {
+		return
+	}
+	accounts, err := s.ustcAccounts(ctx)
+	if err != nil || len(accounts) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(accounts))
+	for _, account := range accounts {
+		ids = append(ids, account.ID)
+	}
+	now := time.Now()
+	since := now.Add(-24 * time.Hour)
+	if !s.recentCaughtUp {
+		// After an upgrade the last passively captured sample may be older than
+		// the steady window. Walk newest-first from the feature's start until
+		// fewer than one full page remains.
+		if capture := s.captureSince.Load(); capture > 0 {
+			since = time.Unix(0, capture)
+		}
+	}
+	count, err := s.repo.ImportRecentUsage(ctx, now, since, ids, 2000)
+	if err != nil {
+		slog.Warn("ustc_speed_recent_import_failed", "error", err)
+		return
+	}
+	if !s.recentCaughtUp && count < 2000 {
+		s.recentCaughtUp = true
+	}
+	if count > 0 {
+		slog.Info("ustc_speed_recent_import", "count", count)
 	}
 }
 
