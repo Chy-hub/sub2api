@@ -1,9 +1,9 @@
 <template>
-  <AppLayout>
+  <component :is="embedded ? 'div' : AppLayout">
     <div class="w-full space-y-5">
-      <header class="flex flex-wrap items-start justify-between gap-4">
+      <header v-if="!embedded" class="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div class="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400">USTC OBSERVATORY</div>
+          <div class="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400">USTC BENCHMARK</div>
           <h1 class="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">{{ pageTitle }}</h1>
           <p class="mt-1 max-w-3xl text-sm text-gray-500 dark:text-gray-400">{{ pageDescription }}</p>
         </div>
@@ -11,9 +11,6 @@
           <template v-if="isOverview">
             <button type="button" class="btn btn-secondary" :disabled="loading" @click="refreshCurrent">
               {{ loading ? t('admin.ustcSpeed.action.loading') : t('admin.ustcSpeed.action.refresh') }}
-            </button>
-            <button v-if="filters.source !== 'probe' || overview?.fallback_applied" type="button" class="btn btn-secondary" @click="openUsageRecords()">
-              {{ t('admin.ustcSpeed.overview.usageRecords') }}
             </button>
             <button type="button" class="btn btn-secondary" :disabled="exporting" @click="exportSamples('csv')">
               {{ exporting ? t('admin.ustcSpeed.action.exporting') : t('admin.ustcSpeed.action.exportCsv') }}
@@ -28,14 +25,13 @@
         </div>
       </header>
 
-      <section v-if="!isTasks" class="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+      <section v-if="!embedded" class="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
         <div class="flex flex-wrap items-end gap-3">
           <label class="min-w-[190px] flex-1 space-y-1.5">
-            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.source.label') }}</span>
-            <select v-model="filters.source" class="filter-input">
-              <option value="real">{{ t('admin.ustcSpeed.source.real') }}</option>
-              <option value="probe">{{ t('admin.ustcSpeed.source.probe') }}</option>
-              <option value="all">{{ t('admin.ustcSpeed.source.all') }}</option>
+            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.title') }}</span>
+            <select v-model="filters.taskId" class="filter-input">
+              <option :value="undefined">{{ t('admin.ustcSpeed.filter.allTasks') }}</option>
+              <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.name }}</option>
             </select>
           </label>
           <label class="min-w-[170px] flex-1 space-y-1.5">
@@ -100,31 +96,6 @@
               </select>
             </label>
             <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.filter.profile') }}</span>
-              <input v-model.trim="filters.profile" class="filter-input" :placeholder="t('admin.ustcSpeed.filter.profilePlaceholder')" />
-            </label>
-            <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.filter.taskId') }}</span>
-              <input v-model.number="filters.taskId" type="number" min="1" class="filter-input" />
-            </label>
-            <p class="text-xs text-gray-500 dark:text-gray-400 md:col-span-4">{{ t('admin.ustcSpeed.filter.taskIdHint') }}</p>
-            <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.filter.inputMin') }}</span>
-              <input v-model.number="filters.inputMin" type="number" min="0" class="filter-input" />
-            </label>
-            <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.filter.inputMax') }}</span>
-              <input v-model.number="filters.inputMax" type="number" min="0" class="filter-input" />
-            </label>
-            <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.filter.outputMin') }}</span>
-              <input v-model.number="filters.outputMin" type="number" min="0" class="filter-input" />
-            </label>
-            <label class="filter-field">
-              <span>{{ t('admin.ustcSpeed.filter.outputMax') }}</span>
-              <input v-model.number="filters.outputMax" type="number" min="0" class="filter-input" />
-            </label>
-            <label class="filter-field">
               <span>{{ t('admin.ustcSpeed.aggregate.label') }}</span>
               <select v-model="filters.aggregate" class="filter-input">
                 <option value="p50">{{ t('admin.ustcSpeed.aggregate.p50') }}</option>
@@ -147,9 +118,7 @@
           <span v-if="overview?.truncated && (overview?.dropped_samples ?? 0) > 0"> </span>
           <span v-if="(overview?.dropped_samples ?? 0) > 0">{{ t('admin.ustcSpeed.overview.dropped', { count: overview?.dropped_samples }) }}</span>
         </div>
-        <div v-if="overview?.fallback_applied" role="status" class="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-900/50 dark:bg-sky-900/20 dark:text-sky-100">
-          {{ t('admin.ustcSpeed.overview.fallbackApplied', { minutes: Math.ceil(overview.fallback_window_seconds / 60) }) }}
-        </div>
+
 
         <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-end justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
@@ -178,13 +147,18 @@
                 <select v-model="chartGroup" class="filter-input" @change="handleChartGroupChange">
                   <option value="tps">{{ t('admin.ustcSpeed.metric.tps') }}</option>
                   <option value="ttft">{{ t('admin.ustcSpeed.metric.ttft') }}</option>
-                  <option value="time">{{ t('admin.ustcSpeed.metric.time') }}</option>
                 </select>
               </label>
               <label class="filter-field min-w-48">
                 <span>{{ t('admin.ustcSpeed.metric.metric') }}</span>
                 <select v-model="metric" class="filter-input" data-testid="chart-metric" @change="loadOverview">
                   <option v-for="option in metricOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </label>
+              <label v-if="embedded && analysisView === 'trend'" class="filter-field min-w-32">
+                <span>{{ t('admin.ustcSpeed.aggregate.label') }}</span>
+                <select v-model="filters.aggregate" class="filter-input">
+                  <option v-for="option in ['mean', 'p50', 'p10', 'p90']" :key="option" :value="option">{{ t(`admin.ustcSpeed.aggregate.${option}`) }}</option>
                 </select>
               </label>
               <label v-if="analysisView === 'trend'" class="filter-field min-w-32">
@@ -203,7 +177,7 @@
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="loading" class="flex h-[420px] items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
-            <USTCSpeedAnalysis v-else-if="analysisView !== 'trend'" :analysis="overview?.analysis" :view="analysisView" :metric="overview?.metric ?? metric" :aggregate="overview?.aggregate ?? filters.aggregate" :timezone="appliedQuery?.timezone ?? filters.timezone" />
+            <USTCSpeedAnalysis v-else-if="analysisView !== 'trend'" :analysis="overview?.analysis" :view="analysisView" :metric="overview?.metric ?? metric" :aggregate="overview?.aggregate ?? filters.aggregate" :timezone="appliedQuery?.timezone ?? filters.timezone" :show-task-mix="embedded" />
             <div v-else-if="!chartData || !chartData.datasets.length" class="flex min-h-[340px] flex-col items-center justify-center px-6 text-center">
               <div class="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-xl text-gray-400 dark:bg-dark-700">∅</div>
               <p class="font-medium text-gray-700 dark:text-gray-200">{{ t('admin.ustcSpeed.overview.noSeries') }}</p>
@@ -215,11 +189,44 @@
           </div>
           <div class="grid gap-3 border-t border-gray-100 bg-gray-50/70 px-5 py-3 text-sm dark:border-dark-700 dark:bg-dark-900/30 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
             <SummaryValue :label="t('admin.ustcSpeed.overview.samples')" :value="formatNumber(overview?.summary.samples)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.successful')" :value="formatNumber(overview?.summary.successful)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.rateLimited')" :value="formatNumber(overview?.summary.rate_limited)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.realSamples')" :value="formatNumber(overview?.summary.real_samples)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.probeSamples')" :value="formatNumber(overview?.summary.probe_samples)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.outputTokens')" :value="formatNumber(overview?.summary.output_tokens)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.successRate')" :value="formatPercent(overview?.summary.success_rate)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.rateLimitedRate')" :value="formatPercent(rateLimitedPercent)" />
+            <SummaryValue :label="t('admin.ustcSpeed.overview.validPoints')" :value="formatNumber(validMetricPointCount)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.skipped')" :value="formatNumber(overview?.summary.skipped)" />
+            <SummaryValue :label="t('admin.ustcSpeed.overview.latest')" :value="formatAge(overview?.summary.latest_at)" />
+          </div>
+        </section>
+
+        <section v-if="!embedded" id="benchmark-tasks" class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
+            <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.disabledByDefault') }}</p></div>
+            <button type="button" class="btn btn-secondary" :disabled="tasksLoading" @click="loadTasks()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
+          </div>
+          <div v-if="tasksLoading" class="flex min-h-40 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
+          <div v-else-if="!tasks.length" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.empty') }}</div>
+          <div v-else class="overflow-x-auto">
+            <table class="min-w-[1080px] w-full divide-y divide-gray-100 text-left text-sm dark:divide-dark-700">
+              <thead class="bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-gray-400"><tr>
+                <th class="px-4 py-3">{{ t('admin.ustcSpeed.task.field.name') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectModels') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectAccounts') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.nextRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastStatus') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.status') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
+              </tr></thead>
+              <tbody class="divide-y divide-gray-100 dark:divide-dark-700"><tr v-for="task in tasks" :key="task.id" class="hover:bg-gray-50/70 dark:hover:bg-dark-700/30">
+                <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span v-if="task.ignore_task_constraints" class="mt-1 block text-xs text-primary-600 dark:text-primary-300">{{ t('admin.ustcSpeed.task.ignoreConstraints') }}</span><span class="mt-1 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ taskScheduleLabel(task) }}</span><button type="button" class="ml-2 text-xs font-medium text-primary-600 hover:underline dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.task.editSchedule') }}</button></td>
+                <td class="max-w-60 truncate px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.models.join(', ') }}</td>
+                <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.all_accounts ? t('admin.ustcSpeed.task.allAccounts') : accountNames(task.account_ids) }}</td>
+                <td :title="formatDateTime(task.next_run_at)" class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatTaskTimestamp(task.next_run_at) }}</td>
+                <td :title="formatDateTime(task.last_run_at)" class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatTaskTimestamp(task.last_run_at) }}</td>
+                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">
+                  <span>{{ task.last_status ? statusLabel(task.last_status) : '—' }}</span>
+                  <span v-if="task.last_detail" class="mt-0.5 block text-xs text-gray-400 dark:text-gray-500">{{ taskDetailLabel(task.last_detail) }}</span>
+                </td>
+                <td class="px-4 py-3"><span :class="task.enabled ? 'status-pill status-success' : 'status-pill status-muted'">{{ task.enabled ? t('admin.ustcSpeed.task.enabled') : t('admin.ustcSpeed.status.paused') }}</span></td>
+                <td class="px-4 py-3"><div class="flex items-center gap-3 whitespace-nowrap">
+                  <button type="button" class="shrink-0 text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.action.edit') }}</button>
+                  <button type="button" class="shrink-0 text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="confirmRun(task)">{{ t('admin.ustcSpeed.task.manualRun') }}</button>
+                  <button type="button" class="shrink-0 text-sm font-medium text-red-600 hover:text-red-700 dark:text-red-400" @click="confirmDelete(task)">{{ t('admin.ustcSpeed.action.delete') }}</button>
+                </div></td>
+              </tr></tbody>
+            </table>
           </div>
         </section>
 
@@ -239,7 +246,8 @@
             </label>
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
-            <div v-if="!hourlySeries.length" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
+            <div v-if="loading" class="flex h-[220px] items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
+            <div v-else-if="!hourlySeries.length" class="flex h-[220px] items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.hourly.noData') }}</div>
             <div v-else class="h-[260px] min-w-0">
               <SpeedChart type="line" :data="hourlyChartData" :options="hourlyChartOptions" />
             </div>
@@ -255,12 +263,13 @@
             <span class="text-gray-400">⌄</span>
           </summary>
           <div class="grid gap-4 border-t border-gray-100 p-5 dark:border-dark-700 md:grid-cols-3">
-            <SummaryValue :label="t('admin.ustcSpeed.overview.realLatest')" :value="formatAge(overview?.summary.latest_real_at)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.probeLatest')" :value="formatAge(overview?.summary.latest_probe_at)" />
+            <SummaryValue :label="t('admin.ustcSpeed.overview.latest')" :value="formatAge(overview?.summary.latest_at)" />
             <SummaryValue :label="t('admin.ustcSpeed.overview.validPoints')" :value="formatNumber(validMetricPointCount)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.failed')" :value="formatNumber(overview?.summary.failed)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.skipped')" :value="formatNumber(overview?.summary.skipped)" />
-            <SummaryValue :label="t('admin.ustcSpeed.overview.cancelled')" :value="formatNumber(overview?.summary.cancelled)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.successful')" :value="formatNumber(overview?.summary.successful)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.rateLimited')" :value="formatNumber(overview?.summary.rate_limited)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.failed')" :value="formatNumber(overview?.summary.failed)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.skipped')" :value="formatNumber(overview?.summary.skipped)" />
+            <SummaryValue v-if="!embedded" :label="t('admin.ustcSpeed.overview.cancelled')" :value="formatNumber(overview?.summary.cancelled)" />
             <div class="md:col-span-3">
               <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.overview.seriesBreakdown') }}</div>
               <div v-if="!seriesBreakdown.length" class="text-sm text-gray-500">{{ t('admin.ustcSpeed.overview.noSeries') }}</div>
@@ -281,39 +290,8 @@
         </details>
       </template>
 
-      <template v-else>
-        <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
-            <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.disabledByDefault') }}</p></div>
-            <button type="button" class="btn btn-secondary" :disabled="tasksLoading" @click="loadTasks()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
-          </div>
-          <div v-if="tasksLoading" class="flex min-h-40 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
-          <div v-else-if="!tasks.length" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.empty') }}</div>
-          <div v-else class="overflow-x-auto">
-            <table class="min-w-[1080px] w-full divide-y divide-gray-100 text-left text-sm dark:divide-dark-700">
-              <thead class="bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-gray-400"><tr>
-                <th class="px-4 py-3">{{ t('admin.ustcSpeed.task.field.name') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectModels') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectAccounts') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.nextRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastStatus') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.status') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
-              </tr></thead>
-              <tbody class="divide-y divide-gray-100 dark:divide-dark-700"><tr v-for="task in tasks" :key="task.id" class="hover:bg-gray-50/70 dark:hover:bg-dark-700/30">
-                <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span v-if="task.ignore_task_constraints" class="mt-1 block text-xs text-primary-600 dark:text-primary-300">{{ t('admin.ustcSpeed.task.ignoreConstraints') }}</span><span class="mt-1 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ taskScheduleLabel(task) }}</span><button type="button" class="ml-2 text-xs font-medium text-primary-600 hover:underline dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.task.editSchedule') }}</button></td>
-                <td class="max-w-60 truncate px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.models.join(', ') }}</td>
-                <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.all_accounts ? t('admin.ustcSpeed.task.allAccounts') : accountNames(task.account_ids) }}</td>
-                <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(task.next_run_at) }}</td>
-                <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(task.last_run_at) }}</td>
-                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">
-                  <span>{{ task.last_status ? statusLabel(task.last_status) : '—' }}</span>
-                  <span v-if="task.last_detail" class="mt-0.5 block text-xs text-gray-400 dark:text-gray-500">{{ taskDetailLabel(task.last_detail) }}</span>
-                </td>
-                <td class="px-4 py-3"><span :class="task.enabled ? 'status-pill status-success' : 'status-pill status-muted'">{{ task.enabled ? t('admin.ustcSpeed.task.enabled') : t('admin.ustcSpeed.status.paused') }}</span></td>
-                <td class="px-4 py-3"><div class="flex items-center gap-2">
-                  <button type="button" class="text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.action.edit') }}</button>
-                  <button type="button" class="text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="confirmRun(task)">{{ t('admin.ustcSpeed.task.manualRun') }}</button>
-                  <button type="button" class="text-sm font-medium text-red-600 hover:text-red-700 dark:text-red-400" @click="confirmDelete(task)">{{ t('admin.ustcSpeed.action.delete') }}</button>
-                </div></td>
-              </tr></tbody>
-            </table>
-          </div>
-        </section>
+      <template v-if="!embedded">
+
 
         <details class="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <summary class="cursor-pointer px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.settings.title') }}</summary>
@@ -325,10 +303,6 @@
               <button type="button" class="btn btn-secondary" @click="loadSettings(true)">{{ t('admin.ustcSpeed.action.refresh') }}</button>
             </div>
             <form v-else class="space-y-4" @submit.prevent="saveGlobalSettings">
-              <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
-                <input v-model="settings.capture_enabled" type="checkbox" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-                <span><span class="block font-medium">{{ t('admin.ustcSpeed.settings.captureEnabled') }}</span><span class="mt-0.5 block text-xs text-gray-500">{{ t('admin.ustcSpeed.settings.disableCapture') }}</span></span>
-              </label>
               <label class="filter-field max-w-xs"><span>{{ t('admin.ustcSpeed.settings.concurrency') }}</span><input v-model.number="settings.max_background_concurrency" type="number" min="1" max="16" class="filter-input" /></label>
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.settings.perKey') }}</p>
@@ -338,11 +312,11 @@
           </div>
         </details>
 
-        <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
+        <details class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <summary class="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
             <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.runtime.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.runtime.description') }}</p></div>
-            <button type="button" class="btn btn-secondary" :disabled="runtimeLoading" @click="loadRuntime()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
-          </div>
+            <button type="button" class="btn btn-secondary" :disabled="runtimeLoading" @click.stop.prevent="loadRuntime()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
+          </summary>
           <div v-if="runtimeLoading" class="flex min-h-32 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
           <div v-else-if="!runtime.length" class="px-5 py-8 text-center text-sm text-gray-500">{{ t('admin.ustcSpeed.runtime.noData') }}</div>
           <div v-else class="overflow-x-auto">
@@ -355,7 +329,7 @@
               </tr></tbody>
             </table>
           </div>
-        </section>
+        </details>
       </template>
 
       <USTCSpeedTaskDialog
@@ -378,7 +352,7 @@
         @confirm="executePendingAction"
       />
     </div>
-  </AppLayout>
+  </component>
 </template>
 
 <script setup lang="ts">
@@ -394,6 +368,8 @@ import USTCSpeedTaskDialog from '@/components/admin/ustc-speed/USTCSpeedTaskDial
 import USTCSpeedSampleDialog from '@/components/admin/ustc-speed/USTCSpeedSampleDialog.vue'
 import USTCSpeedAnalysis from '@/components/admin/ustc-speed/USTCSpeedAnalysis.vue'
 import { adminUSTCSpeedAPI } from '@/api/admin/ustcSpeed'
+import { getSpeedOverview } from '@/api/admin/usage'
+import type { AdminUsageQueryParams } from '@/api/admin/usage'
 import type {
   USTCSpeedAccountDimension,
   USTCSpeedAggregate,
@@ -414,7 +390,7 @@ import { useAppStore } from '@/stores/app'
 
 ChartJS.register(BarController, BarElement, CategoryScale, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip)
 
-type ChartGroup = 'tps' | 'ttft' | 'time'
+type ChartGroup = 'tps' | 'ttft'
 type ExportFormat = 'csv' | 'json'
 type PendingAction = { kind: 'delete' | 'run'; task: USTCSpeedTask } | null
 type SampleFilterState = {
@@ -435,15 +411,17 @@ type SampleFilterState = {
   timezone: string
 }
 
+const props = withDefaults(defineProps<{ embedded?: boolean; active?: boolean; usageFilters?: AdminUsageQueryParams; refreshVersion?: number }>(), { embedded: false, active: true, refreshVersion: 0 })
+const emit = defineEmits<{ (event: 'show-records', value: { model?: string; account_id?: number }): void }>()
 const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 
-const isOverview = computed(() => route.path === '/admin/ustc-speed')
-const isTasks = computed(() => route.path === '/admin/ustc-speed/tasks')
-const pageTitle = computed(() => isTasks.value ? t('admin.ustcSpeed.tasksTitle') : t('admin.ustcSpeed.title'))
-const pageDescription = computed(() => isTasks.value ? t('admin.ustcSpeed.tasksDescription') : t('admin.ustcSpeed.overviewDescription'))
+const isOverview = computed(() => true)
+const isTasks = computed(() => !props.embedded)
+const pageTitle = computed(() => t('admin.ustcSpeed.title'))
+const pageDescription = computed(() => t('admin.ustcSpeed.description'))
 
 const localDate = (date: Date): string => {
   const year = date.getFullYear()
@@ -460,7 +438,7 @@ const endDate = ref(today)
 // translated into an exact rolling window instead of two whole days.
 const lastHours = ref<number | null>(null)
 const filters = reactive<SampleFilterState>({
-  source: 'real',
+  source: props.embedded ? 'real' : 'probe',
   model: '',
   accountIds: [],
   reasoning: 'all',
@@ -527,7 +505,7 @@ function stopTasksAutoRefresh() {
   }
 }
 
-const statuses = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded']
+const statuses = ['success', 'error', 'rate_limited', 'skipped', 'cancelled']
 const accountFilterLabel = computed(() => filters.accountIds.length
   ? t('admin.ustcSpeed.filter.account') + ` · ${filters.accountIds.length}`
   : t('admin.ustcSpeed.filter.allAccounts'))
@@ -541,24 +519,17 @@ const metricOptions = computed(() => {
   // Real calls come from usage records: they only have one first-token
   // timestamp and no response-header/stream-gap timing. Showing probe-only
   // metrics in the real view produced empty or duplicate charts.
-  const probeMetrics = filters.source !== 'real'
+  const probeMetrics = !props.embedded
   const options: Record<ChartGroup, Array<{ value: USTCSpeedMetric; label: string }>> = {
     tps: [
       { value: 'generation_tps', label: t('admin.ustcSpeed.metric.generationTps') },
       { value: 'overall_tps', label: t('admin.ustcSpeed.metric.overallTps') },
     ],
     ttft: [
-      { value: 'ttft_ms', label: t(filters.source === 'real' ? 'admin.ustcSpeed.metric.usageTtftMs' : 'admin.ustcSpeed.metric.ttftMs') },
+      { value: 'ttft_ms', label: t(props.embedded ? 'admin.ustcSpeed.metric.usageTtftMs' : 'admin.ustcSpeed.metric.ttftMs') },
       ...(probeMetrics ? [{ value: 'first_output_ms' as const, label: t('admin.ustcSpeed.metric.firstOutputMs') }] : []),
     ],
-    time: [
-      { value: 'output_ms', label: t('admin.ustcSpeed.metric.outputMs') },
-      ...(probeMetrics ? [
-        { value: 'headers_ms' as const, label: t('admin.ustcSpeed.metric.headersMs') },
-        { value: 'tail_ms' as const, label: t('admin.ustcSpeed.metric.tailMs') },
-        { value: 'max_gap_ms' as const, label: t('admin.ustcSpeed.metric.maxGapMs') },
-      ] : []),
-    ],
+
   }
   return options[chartGroup.value]
 })
@@ -713,7 +684,7 @@ const chartTheme = computed(() => {
 })
 
 const chartData = computed<any>(() => {
-  if (!renderSeries.value.some((series) => series.points.length)) return null
+  if (!renderSeries.value.some((series) => series.points.some((point) => point.value !== null))) return null
   const raw = overview.value?.interval === 'raw'
   const realSeriesCount = renderSeries.value.filter((series) => series.source === 'real').length
   const datasets: any[] = []
@@ -751,7 +722,7 @@ const chartData = computed<any>(() => {
       data: series.points.map((point) => ({ x: plottedTime(point), y: point.value })),
       borderColor: color,
       backgroundColor: bar ? tint(color, 'cc') : color,
-      borderDash: series.source === 'probe' ? [6, 4] : [],
+      borderDash: [],
       borderWidth: bar ? 0 : 2,
       borderRadius: bar ? 3 : 0,
       maxBarThickness: 14,
@@ -876,7 +847,7 @@ const hourlySeries = computed<HourlySeries[]>(() => {
   const sources = sourceCountsByModel(points)
   const grouped = new Map<string, HourlySeries>()
   for (const point of points) {
-    if (point.hour < 0 || point.hour > 23) continue
+    if (point.hour < 0 || point.hour > 23 || hourlyValue(point) === null) continue
     const key = JSON.stringify([point.model, point.source, point.profile])
     const series = grouped.get(key) ?? {
       key,
@@ -908,7 +879,7 @@ const hourlyChartData = computed<any>(() => {
         data: series.hours.map(hourlyValue),
         borderColor: color,
         backgroundColor: tint(color, '33'),
-        borderDash: series.source === 'probe' ? [6, 4] : [],
+        borderDash: [],
         borderWidth: 2,
         pointRadius: 2.5,
         pointHoverRadius: 5,
@@ -1022,16 +993,18 @@ function formatHourlyValue(value: number | null): string {
 }
 
 function buildQuery(): USTCSpeedQuery {
+  const usage = props.embedded ? props.usageFilters : undefined
   return {
-    start_date: startDate.value,
-    end_date: endDate.value,
-    timezone: filters.timezone || 'Asia/Shanghai',
-    source: filters.source,
-    model: filters.model || undefined,
+    ...usage,
+    start_date: usage?.start_date || startDate.value,
+    end_date: usage?.end_date || endDate.value,
+    timezone: usage?.timezone || filters.timezone || 'Asia/Shanghai',
+    source: props.embedded ? 'real' : 'probe',
+    model: usage?.model || filters.model || undefined,
     account_ids: filters.accountIds.length ? filters.accountIds.join(',') : undefined,
     task_id: numberFilter(filters.taskId),
     reasoning: filters.reasoning,
-    stream: filters.stream,
+    stream: usage?.stream === true ? 'true' : usage?.stream === false ? 'false' : filters.stream,
     status: filters.status || undefined,
     profile: filters.profile || undefined,
     input_min: numberFilter(filters.inputMin),
@@ -1046,7 +1019,7 @@ function buildQuery(): USTCSpeedQuery {
     group_by: 'model',
     hourly: true,
     hourly_metric: hourlyMetric.value,
-    last_hours: lastHours.value ?? undefined,
+    last_hours: props.embedded ? undefined : lastHours.value ?? undefined,
   }
 }
 
@@ -1067,7 +1040,7 @@ async function loadDimensions() {
 }
 
 async function loadOverview() {
-  if (overviewViewDisposed) return
+  if (overviewViewDisposed || !props.active) return
   const requestSeq = ++overviewRequestSeq
   overviewAbortController?.abort()
   const controller = new AbortController()
@@ -1076,7 +1049,9 @@ async function loadOverview() {
   try {
     normalizeMetric()
     const query = buildQuery()
-    const result = await adminUSTCSpeedAPI.getOverview(query, { signal: controller.signal })
+    const result = props.embedded
+      ? await getSpeedOverview(query, { signal: controller.signal })
+      : await adminUSTCSpeedAPI.getOverview(query, { signal: controller.signal })
     if (requestSeq !== overviewRequestSeq) return
     overview.value = result
     appliedQuery.value = query
@@ -1136,15 +1111,9 @@ async function loadRuntime(silent = false) {
 }
 
 async function loadCurrentSection() {
-  if (isOverview.value) {
-    stopTasksAutoRefresh()
-    await loadOverview()
-  } else if (isTasks.value) {
-    startTasksAutoRefresh()
-    await Promise.all([loadTasks(), loadSettings(), loadRuntime()])
-  } else {
-    stopTasksAutoRefresh()
-  }
+  if (!props.active) return
+  if (!props.embedded) startTasksAutoRefresh()
+  await loadOverview()
 }
 
 function refreshCurrent() { void loadCurrentSection() }
@@ -1169,9 +1138,25 @@ function handleChartGroupChange() {
   void loadOverview()
 }
 
+const rateLimitedPercent = computed(() => {
+  const summary = overview.value?.summary
+  if (!summary) return null
+  const sent = summary.successful + summary.failed + summary.rate_limited
+  return sent ? summary.rate_limited * 100 / sent : null
+})
+function formatPercent(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? '—' : `${value.toFixed(1)}%`
+}
+
 function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
   return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(value)
+}
+
+function formatTaskTimestamp(value: string | null | undefined): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date)
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -1279,7 +1264,7 @@ async function saveTask(value: USTCSpeedTaskInput) {
     else await adminUSTCSpeedAPI.createTask(value)
     taskDialogOpen.value = false
     appStore.showToast('success', t('admin.ustcSpeed.task.saved'))
-    await loadTasks()
+    await Promise.all([loadTasks(), loadOverview()])
   } catch {
     toastError(t('admin.ustcSpeed.error.saveTask'))
   } finally {
@@ -1310,8 +1295,9 @@ async function executePendingAction() {
   try {
     if (action.kind === 'delete') {
       await adminUSTCSpeedAPI.deleteTask(action.task.id)
+      if (filters.taskId === action.task.id) filters.taskId = undefined
       appStore.showToast('success', t('admin.ustcSpeed.task.deleted'))
-      await loadTasks()
+      await Promise.all([loadTasks(), loadOverview()])
     } else {
       const result = await adminUSTCSpeedAPI.runTask(action.task.id)
       appStore.showToast('success', t('admin.ustcSpeed.task.runQueued', { round: result.round_id }))
@@ -1357,6 +1343,10 @@ function appliedRange(): { start: string; end: string } {
 }
 
 function openUsageRecords(point?: RenderPoint) {
+  if (props.embedded) {
+    emit('show-records', { model: point?.model, ...(point?.accountId ? { account_id: point.accountId } : {}) })
+    return
+  }
   const range = appliedRange()
   const appliedAccountIds = appliedQuery.value?.account_ids?.split(',').map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0) ?? []
   void router.push({
@@ -1371,6 +1361,7 @@ function openUsageRecords(point?: RenderPoint) {
 }
 
 async function openPoint(point: RenderPoint) {
+  if (props.embedded) { openUsageRecords(point); return }
   if (point.sampleId) {
     await openSample(point.sampleId)
     return
@@ -1454,12 +1445,22 @@ async function exportSamples(format: ExportFormat) {
   }
 }
 
-watch(() => route.path, () => { void loadCurrentSection() })
+watch(() => route.path, () => { if (!props.embedded) void loadCurrentSection() })
+watch(() => [props.usageFilters, props.active, props.refreshVersion], () => {
+  if (!props.embedded) return
+  if (props.active) void loadOverview()
+  else {
+    overviewRequestSeq++
+    overviewAbortController?.abort()
+    overviewAbortController = null
+    loading.value = false
+  }
+}, { deep: true })
 watch(() => filters.aggregate, () => {
   if (isOverview.value) void loadOverview()
 })
 onMounted(async () => {
-  await Promise.all([loadDimensions(), loadSettings()])
+  if (!props.embedded) await Promise.all([loadDimensions(), loadSettings(), loadTasks(), loadRuntime()])
   if (overviewViewDisposed) return
   await loadCurrentSection()
 })
