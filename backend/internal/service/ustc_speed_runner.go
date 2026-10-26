@@ -204,9 +204,9 @@ func speedTaskActive(task USTCSpeedTask, now time.Time) bool {
 	return minute >= lo || minute <= hi
 }
 func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, owner string, force bool) (string, string) {
-	// A manual run is an explicit operator action; scheduled runs must respect
-	// the task's active window. Capacity, quota, and queue protection still apply.
-	if !force && !speedTaskActive(task, time.Now()) {
+	// Manual runs and the saved constraint policy can skip task windows.
+	// Normal model permissions, quotas, and shared admission always apply.
+	if !force && !task.IgnoreTaskConstraints && !speedTaskActive(task, time.Now()) {
 		return "outside_active_window", "outside_active_window"
 	}
 	accounts, err := s.ustcAccounts(ctx)
@@ -252,7 +252,11 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 		if len(task.PromptVariants) > 0 {
 			prompt = task.PromptVariants[rand.IntN(len(task.PromptVariants))]
 		}
-		semaphore := make(chan struct{}, task.MaxParallelAccounts)
+		parallel := task.MaxParallelAccounts
+		if task.IgnoreTaskConstraints {
+			parallel = len(eligible)
+		}
+		semaphore := make(chan struct{}, parallel)
 		results := make(chan ustcProbeResult, len(eligible))
 		var workers sync.WaitGroup
 		for _, candidate := range eligible {
@@ -262,12 +266,16 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 				defer workers.Done()
 				deadline := time.NewTimer(time.Until(roundStart.Add(time.Duration(task.MaxStartSkewSeconds) * time.Second)))
 				defer deadline.Stop()
+				var startDeadline <-chan time.Time
+				if !task.IgnoreTaskConstraints {
+					startDeadline = deadline.C
+				}
 				select {
 				case semaphore <- struct{}{}:
 					defer func() { <-semaphore }()
 					status, reason := s.runProbe(ctx, task, &account, model, prompt, round, roundStart)
 					results <- ustcProbeResult{status: status, reason: reason}
-				case <-deadline.C:
+				case <-startDeadline:
 					s.recordSkip(task, &account, model, round, "round_start_skew")
 					results <- ustcProbeResult{status: "skipped", reason: "round_start_skew"}
 				case <-ctx.Done():
@@ -371,46 +379,61 @@ func speedBackoff(task USTCSpeedTask, runtime *USTCSpeedRuntime, now time.Time) 
 	// the normal USTC gate still owns cooldown and verify-one admission.
 	return false, ""
 }
-func (s *OpenAIGatewayService) speedProbeHasHeadroom(ctx context.Context, account *Account, task USTCSpeedTask, reserved bool) bool {
+func (s *OpenAIGatewayService) speedProbeBlockReason(ctx context.Context, account *Account, task USTCSpeedTask, reserved bool) string {
 	if s == nil || account == nil || !account.IsSchedulable() {
-		return false
+		return "account_unavailable"
 	}
 	if userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
-		return false
+		return "quota_blocked"
 	}
 	limits, known := USTCAccountLimits(account)
 	cache, ok := s.rpmCache.(USTCCapacityCache)
 	if !known || !ok {
-		return false
+		return "limits_unknown"
 	}
 	capacity, err := cache.USTCRead(ctx, USTCKeyScope(account), limits)
-	if err != nil || (!reserved && capacity.Available < 1 && (limits.RPM > 0 || limits.Parallel > 0)) || capacity.State != "ready" && capacity.State != "verify_one" {
-		return false
+	if err != nil {
+		return "capacity_unavailable"
+	}
+	if capacity.State != "ready" && capacity.State != "verify_one" {
+		return "capacity_cooldown"
+	}
+	if !reserved && capacity.Available < 1 && (limits.RPM > 0 || limits.Parallel > 0) {
+		return "capacity_exhausted"
+	}
+	if task.IgnoreTaskConstraints {
+		return ""
 	}
 	extra := 1
 	if reserved {
 		extra = 0
 	}
 	if limits.RPM > 0 && limits.RPM-capacity.Used-capacity.Pending < task.ReserveRPM+extra {
-		return false
+		return "rpm_reserved"
 	}
 	if limits.Parallel > 0 && limits.Parallel-capacity.InFlight < task.ReserveConcurrency+extra {
-		return false
+		return "concurrency_reserved"
 	}
 	if task.MaxActiveRequests > 0 && capacity.InFlight+extra > task.MaxActiveRequests {
-		return false
+		return "active_request_limit"
 	}
 	if task.SkipIfUserWaiting {
 		if reader, ok := s.rpmCache.(USTCSpeedWaitReader); ok {
 			waiting, err := reader.USTCHasWaiting(ctx)
-			if err != nil || waiting {
-				return false
+			if err != nil {
+				return "queue_state_unavailable"
+			}
+			if waiting {
+				return "users_waiting"
 			}
 		}
 		if s.concurrencyService != nil {
 			waiting, err := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
-			if err != nil || waiting > 0 {
-				return false
+			if err != nil {
+				return "queue_state_unavailable"
+			}
+			if waiting > 0 {
+				return "users_waiting"
 			}
 		}
 		state := s.defaultUSTCPoolState()
@@ -437,10 +460,13 @@ func (s *OpenAIGatewayService) speedProbeHasHeadroom(ctx context.Context, accoun
 		}
 		state.mu.Unlock()
 		if waiting {
-			return false
+			return "users_waiting"
 		}
 	}
-	return true
+	return ""
+}
+func (s *OpenAIGatewayService) speedProbeHasHeadroom(ctx context.Context, account *Account, task USTCSpeedTask, reserved bool) bool {
+	return s.speedProbeBlockReason(ctx, account, task, reserved) == ""
 }
 func speedProbeBody(task USTCSpeedTask, model, prompt string) ([]byte, error) {
 	body := map[string]any{"model": model, "stream": task.Stream, "temperature": task.Temperature}
@@ -517,16 +543,18 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 	if !account.IsModelSupported(model) {
 		return skip("model_not_supported")
 	}
-	runtime, err := s.repo.GetRuntime(parent, USTCKeyScope(account))
-	if err != nil {
-		return skip("runtime_unavailable")
-	}
-	blocked, reason := speedBackoff(task, runtime, time.Now())
-	if err = s.repo.SaveRuntime(parent, USTCKeyScope(account), runtime); err != nil {
-		return skip("runtime_unavailable")
-	}
-	if blocked {
-		return skip(reason)
+	if !task.IgnoreTaskConstraints {
+		runtime, err := s.repo.GetRuntime(parent, USTCKeyScope(account))
+		if err != nil {
+			return skip("runtime_unavailable")
+		}
+		blocked, reason := speedBackoff(task, runtime, time.Now())
+		if err = s.repo.SaveRuntime(parent, USTCKeyScope(account), runtime); err != nil {
+			return skip("runtime_unavailable")
+		}
+		if blocked {
+			return skip(reason)
+		}
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(task.TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -537,19 +565,21 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 		return skip("limits_unknown")
 	}
 	account = current
-	if !s.gateway.speedProbeHasHeadroom(ctx, account, task, false) {
-		return skip("user_load_or_capacity")
+	if reason := s.gateway.speedProbeBlockReason(ctx, account, task, false); reason != "" {
+		return skip(reason)
 	}
-	owner := round + fmt.Sprintf(":%d", account.ID)
-	acquired, err := s.repo.AcquireKey(ctx, USTCKeyScope(account), owner, time.Duration(task.TimeoutSeconds+15)*time.Second, s.cfg.Load().MaxBackgroundConcurrency)
-	if err != nil || !acquired {
-		return skip("background_capacity")
+	if !task.IgnoreTaskConstraints {
+		owner := round + fmt.Sprintf(":%d", account.ID)
+		acquired, err := s.repo.AcquireKey(ctx, USTCKeyScope(account), owner, time.Duration(task.TimeoutSeconds+15)*time.Second, s.cfg.Load().MaxBackgroundConcurrency)
+		if err != nil || !acquired {
+			return skip("background_capacity")
+		}
+		defer func() {
+			cleanup, done := context.WithTimeout(context.Background(), 3*time.Second)
+			defer done()
+			_ = s.repo.ReleaseKey(cleanup, USTCKeyScope(account), owner)
+		}()
 	}
-	defer func() {
-		cleanup, done := context.WithTimeout(context.Background(), 3*time.Second)
-		defer done()
-		_ = s.repo.ReleaseKey(cleanup, USTCKeyScope(account), owner)
-	}()
 	selection := &AccountSelectionResult{Account: account}
 	if !s.gateway.PrepareUSTCAdmission(ctx, selection) {
 		return skip("shared_admission")
@@ -571,7 +601,16 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 	}
 	probe := &ustcSpeedProbeContext{sample: sample, result: make(chan USTCSpeedSample, 1), first: make(chan struct{})}
 	probe.guard = func() bool {
-		return time.Since(roundStart) <= time.Duration(task.MaxStartSkewSeconds)*time.Second && s.speedTaskCurrent(ctx, task) && s.gateway.speedProbeHasHeadroom(ctx, account, task, true)
+		if !task.IgnoreTaskConstraints && time.Since(roundStart) > time.Duration(task.MaxStartSkewSeconds)*time.Second {
+			probe.blockReason = "round_start_skew"
+			return false
+		}
+		if !s.speedTaskCurrent(ctx, task) {
+			probe.blockReason = "task_changed"
+			return false
+		}
+		probe.blockReason = s.gateway.speedProbeBlockReason(ctx, account, task, true)
+		return probe.blockReason == ""
 	}
 	ctx = context.WithValue(ctx, ustcSpeedProbeKey{}, probe)
 	ctx = ContextWithUSTCAdmission(ctx, selection)

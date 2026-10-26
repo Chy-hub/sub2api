@@ -364,6 +364,17 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 	if !oneOf(aggregate, "p50", "mean", "p10", "p90") {
 		return query, errors.New("invalid aggregate")
 	}
+	analysis, err := parseUSTCSpeedBool(c.Query("analysis"), "analysis")
+	if err != nil {
+		return query, err
+	}
+	comparison := strings.TrimSpace(c.Query("comparison"))
+	if comparison == "" {
+		comparison = "previous"
+	}
+	if !oneOf(comparison, "previous", "week", "month", "year", "none") {
+		return query, errors.New("invalid comparison")
+	}
 	status := strings.TrimSpace(c.Query("status"))
 	if status != "" && !oneOf(status, "success", "error", "rate_limited", "skipped", "cancelled", "recorded") {
 		return query, errors.New("invalid status")
@@ -449,6 +460,7 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 		InputMin: inputMin, InputMax: inputMax, OutputMin: outputMin, OutputMax: outputMax,
 		Metric: metric, Interval: interval, Aggregate: aggregate, Limit: limit, Offset: offset,
 		Timezone: timezone, Hourly: hourly, HourlyMetric: hourlyMetric, LastHours: lastHours,
+		Analysis: analysis, Comparison: comparison,
 	}
 	return query, nil
 }

@@ -65,6 +65,7 @@ type USTCSpeedTask struct {
 	Revision                  int64      `json:"revision"`
 	Name                      string     `json:"name"`
 	Enabled                   bool       `json:"enabled"`
+	IgnoreTaskConstraints     bool       `json:"ignore_task_constraints"`
 	AllAccounts               bool       `json:"all_accounts"`
 	AccountIDs                []int64    `json:"account_ids"`
 	Models                    []string   `json:"models"`
@@ -138,6 +139,9 @@ type USTCSpeedQuery struct {
 	// LastHours switches the range from calendar days to an exact rolling
 	// window ending now. Zero keeps the date-based Start/End range.
 	LastHours int
+	// Analysis derives comparisons and distributions from existing observations.
+	Analysis   bool
+	Comparison string
 }
 
 type USTCSpeedSummary struct {
@@ -211,6 +215,7 @@ type USTCSpeedOverview struct {
 	Hourly                []USTCSpeedHourPoint `json:"hourly,omitempty"`
 	Truncated             bool                 `json:"truncated"`
 	DroppedSamples        uint64               `json:"dropped_samples"`
+	Analysis              *USTCSpeedAnalysis   `json:"analysis,omitempty"`
 }
 
 type USTCSpeedRuntime struct {

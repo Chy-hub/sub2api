@@ -154,11 +154,25 @@
         <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-end justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
             <div>
-              <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.overview.chartTitle') }}</h2>
-              <span v-if="overview" class="mt-2 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ aggregationLabel }}</span>
+              <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t(analysisView === 'trend' ? 'admin.ustcSpeed.overview.chartTitle' : `admin.ustcSpeed.analysis.${analysisView}`) }}</h2>
+              <span v-if="overview" class="mt-2 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ analysisView === 'trend' ? aggregationLabel : t(`admin.ustcSpeed.aggregate.${overview.aggregate}`) }}</span>
               <p v-if="appliedQuery" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ appliedRangeLabel }}</p>
             </div>
             <div class="flex flex-wrap items-end gap-2">
+              <label class="filter-field min-w-36">
+                <span>{{ t('admin.ustcSpeed.analysis.view') }}</span>
+                <select v-model="analysisView" class="filter-input" data-testid="analysis-view" @change="loadOverview">
+                  <option value="trend">{{ t('admin.ustcSpeed.analysis.trend') }}</option>
+                  <option value="compare">{{ t('admin.ustcSpeed.analysis.compare') }}</option>
+                  <option value="distribution">{{ t('admin.ustcSpeed.analysis.distribution') }}</option>
+                </select>
+              </label>
+              <label v-if="analysisView !== 'trend'" class="filter-field min-w-36">
+                <span>{{ t('admin.ustcSpeed.analysis.baseline') }}</span>
+                <select v-model="comparison" class="filter-input" data-testid="analysis-comparison" @change="loadOverview">
+                  <option v-for="option in ['previous', 'week', 'month', 'year', 'none']" :key="option" :value="option">{{ t(`admin.ustcSpeed.analysis.comparison.${option}`) }}</option>
+                </select>
+              </label>
               <label class="filter-field min-w-36">
                 <span>{{ t('admin.ustcSpeed.metric.view') }}</span>
                 <select v-model="chartGroup" class="filter-input" @change="handleChartGroupChange">
@@ -173,7 +187,7 @@
                   <option v-for="option in metricOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
               </label>
-              <label class="filter-field min-w-32">
+              <label v-if="analysisView === 'trend'" class="filter-field min-w-32">
                 <span>{{ t('admin.ustcSpeed.interval.label') }}</span>
                 <select v-model="filters.interval" class="filter-input" @change="loadOverview">
                   <option value="auto">{{ t('admin.ustcSpeed.interval.auto') }}</option>
@@ -189,6 +203,7 @@
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="loading" class="flex h-[420px] items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
+            <USTCSpeedAnalysis v-else-if="analysisView !== 'trend'" :analysis="overview?.analysis" :view="analysisView" :metric="overview?.metric ?? metric" :aggregate="overview?.aggregate ?? filters.aggregate" :timezone="appliedQuery?.timezone ?? filters.timezone" />
             <div v-else-if="!chartData || !chartData.datasets.length" class="flex min-h-[340px] flex-col items-center justify-center px-6 text-center">
               <div class="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-xl text-gray-400 dark:bg-dark-700">∅</div>
               <p class="font-medium text-gray-700 dark:text-gray-200">{{ t('admin.ustcSpeed.overview.noSeries') }}</p>
@@ -280,7 +295,7 @@
                 <th class="px-4 py-3">{{ t('admin.ustcSpeed.task.field.name') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectModels') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectAccounts') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.nextRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastStatus') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.status') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
               </tr></thead>
               <tbody class="divide-y divide-gray-100 dark:divide-dark-700"><tr v-for="task in tasks" :key="task.id" class="hover:bg-gray-50/70 dark:hover:bg-dark-700/30">
-                <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span class="mt-1 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ taskScheduleLabel(task) }}</span><button type="button" class="ml-2 text-xs font-medium text-primary-600 hover:underline dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.task.editSchedule') }}</button></td>
+                <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span v-if="task.ignore_task_constraints" class="mt-1 block text-xs text-primary-600 dark:text-primary-300">{{ t('admin.ustcSpeed.task.ignoreConstraints') }}</span><span class="mt-1 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ taskScheduleLabel(task) }}</span><button type="button" class="ml-2 text-xs font-medium text-primary-600 hover:underline dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.task.editSchedule') }}</button></td>
                 <td class="max-w-60 truncate px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.models.join(', ') }}</td>
                 <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.all_accounts ? t('admin.ustcSpeed.task.allAccounts') : accountNames(task.account_ids) }}</td>
                 <td class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatDateTime(task.next_run_at) }}</td>
@@ -367,7 +382,7 @@
 </template>
 
 <script setup lang="ts">
-import { Chart as ChartJS, BarController, BarElement, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip } from 'chart.js'
+import { Chart as ChartJS, BarController, BarElement, CategoryScale, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip } from 'chart.js'
 import { Chart as SpeedChart } from 'vue-chartjs'
 import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -377,10 +392,12 @@ import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import USTCSpeedTaskDialog from '@/components/admin/ustc-speed/USTCSpeedTaskDialog.vue'
 import USTCSpeedSampleDialog from '@/components/admin/ustc-speed/USTCSpeedSampleDialog.vue'
+import USTCSpeedAnalysis from '@/components/admin/ustc-speed/USTCSpeedAnalysis.vue'
 import { adminUSTCSpeedAPI } from '@/api/admin/ustcSpeed'
 import type {
   USTCSpeedAccountDimension,
   USTCSpeedAggregate,
+  USTCSpeedComparison,
   USTCSpeedHourPoint,
   USTCSpeedMetric,
   USTCSpeedOverview,
@@ -395,7 +412,7 @@ import type {
 } from '@/api/admin/ustcSpeed'
 import { useAppStore } from '@/stores/app'
 
-ChartJS.register(BarController, BarElement, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip)
+ChartJS.register(BarController, BarElement, CategoryScale, Legend, LineController, LineElement, LinearScale, PointElement, ScatterController, Tooltip)
 
 type ChartGroup = 'tps' | 'ttft' | 'time'
 type ExportFormat = 'csv' | 'json'
@@ -469,6 +486,8 @@ let overviewRequestSeq = 0
 let overviewAbortController: AbortController | null = null
 let overviewViewDisposed = false
 const chartGroup = ref<ChartGroup>('tps')
+const analysisView = ref<'trend' | 'compare' | 'distribution'>('trend')
+const comparison = ref<USTCSpeedComparison>('previous')
 const metric = ref<USTCSpeedMetric>('generation_tps')
 // The hourly view answers a different question ("when is the upstream fastest?")
 // than the trend chart, so it keeps its own TPS metric instead of inheriting
@@ -529,11 +548,10 @@ const metricOptions = computed(() => {
       { value: 'overall_tps', label: t('admin.ustcSpeed.metric.overallTps') },
     ],
     ttft: [
-      { value: 'ttft_ms', label: t('admin.ustcSpeed.metric.ttftMs') },
+      { value: 'ttft_ms', label: t(filters.source === 'real' ? 'admin.ustcSpeed.metric.usageTtftMs' : 'admin.ustcSpeed.metric.ttftMs') },
       ...(probeMetrics ? [{ value: 'first_output_ms' as const, label: t('admin.ustcSpeed.metric.firstOutputMs') }] : []),
     ],
     time: [
-      { value: 'total_ms', label: t('admin.ustcSpeed.metric.totalMs') },
       { value: 'output_ms', label: t('admin.ustcSpeed.metric.outputMs') },
       ...(probeMetrics ? [
         { value: 'headers_ms' as const, label: t('admin.ustcSpeed.metric.headersMs') },
@@ -897,7 +915,7 @@ const hourlyChartData = computed<any>(() => {
         pointHitRadius: 8,
         tension: 0.2,
         fill: false,
-        spanGaps: false,
+        spanGaps: true,
       }
     }),
   }
@@ -1021,6 +1039,8 @@ function buildQuery(): USTCSpeedQuery {
     output_min: numberFilter(filters.outputMin),
     output_max: numberFilter(filters.outputMax),
     metric: metric.value,
+    analysis: analysisView.value !== 'trend',
+    comparison: comparison.value,
     interval: filters.interval,
     aggregate: filters.aggregate,
     group_by: 'model',
@@ -1184,6 +1204,10 @@ function statusLabel(status: string): string {
 }
 
 const taskReasonLabels: Record<string, string> = {
+  account_unavailable: 'accountUnavailable', quota_blocked: 'quotaBlocked', capacity_unavailable: 'capacityUnavailable',
+  capacity_cooldown: 'capacityCooldown', capacity_exhausted: 'capacityExhausted', rpm_reserved: 'rpmReserved',
+  concurrency_reserved: 'concurrencyReserved', active_request_limit: 'activeRequestLimit',
+  queue_state_unavailable: 'queueStateUnavailable', users_waiting: 'usersWaiting',
   user_load_or_capacity: 'userLoad',
   background_capacity: 'backgroundCapacity',
   shared_admission: 'sharedAdmission',
@@ -1273,7 +1297,7 @@ const confirmationMessage = computed(() => {
   if (!pendingAction.value) return ''
   return pendingAction.value.kind === 'delete'
     ? t('admin.ustcSpeed.task.deleteMessage', { name: pendingAction.value.task.name })
-    : t('admin.ustcSpeed.task.runMessage', { name: pendingAction.value.task.name })
+    : t(pendingAction.value.task.ignore_task_constraints ? 'admin.ustcSpeed.task.runIgnoringMessage' : 'admin.ustcSpeed.task.runMessage', { name: pendingAction.value.task.name })
 })
 const confirmationButton = computed(() => pendingAction.value?.kind === 'delete'
   ? t('admin.ustcSpeed.action.delete')

@@ -362,14 +362,14 @@ func TestUSTCSpeedManualProbeRefusesUnsafeConditions(t *testing.T) {
 			setup: func(gateway *OpenAIGatewayService, _ *ustcSpeedRunnerRepository, base *ustcTestCapacityCache, _ Account) {
 				gateway.rpmCache = &ustcSpeedWaitCapacityCache{ustcTestCapacityCache: base, waiting: true}
 			},
-			wantReason: "user_load_or_capacity",
+			wantReason: "users_waiting",
 		},
 		{
 			name: "low rpm headroom",
 			setup: func(_ *OpenAIGatewayService, _ *ustcSpeedRunnerRepository, base *ustcTestCapacityCache, account Account) {
 				base.used[USTCKeyScope(&account)] = 16 // 4 remaining is below reserveRPM+the probe itself.
 			},
-			wantReason: "user_load_or_capacity",
+			wantReason: "rpm_reserved",
 		},
 		{
 			name: "shared capacity cooldown",
@@ -572,6 +572,76 @@ func TestUSTCSpeedManualRunBypassesActiveWindow(t *testing.T) {
 	require.NotEqual(t, "outside_active_window", status)
 	calls, _ = upstream.snapshot()
 	require.Equal(t, 1, calls, "a manual run should proceed despite the active window")
+}
+
+type ustcSpeedPolicyRunRepo struct {
+	*ustcSpeedRunnerRepository
+	task USTCSpeedTask
+	done chan string
+}
+
+func (r *ustcSpeedPolicyRunRepo) GetTask(context.Context, int64) (*USTCSpeedTask, error) {
+	return &r.task, nil
+}
+func (r *ustcSpeedPolicyRunRepo) ClaimTask(context.Context, int64, string, time.Duration, bool, int64) (bool, error) {
+	return true, nil
+}
+func (r *ustcSpeedPolicyRunRepo) FinishTask(_ context.Context, _ int64, _ string, _ time.Time, status, _ string) error {
+	r.done <- status
+	return nil
+}
+
+func TestUSTCSpeedSavedPolicyBypassesTaskConstraintsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ignore    bool
+		scheduled bool
+		used      int
+		wantCalls int
+	}{
+		{"normal run yields", false, false, 0, 0},
+		{"saved policy ignores queue and reserve", true, false, 0, 1},
+		{"scheduled run uses saved policy", true, true, 0, 1},
+		{"saved policy cannot exceed actual RPM", true, false, 20, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, gateway, baseRepo, cache, upstream, account := newUSTCSpeedRunnerFixture()
+			gateway.rpmCache = &ustcSpeedWaitCapacityCache{ustcTestCapacityCache: cache, waiting: true}
+			cache.used[USTCKeyScope(&account)] = tc.used
+			task := DefaultUSTCSpeedTask()
+			task.ID, task.Revision, task.Models, task.AllAccounts, task.RealFallback = 9, 1, []string{"deepseek-flash"}, true, false
+			task.ReserveRPM, task.ReserveConcurrency = 20, 20
+			task.IgnoreTaskConstraints = tc.ignore
+			task.Timezone = "UTC"
+			task.DaysOfWeek = []int{(int(time.Now().UTC().Weekday()) + 1) % 7}
+			baseRepo.acquireAllowed = false
+			baseRepo.runtime = &USTCSpeedRuntime{Paused: true}
+			repo := &ustcSpeedPolicyRunRepo{ustcSpeedRunnerRepository: baseRepo, task: task, done: make(chan string, 1)}
+			speed := NewUSTCSpeedService(repo, ustcSpeedAccountsRepo{gateway.accountRepo.(schedulerTestOpenAIAccountRepo)}, gateway)
+			gateway.ustcSpeed = speed
+			defer speed.Stop()
+			var err error
+			if tc.scheduled {
+				_, err = speed.startTask(context.Background(), task, false)
+			} else {
+				_, err = speed.RunTask(context.Background(), task.ID)
+			}
+			require.NoError(t, err)
+			select {
+			case status := <-repo.done:
+				if tc.wantCalls > 0 {
+					require.Equal(t, "completed", status)
+				} else {
+					require.Equal(t, "skipped", status)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("run did not finish")
+			}
+			calls, _ := upstream.snapshot()
+			require.Equal(t, tc.wantCalls, calls)
+			require.Equal(t, task, repo.task, "running must not mutate the saved task")
+		})
+	}
 }
 
 func TestUSTCSpeedProbeBodyAndEndpoint(t *testing.T) {
