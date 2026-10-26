@@ -194,15 +194,6 @@
             <NumberField v-model="form.pause_after_429" :label="t('admin.ustcSpeed.task.field.pauseAfter429')" :min="1" />
             <NumberField v-model="form.recovery_successes" :label="t('admin.ustcSpeed.task.field.recoverySuccesses')" :min="1" />
           </div>
-          <div class="grid gap-4 md:grid-cols-3">
-            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 md:col-span-3">
-              <input v-model="form.real_fallback" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              {{ t('admin.ustcSpeed.task.field.realFallback') }}
-            </label>
-            <NumberField v-model="form.real_fallback_max_age_seconds" :label="t('admin.ustcSpeed.task.field.realFallbackAge')" :min="0" />
-            <NumberField v-model="form.real_fallback_min_samples" :label="t('admin.ustcSpeed.task.field.realFallbackSamples')" :min="1" />
-            <p class="self-center text-xs text-gray-500">{{ t('admin.ustcSpeed.task.hint.realFallback') }}</p>
-          </div>
           <div class="grid gap-4 md:grid-cols-2">
             <TextAreaField v-model="promptVariantsText" :label="t('admin.ustcSpeed.task.field.promptVariants')" />
             <TextAreaField v-model="stopText" :label="t('admin.ustcSpeed.task.field.stop')" />

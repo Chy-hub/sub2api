@@ -168,7 +168,7 @@ export default {
     apiKeys: 'API 密钥',
     batchImage: '批量生图',
     usage: '使用记录',
-    ustcSpeed: '速度观测',
+    ustcSpeed: '基准测试',
     redeem: '兑换',
     affiliate: '邀请返利',
     affiliateManagement: '邀请返利',

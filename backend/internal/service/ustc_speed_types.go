@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
 // USTCSpeedObservation contains measurements only; no prompt/response text or credentials.
@@ -142,6 +144,9 @@ type USTCSpeedQuery struct {
 	// Analysis derives comparisons and distributions from existing observations.
 	Analysis   bool
 	Comparison string
+	// UsageFilters selects live usage_logs as the read source. No speed samples
+	// are imported or written when analyzing real calls.
+	UsageFilters *usagestats.UsageLogFilters
 }
 
 type USTCSpeedSummary struct {
