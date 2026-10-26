@@ -830,50 +830,64 @@ func TestUSTCCapacityExpiredLeaseFreesParallelButKeepsSentRPM(t *testing.T) {
 	require.NoError(t, cache.USTCRelease(ctx, ticket))
 }
 
-func TestUSTCCapacityLostUnansweredMatureCommitWaitsForRecoveryProbe(t *testing.T) {
-	cache, client, server := newUSTCCapacityTestCache(t)
-	ctx := context.Background()
-	server.SetTime(time.Date(2026, time.January, 2, 12, 0, 0, 0, time.UTC))
-	limits := service.USTCLimits{RPM: 5, Parallel: 2}
-	const scope = "lost-unanswered-mature"
-	primeUSTCCapacity(t, cache, scope, limits)
-	advanceUSTCRedisTime(t, cache, server, 61*time.Second)
+func TestUSTCCapacityUnansweredMatureCommitKeepsRemainingCapacity(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(strconv.FormatBool(expired), func(t *testing.T) {
+			cache, client, server := newUSTCCapacityTestCache(t)
+			ctx := context.Background()
+			server.SetTime(time.Date(2026, time.January, 2, 12, 0, 0, 0, time.UTC))
+			limits := service.USTCLimits{RPM: 5, Parallel: 2}
+			const scope = "lost-unanswered-mature"
+			primeUSTCCapacity(t, cache, scope, limits)
+			advanceUSTCRedisTime(t, cache, server, 61*time.Second)
 
-	ticket, _, err := cache.USTCReserve(ctx, scope, limits)
-	require.NoError(t, err)
-	require.NotNil(t, ticket)
-	committed, err := cache.USTCCommit(ctx, ticket, limits)
-	require.NoError(t, err)
-	require.True(t, committed)
-	serverTime, err := client.Time(ctx).Result()
-	require.NoError(t, err)
-	keys, err := cache.ustcCapacityKeys(scope)
-	require.NoError(t, err)
-	require.NoError(t, client.ZAdd(ctx, keys[1], redis.Z{Score: float64(serverTime.UnixMilli() - 1), Member: ticket.ID}).Err())
+			ticket, _, err := cache.USTCReserve(ctx, scope, limits)
+			require.NoError(t, err)
+			require.NotNil(t, ticket)
+			committed, err := cache.USTCCommit(ctx, ticket, limits)
+			require.NoError(t, err)
+			require.True(t, committed)
+			advanceUSTCRedisTime(t, cache, server, 45*time.Second)
+			if expired {
+				serverTime, err := client.Time(ctx).Result()
+				require.NoError(t, err)
+				keys, err := cache.ustcCapacityKeys(scope)
+				require.NoError(t, err)
+				require.NoError(t, client.ZAdd(ctx, keys[1], redis.Z{Score: float64(serverTime.UnixMilli() - 1), Member: ticket.ID}).Err())
+			} else {
+				require.NoError(t, cache.USTCRelease(ctx, ticket))
+			}
 
-	capacity, err := cache.USTCRead(ctx, scope, limits)
-	require.NoError(t, err)
-	require.Equal(t, "sync_wait", capacity.State, "a lost response must start conservative synchronization")
-	require.Equal(t, 1, capacity.Used, "lease loss does not refund the sent request")
-	require.Zero(t, capacity.InFlight)
-	require.Zero(t, capacity.Available)
-	require.NoError(t, cache.USTCRelease(ctx, ticket))
+			capacity, err := cache.USTCRead(ctx, scope, limits)
+			require.NoError(t, err)
+			require.Equal(t, "ready", capacity.State, "one timeout must not cool down every model on a mature Key")
+			require.Equal(t, 1, capacity.Used, "an unanswered request still consumes RPM")
+			require.Zero(t, capacity.InFlight)
+			require.Equal(t, 2, capacity.Available, "remaining RPM and parallel slots stay usable")
+			serverTime, err := client.Time(ctx).Result()
+			require.NoError(t, err)
+			require.Equal(t, serverTime.Add(time.Minute).UnixMilli(), capacity.ResetAt.UnixMilli())
 
-	advanceUSTCRedisTime(t, cache, server, 61*time.Second)
-	probe, _, err := cache.USTCReserve(ctx, scope, limits)
-	require.NoError(t, err)
-	require.NotNil(t, probe)
-	require.True(t, probe.Probe, "the conservative wait expires into exactly one recovery probe")
-	require.False(t, probe.Cold)
-	committed, err = cache.USTCCommit(ctx, probe, limits)
-	require.NoError(t, err)
-	require.True(t, committed)
-	require.NoError(t, cache.USTCObserve(ctx, probe, service.USTCFeedback{StatusCode: 200}))
-	capacity, err = cache.USTCRead(ctx, scope, limits)
-	require.NoError(t, err)
-	require.Equal(t, "ready", capacity.State)
-	require.Equal(t, 1, capacity.Used)
-	require.NoError(t, cache.USTCRelease(ctx, probe))
+			next, _, err := cache.USTCReserve(ctx, scope, limits)
+			require.NoError(t, err)
+			require.NotNil(t, next)
+			require.False(t, next.Probe, "unused mature capacity does not need a recovery probe")
+			committed, err = cache.USTCCommit(ctx, next, limits)
+			require.NoError(t, err)
+			require.True(t, committed)
+			require.NoError(t, cache.USTCObserve(ctx, next, service.USTCFeedback{StatusCode: 200}))
+			require.NoError(t, cache.USTCRelease(ctx, next))
+			capacity, err = cache.USTCRead(ctx, scope, limits)
+			require.NoError(t, err)
+			require.Equal(t, 2, capacity.Used)
+
+			advanceUSTCRedisTime(t, cache, server, 61*time.Second)
+			capacity, err = cache.USTCRead(ctx, scope, limits)
+			require.NoError(t, err)
+			require.Equal(t, "ready", capacity.State)
+			require.Zero(t, capacity.Used)
+		})
+	}
 }
 
 func TestUSTCCapacityScopeRotationStartsIndependentState(t *testing.T) {

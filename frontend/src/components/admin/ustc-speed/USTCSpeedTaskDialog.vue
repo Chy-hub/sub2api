@@ -81,6 +81,10 @@
             <span><span class="block font-medium text-gray-800 dark:text-gray-200">{{ t('admin.ustcSpeed.task.ignoreConstraints') }}</span><span class="mt-1 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.ignoreConstraintsHint') }}</span></span>
           </label>
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="space-y-1.5 sm:col-span-2 lg:col-span-3">
+              <NumberField v-model="form.idle_model_concurrency" :label="t('admin.ustcSpeed.task.field.idleModelConcurrency')" :min="1" :max="20" />
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.hint.idleModelConcurrency') }}</p>
+            </div>
             <label class="block space-y-1.5">
               <span class="block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.ustcSpeed.task.field.interval') }}</span>
               <span class="flex gap-2">
@@ -247,7 +251,9 @@ const validationError = ref('')
 const modelEntry = ref('')
 const formElement = ref<HTMLFormElement | null>(null)
 
-const defaults = (): USTCSpeedTaskInput => ({
+type USTCSpeedTaskForm = USTCSpeedTaskInput & { idle_model_concurrency: number }
+
+const defaults = (): USTCSpeedTaskForm => ({
   id: props.task?.id ?? 0,
   name: '',
   enabled: false,
@@ -287,10 +293,11 @@ const defaults = (): USTCSpeedTaskInput => ({
   pause_after_429: 6,
   recovery_successes: 2,
   ...props.defaults,
+  idle_model_concurrency: props.defaults?.idle_model_concurrency ?? 4,
   days_of_week: props.defaults?.days_of_week?.length ? [...props.defaults.days_of_week] : [0,1,2,3,4,5,6],
 })
 
-const form = ref<USTCSpeedTaskInput>(defaults())
+const form = ref<USTCSpeedTaskForm>(defaults())
 
 type IntervalUnit = 'seconds' | 'minutes' | 'hours'
 const intervalUnit = ref<IntervalUnit>('minutes')
@@ -360,6 +367,7 @@ watch(() => [props.show, props.task] as const, ([show, task]) => {
   form.value = {
     ...defaults(),
     ...task,
+    idle_model_concurrency: task.idle_model_concurrency || defaults().idle_model_concurrency,
     account_ids: task.account_ids ?? [],
     models: task.models ?? [],
     days_of_week: task.days_of_week?.length ? [...task.days_of_week] : [0,1,2,3,4,5,6],
@@ -403,6 +411,7 @@ function submit() {
     form.value.timeout_seconds,
     form.value.first_output_timeout_seconds,
     form.value.max_parallel_accounts,
+    form.value.idle_model_concurrency,
     form.value.max_start_skew_seconds,
     form.value.reserve_rpm,
     form.value.reserve_concurrency,
@@ -429,6 +438,7 @@ function submit() {
     ['max_tokens','maxTokens',16,8192,true], ['temperature','temperature',0,2,false],
     ['timeout_seconds','timeout',5,180,true], ['first_output_timeout_seconds','firstOutputTimeout',1,form.value.timeout_seconds,true],
     ['max_parallel_accounts','maxParallel',1,16,true], ['max_start_skew_seconds','maxStartSkew',1,30,true],
+    ['idle_model_concurrency','idleModelConcurrency',1,20,true],
     ['reserve_rpm','reserveRpm',0,Infinity,true], ['reserve_concurrency','reserveConcurrency',1,Infinity,true], ['max_active_requests','maxActive',0,Infinity,true],
     ['backoff_after_429','backoffAfter429',1,20,true], ['backoff_window_seconds','backoffWindow',60,86400,true],
     ['backoff_multiplier','backoffMultiplier',1,10,false], ['max_interval_seconds','maxInterval',form.value.interval_seconds,86400,true],

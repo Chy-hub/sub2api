@@ -187,8 +187,9 @@ if state ~= 'ready' and state ~= 'sync_wait' and state ~= 'verify_one' then
   redis.call('HSET', meta, 'state', state, 'epoch', epoch, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'cap', cap)
 end
 
--- If every committed ticket in an unanchored mature window loses its lease
--- without a response, retain a full conservative minute from that loss.
+-- A mature Key already has known limits. An unanswered request still consumes
+-- RPM for a conservative full minute, but must not freeze its unused capacity.
+-- Cold verification failures and explicit 429s keep their separate sync_wait.
 if state == 'ready' and tonumber(redis.call('HGET', meta, 'needs_anchor') or '-1') == epoch then
   local unresolved = false
   local live_ids = redis.call('ZRANGE', leases, 0, -1)
@@ -202,9 +203,7 @@ if state == 'ready' and tonumber(redis.call('HGET', meta, 'needs_anchor') or '-1
     redis.call('HDEL', meta, 'needs_anchor')
     deadline = math.max(deadline, now + 60000)
     active = 1
-    state = 'sync_wait'
-    waited = 0
-    redis.call('HSET', meta, 'state', state, 'deadline', deadline, 'active', active)
+    redis.call('HSET', meta, 'deadline', deadline, 'active', active)
   end
 end
 

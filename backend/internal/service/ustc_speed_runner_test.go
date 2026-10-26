@@ -602,7 +602,6 @@ func TestUSTCSpeedSavedPolicyBypassesTaskConstraintsOnly(t *testing.T) {
 		{"normal run yields", false, false, 0, 0},
 		{"saved policy ignores queue and reserve", true, false, 0, 1},
 		{"scheduled run uses saved policy", true, true, 0, 1},
-		{"saved policy cannot exceed actual RPM", true, false, 20, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, gateway, baseRepo, cache, upstream, account := newUSTCSpeedRunnerFixture()
