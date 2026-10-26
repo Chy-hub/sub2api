@@ -130,6 +130,7 @@ function makeOverview(query: any) {
         profile: point.profile,
         count: point.count,
         valid_count: point.valid_count,
+        day_count: 1,
         value: point.value,
         mean: point.mean,
         p10: point.p10,
@@ -217,7 +218,7 @@ describe('USTCSpeedView mixed chart and applied date range', () => {
     const wrapper = mountView()
     await waitForChart(wrapper)
 
-    expect(getOverview.mock.calls[0][0]).toMatchObject({ aggregate: 'mean', group_by: 'model', hourly: true })
+    expect(getOverview.mock.calls[0][0]).toMatchObject({ aggregate: 'mean', group_by: 'model', hourly: true, hourly_metric: 'generation_tps' })
     expect(getOverview.mock.calls[0][0].account_ids).toBeUndefined()
     expect(wrapper.findAll('select').some((select) => select.find('option[value="equal"]').exists())).toBe(false)
     expect(visibleDatasets(wrapper)[0].type).toBe('bar')
@@ -273,6 +274,53 @@ describe('USTCSpeedView mixed chart and applied date range', () => {
     expect(hourly[0].data.filter((value) => value !== null)).toHaveLength(1)
     expect(hourly[0].data.filter((value) => value !== null)).toEqual([42])
     expect(hourlyChart.attributes('data-x-min')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('lets the hourly view use end-to-end speed without changing the trend metric', async () => {
+    const wrapper = mountView()
+    await waitForChart(wrapper)
+
+    await wrapper.get('[data-testid="hourly-metric"]').setValue('overall_tps')
+    await flushPromises()
+
+    expect(getOverview.mock.calls.at(-1)?.[0]).toMatchObject({
+      metric: 'generation_tps',
+      hourly: true,
+      hourly_metric: 'overall_tps',
+    })
+    expect((wrapper.get('[data-testid="chart-metric"]').element as HTMLSelectElement).value).toBe('generation_tps')
+    wrapper.unmount()
+  })
+
+  it('hides probe-only TTFT and time-stage metrics from real usage records', async () => {
+    const wrapper = mountView()
+    await waitForChart(wrapper)
+
+    const metricSelect = wrapper.get('[data-testid="chart-metric"]')
+    const groupSelect = wrapper.findAll('select').find((select) => select.find('option[value="ttft"]').exists())!
+
+    await groupSelect.setValue('ttft')
+    await flushPromises()
+    expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual(['ttft_ms'])
+
+    await groupSelect.setValue('time')
+    await flushPromises()
+    expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual(['total_ms', 'output_ms'])
+
+    const sourceSelect = wrapper.findAll('select').find((select) => select.find('option[value="all"]').exists())!
+    await sourceSelect.setValue('all')
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual([
+      'total_ms', 'output_ms', 'headers_ms', 'tail_ms', 'max_gap_ms',
+    ])
+    expect(getOverview.mock.calls.at(-1)?.[0]).toMatchObject({ source: 'all', metric: 'total_ms' })
+
+    await groupSelect.setValue('ttft')
+    await flushPromises()
+    expect(metricSelect.findAll('option').map((option) => option.attributes('value'))).toEqual(['ttft_ms', 'first_output_ms'])
     wrapper.unmount()
   })
 

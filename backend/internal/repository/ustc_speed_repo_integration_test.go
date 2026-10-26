@@ -356,6 +356,7 @@ func TestUSTCSpeedOverviewWeightsRequestsAcrossAccounts(t *testing.T) {
 	require.Equal(t, 12, byHour.Hourly[0].Hour)
 	require.Equal(t, int64(4), byHour.Hourly[0].Count)
 	require.Equal(t, int64(4), byHour.Hourly[0].ValidCount)
+	require.Equal(t, int64(1), byHour.Hourly[0].DayCount)
 	require.InDelta(t, 100, *byHour.Hourly[0].Value, 0.001)
 
 	query.Timezone = "Asia/Shanghai"
@@ -363,6 +364,59 @@ func TestUSTCSpeedOverviewWeightsRequestsAcrossAccounts(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, byLocalHour.Hourly, 1)
 	require.Equal(t, 20, byLocalHour.Hourly[0].Hour, "hourly buckets follow the requested IANA zone")
+}
+
+func TestUSTCSpeedOverviewHourlyFoldsDaysAndUsesItsOwnMetric(t *testing.T) {
+	ctx := context.Background()
+	repo := NewUSTCSpeedRepository(integrationDB)
+	roundID := "ustc-hourly-it-" + uuid.NewString()
+	model := "ustc-hourly-model-" + uuid.NewString()
+	accountID := -time.Now().UnixNano()
+	start := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM ustc_speed_samples WHERE round_id=$1`, roundID)
+		require.NoError(t, err)
+	})
+	seed := func(at time.Time, generation, overall float64) {
+		sample := &service.USTCSpeedSample{
+			RoundID: roundID, AccountID: accountID, AccountName: "hourly-account",
+			Model: model, Source: "probe", Status: "success", Profile: "profile-a",
+			StartedAt: at, FinishedAt: at.Add(time.Second),
+			USTCSpeedObservation: service.USTCSpeedObservation{
+				GenerationTPS: ustcSpeedFloat(generation),
+				OverallTPS:    ustcSpeedFloat(overall),
+			},
+		}
+		require.NoError(t, repo.InsertSample(ctx, sample))
+	}
+	// The out-of-range call sits in the same local hour and must not be folded in.
+	seed(start.Add(-24*time.Hour+10*time.Hour+5*time.Minute), 999, 999)
+	seed(start.Add(10*time.Hour+5*time.Minute), 20, 100)
+	seed(start.Add(24*time.Hour+10*time.Hour+40*time.Minute), 40, 200)
+
+	query := service.USTCSpeedQuery{
+		Start: start, End: start.Add(48 * time.Hour), Source: "probe",
+		Metric: "generation_tps", Interval: "1h", Timezone: "UTC",
+		Hourly: true, HourlyMetric: "overall_tps",
+	}
+	overview, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, overview.Hourly, 1, "both days must fold into one hour-of-day bucket")
+	hour := overview.Hourly[0]
+	require.Equal(t, 10, hour.Hour)
+	require.Equal(t, int64(2), hour.Count, "calls outside the applied range are excluded")
+	require.Equal(t, int64(2), hour.ValidCount)
+	require.Equal(t, int64(2), hour.DayCount)
+	require.InDelta(t, 150, *hour.Value, 0.001, "the hourly chart uses hourly_metric, not the trend metric")
+	require.InDelta(t, 150, *hour.Mean, 0.001)
+	require.InDelta(t, 110, *hour.P10, 0.001)
+	require.InDelta(t, 190, *hour.P90, 0.001)
+
+	query.HourlyMetric = "generation_tps"
+	byGeneration, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, byGeneration.Hourly, 1)
+	require.InDelta(t, 30, *byGeneration.Hourly[0].Value, 0.001)
 }
 
 func TestUSTCSpeedRepositoryKeyLeaseCapacityAndOwnerRelease(t *testing.T) {

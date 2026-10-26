@@ -27,9 +27,9 @@ export default {
     },
     metric: {
       view: '主图', metric: '指标', tps: 'TPS 趋势', ttft: 'TTFT 趋势', time: 'Time 耗时',
-      generationTps: '生成速度（不含首字等待）', overallTps: '平均速度（含首字等待）',
-      ttftMs: '上游正文首字耗时', firstOutputMs: '上游首次输出耗时', totalMs: '实际任务总耗时', outputMs: '实际输出阶段时长',
-      headersMs: '上游响应头时间', tailMs: '输出结束后的等待', maxGapMs: '流内最大输出停顿', unitTps: 'token / 秒', unitMs: '毫秒'
+      generationTps: '生成速度（不含首字等待）', overallTps: '端到端速度（含首字等待）',
+      ttftMs: '首字耗时（正文）', firstOutputMs: '首次输出耗时（含思考）', totalMs: '请求总耗时', outputMs: '首字后耗时',
+      headersMs: '上游响应头耗时', tailMs: '末次输出后等待', maxGapMs: '流内最大输出停顿', unitTps: 'token / 秒', unitMs: '毫秒'
     },
     interval: { label: '时间粒度', auto: '自动', raw: '原始样本', m1: '1 分钟', m5: '5 分钟', m15: '15 分钟', h1: '1 小时', d1: '1 天' },
     aggregate: { label: '统计口径', p50: 'P50 中位数', mean: '平均值', p10: 'P10 慢速水平', p90: 'P90' },
@@ -53,14 +53,14 @@ export default {
       ageUnknown: '时间未知', profile: '配置', configuration: '配置 {number}', account: '账号', source: '来源', coverage: '有效账号覆盖'
     },
     hourly: {
-      title: '调用时段分布', description: '按所选时区聚合已应用范围内的有效调用，用于选择更合适的调用时段。',
-      samples: '{count} 个有效观测', noData: '所选范围没有可按时段比较的有效调用。',
-      metric: '统计口径'
+      title: '调用时段分布', description: '所选时间范围内的调用按本地小时折叠：多天数据合并到同一天，同一时段按当前统计口径汇总。',
+      samples: '{count} 个有效观测', days: '覆盖 {count} 天', noData: '所选范围没有可按时段比较的有效调用。',
+      metric: '指标', metricGeneration: 'TPS（生成速度）', metricOverall: '端到端速度'
     },
     samples: {
       tableTitle: '调用与检测样本', total: '共 {count} 条', noData: '没有符合条件的样本。',
       startedAt: '开始时间', model: '模型', account: '账号', source: '来源', status: '状态',
-      generationTps: '生成 TPS', ttft: '上游首字耗时', duration: '上游请求耗时', tokens: '输入 / 输出',
+      generationTps: '生成 TPS', ttft: '上游首字耗时', duration: '请求总耗时', tokens: '输入 / 输出',
       profile: '配置档案', reasoning: '思考', stream: '流式', action: '操作',
       loading: '正在读取样本…', exportLimit: '未能读取更多样本，已导出已获取的部分。',
       id: '样本 ID', inputTokens: '输入 token', outputTokens: '输出 token'
