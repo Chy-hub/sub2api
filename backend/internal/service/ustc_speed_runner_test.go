@@ -166,7 +166,7 @@ func (c *ustcSpeedWaitCapacityCache) USTCReserve(ctx context.Context, scope stri
 func newUSTCSpeedRunnerFixture() (*USTCSpeedService, *OpenAIGatewayService, *ustcSpeedRunnerRepository, *ustcTestCapacityCache, *ustcSpeedRunnerUpstream, Account) {
 	gateway, cache := ustcSchedulerFixture(1, false)
 	repo := &ustcSpeedRunnerRepository{acquireAllowed: true}
-	speed := &USTCSpeedService{repo: repo, gateway: gateway, queue: make(chan USTCSpeedSample, 16)}
+	speed := &USTCSpeedService{repo: repo, gateway: gateway}
 	settings := DefaultUSTCSpeedSettings()
 	speed.cfg.Store(&settings)
 	gateway.ustcSpeed = speed
@@ -176,15 +176,32 @@ func newUSTCSpeedRunnerFixture() (*USTCSpeedService, *OpenAIGatewayService, *ust
 	return speed, gateway, repo, cache, upstream, account
 }
 
+func newSpeedProbeContext(sample USTCSpeedSample) (context.Context, *ustcSpeedProbeContext) {
+	probe := &ustcSpeedProbeContext{sample: sample, result: make(chan USTCSpeedSample, 1), first: make(chan struct{})}
+	return context.WithValue(context.Background(), ustcSpeedProbeKey{}, probe), probe
+}
+
+func requireSpeedProbeSample(t *testing.T, probe *ustcSpeedProbeContext) USTCSpeedSample {
+	t.Helper()
+	select {
+	case sample := <-probe.result:
+		return sample
+	case <-time.After(time.Second):
+		t.Fatal("doUSTCUpstream did not publish the probe sample")
+		return USTCSpeedSample{}
+	}
+}
+
 func TestUSTCSpeedObserverOnSharedTransportPreservesOriginalRequestAndResponse(t *testing.T) {
-	speed, gateway, _, cache, upstream, account := newUSTCSpeedRunnerFixture()
+	_, gateway, _, cache, upstream, account := newUSTCSpeedRunnerFixture()
 	responseBytes := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"exact bytes\"}}]}\n\ndata: [DONE]\n\n")
 	upstream.response = responseBytes
 	originalRequestBytes := []byte(`{"model":"deepseek-flash","messages":[{"role":"user","content":"original input"}],"stream":true}`)
 	selection, err := gateway.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
 	require.NoError(t, err)
 	defer selection.ReleaseFunc()
-	request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(context.Background(), selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewReader(originalRequestBytes))
+	probeCtx, probe := newSpeedProbeContext(USTCSpeedSample{Source: "probe", Model: "deepseek-flash", Stream: true, Profile: "probe:test", Reasoning: "unknown"})
+	request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(probeCtx, selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewReader(originalRequestBytes))
 	require.NoError(t, err)
 	response, err := gateway.doUSTCUpstream(request, "", &account)
 	require.NoError(t, err)
@@ -201,16 +218,12 @@ func TestUSTCSpeedObserverOnSharedTransportPreservesOriginalRequestAndResponse(t
 	require.Equal(t, 1, capacity.Used, "sampling must consume only the original request's RPM")
 	require.Zero(t, capacity.InFlight, "closing the original response releases its shared concurrency lease")
 
-	select {
-	case sample := <-speed.queue:
-		require.Equal(t, "real", sample.Source)
-		require.Equal(t, "success", sample.Status)
-		require.Equal(t, "deepseek-flash", sample.Model)
-		require.Equal(t, len("exact bytes"), sample.OutputChars)
-		require.True(t, sample.StreamDone)
-	case <-time.After(time.Second):
-		t.Fatal("doUSTCUpstream did not publish the observed sample")
-	}
+	sample := requireSpeedProbeSample(t, probe)
+	require.Equal(t, "probe", sample.Source)
+	require.Equal(t, "success", sample.Status)
+	require.Equal(t, "deepseek-flash", sample.Model)
+	require.Equal(t, len("exact bytes"), sample.OutputChars)
+	require.True(t, sample.StreamDone)
 }
 
 func TestUSTCSpeedObserverCloseHonorsProtocolTerminalFrame(t *testing.T) {
@@ -224,7 +237,7 @@ func TestUSTCSpeedObserverCloseHonorsProtocolTerminalFrame(t *testing.T) {
 		{name: "early close without terminal", terminal: false, wantStatus: "error", wantReason: "stream_incomplete"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			speed, gateway, _, _, upstream, account := newUSTCSpeedRunnerFixture()
+			_, gateway, _, _, upstream, account := newUSTCSpeedRunnerFixture()
 			responseBytes := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n")
 			if tc.terminal {
 				responseBytes = append(responseBytes, []byte("data: [DONE]\n\n")...)
@@ -233,7 +246,8 @@ func TestUSTCSpeedObserverCloseHonorsProtocolTerminalFrame(t *testing.T) {
 			selection, err := gateway.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
 			require.NoError(t, err)
 			defer selection.ReleaseFunc()
-			request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(context.Background(), selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewReader([]byte(`{"model":"deepseek-flash","messages":[{"role":"user","content":"input"}],"stream":true}`)))
+			probeCtx, probe := newSpeedProbeContext(USTCSpeedSample{Source: "probe", Model: "deepseek-flash", Stream: true, Profile: "probe:test", Reasoning: "unknown"})
+			request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(probeCtx, selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewReader([]byte(`{"model":"deepseek-flash","messages":[{"role":"user","content":"input"}],"stream":true}`)))
 			require.NoError(t, err)
 			response, err := gateway.doUSTCUpstream(request, "", &account)
 			require.NoError(t, err)
@@ -246,20 +260,16 @@ func TestUSTCSpeedObserverCloseHonorsProtocolTerminalFrame(t *testing.T) {
 			require.Equal(t, len(responseBytes), n)
 			require.Equal(t, responseBytes, buffer)
 			require.NoError(t, response.Body.Close())
-			select {
-			case sample := <-speed.queue:
-				require.Equal(t, tc.wantStatus, sample.Status)
-				require.Equal(t, tc.wantReason, sample.Reason)
-				require.Equal(t, tc.terminal, sample.StreamDone)
-			case <-time.After(time.Second):
-				t.Fatal("closing the response did not finish the observer")
-			}
+			sample := requireSpeedProbeSample(t, probe)
+			require.Equal(t, tc.wantStatus, sample.Status)
+			require.Equal(t, tc.wantReason, sample.Reason)
+			require.Equal(t, tc.terminal, sample.StreamDone)
 		})
 	}
 }
 
 func TestUSTCSpeedObserverNonStreamingContentWithoutUsageIsSuccess(t *testing.T) {
-	speed, gateway, _, _, upstream, account := newUSTCSpeedRunnerFixture()
+	_, gateway, _, _, upstream, account := newUSTCSpeedRunnerFixture()
 	responseBytes := []byte(`{"choices":[{"message":{"content":"answer"}}]}`)
 	upstream.response = responseBytes
 	upstream.header = http.Header{"Content-Type": []string{"application/json"}}
@@ -270,7 +280,8 @@ func TestUSTCSpeedObserverNonStreamingContentWithoutUsageIsSuccess(t *testing.T)
 	selection, err := gateway.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
 	require.NoError(t, err)
 	defer selection.ReleaseFunc()
-	request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(context.Background(), selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewReader(requestBody))
+	probeCtx, probe := newSpeedProbeContext(USTCSpeedSample{Source: "probe", Model: "deepseek-flash", Stream: false, Profile: "probe:test", Reasoning: "unknown"})
+	request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(probeCtx, selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/chat/completions", bytes.NewReader(requestBody))
 	require.NoError(t, err)
 	response, err := gateway.doUSTCUpstream(request, "", &account)
 	require.NoError(t, err)
@@ -279,35 +290,33 @@ func TestUSTCSpeedObserverNonStreamingContentWithoutUsageIsSuccess(t *testing.T)
 	require.Equal(t, responseBytes, gotBody)
 	require.NoError(t, response.Body.Close())
 
-	select {
-	case sample := <-speed.queue:
-		require.Equal(t, "success", sample.Status)
-		require.Equal(t, len("answer"), sample.OutputChars)
-		require.False(t, sample.InputTokensKnown)
-		require.False(t, sample.TokenCountKnown)
-		require.Nil(t, sample.FirstOutputMS)
-		require.Nil(t, sample.TTFTMS)
-		require.Nil(t, sample.OutputMS)
-		require.Nil(t, sample.TailMS)
-		require.Nil(t, sample.GenerationTPS)
-		require.Nil(t, sample.OverallTPS)
-		require.Contains(t, sample.Profile, ":unknown:in=unknown:out=unknown:")
-		require.NotContains(t, sample.Profile, untrustedEffort)
-		require.Less(t, len(sample.Profile), 256)
-	case <-time.After(time.Second):
-		t.Fatal("non-stream response did not produce an observed sample")
-	}
+	sample := requireSpeedProbeSample(t, probe)
+	require.Equal(t, "success", sample.Status)
+	require.Equal(t, len("answer"), sample.OutputChars)
+	require.False(t, sample.InputTokensKnown)
+	require.False(t, sample.TokenCountKnown)
+	require.Nil(t, sample.FirstOutputMS)
+	require.Nil(t, sample.TTFTMS)
+	require.Nil(t, sample.OutputMS)
+	require.Nil(t, sample.TailMS)
+	require.Nil(t, sample.GenerationTPS)
+	require.Nil(t, sample.OverallTPS)
+	require.Equal(t, "probe:test", sample.Profile)
+	calls, bodies := upstream.snapshot()
+	require.Equal(t, 1, calls, "observation must not issue an extra upstream request")
+	require.Equal(t, [][]byte{requestBody}, bodies, "the forwarded request body must remain unchanged")
 }
 
 func TestUSTCSpeedObserverResponseFailedWithoutErrorCodeIsError(t *testing.T) {
-	speed, gateway, _, _, upstream, account := newUSTCSpeedRunnerFixture()
+	_, gateway, _, _, upstream, account := newUSTCSpeedRunnerFixture()
 	responseBytes := []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
 		"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n")
 	upstream.response = responseBytes
 	selection, err := gateway.SelectAccountWithLoadAwareness(context.Background(), nil, "", "deepseek-flash", nil)
 	require.NoError(t, err)
 	defer selection.ReleaseFunc()
-	request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(context.Background(), selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/responses", bytes.NewReader([]byte(`{"model":"deepseek-flash","input":"input","stream":true}`)))
+	probeCtx, probe := newSpeedProbeContext(USTCSpeedSample{Source: "probe", Model: "deepseek-flash", Stream: true, Profile: "probe:test", Reasoning: "unknown"})
+	request, err := http.NewRequestWithContext(ContextWithUSTCAdmission(probeCtx, selection), http.MethodPost, "https://api.llm.ustc.edu.cn/v1/responses", bytes.NewReader([]byte(`{"model":"deepseek-flash","input":"input","stream":true}`)))
 	require.NoError(t, err)
 	response, err := gateway.doUSTCUpstream(request, "", &account)
 	require.NoError(t, err)
@@ -315,15 +324,11 @@ func TestUSTCSpeedObserverResponseFailedWithoutErrorCodeIsError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
 
-	select {
-	case sample := <-speed.queue:
-		require.Equal(t, "error", sample.Status)
-		require.Equal(t, "upstream_stream_error", sample.Reason)
-		require.Equal(t, "response_failed", sample.ErrorCode)
-		require.True(t, sample.StreamDone)
-	case <-time.After(time.Second):
-		t.Fatal("failed Responses stream did not produce an observed sample")
-	}
+	sample := requireSpeedProbeSample(t, probe)
+	require.Equal(t, "error", sample.Status)
+	require.Equal(t, "upstream_stream_error", sample.Reason)
+	require.Equal(t, "response_failed", sample.ErrorCode)
+	require.True(t, sample.StreamDone)
 }
 
 func TestUSTCSpeedManualProbeUsesSharedAdmissionAndOneRequest(t *testing.T) {
