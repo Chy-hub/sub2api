@@ -222,7 +222,7 @@ const lengthRows = computed(() => {
     const a = rows.find((row) => row.period === 'current' && row.bucket === bucket)
     const b = rows.find((row) => row.period === 'previous' && row.bucket === bucket)
     const share = (n: number, total: number) => total ? `${(n * 100 / total).toFixed(1)}% · n=${n}` : '—'
-    return { bucket, label: bucket < 0 ? t('admin.ustcSpeed.filter.reasoningUnknown') : labels[bucket], currentShare: share(a?.valid_count ?? 0, current.value?.valid_count ?? 0), previousShare: share(b?.valid_count ?? 0, previous.value?.valid_count ?? 0), change: percentChange(a, b) }
+    return { bucket, label: bucket < 0 ? t('admin.ustcSpeed.analysis.lengthUnknown') : labels[bucket], currentShare: share(a?.valid_count ?? 0, current.value?.valid_count ?? 0), previousShare: share(b?.valid_count ?? 0, previous.value?.valid_count ?? 0), change: percentChange(a, b) }
   })
 })
 </script>

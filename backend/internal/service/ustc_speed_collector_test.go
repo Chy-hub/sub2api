@@ -34,7 +34,7 @@ func TestUSTCSpeedCollectorChatCompletionsFragmentsAndLateUsage(t *testing.T) {
 	assertFloat(t, obs.OutputMS, 1200)
 	assertFloat(t, obs.TailMS, 1300)
 	assertFloat(t, obs.MaxGapMS, 1200)
-	assertFloat(t, obs.GenerationTPS, 5)
+	assertFloat(t, obs.GenerationTPS, 7.0/2.5)
 	assertFloat(t, obs.OverallTPS, 7.0/3.0)
 	if obs.EventCount != 2 || obs.OutputChars != 11 {
 		t.Fatalf("content accounting = events %d chars %d, want 2 / 11", obs.EventCount, obs.OutputChars)
@@ -122,9 +122,7 @@ func TestUSTCSpeedCollectorReasoningAndHiddenReasoning(t *testing.T) {
 			t.Fatalf("reasoning accounting = %+v", obs)
 		}
 		assertClosed(t, c.FirstOutput())
-		if obs.GenerationTPS == nil || *obs.GenerationTPS != 4 {
-			t.Fatalf("reasoning generation speed = %v, want 4", obs.GenerationTPS)
-		}
+		assertFloat(t, obs.GenerationTPS, 5.0/1.2)
 	})
 
 	t.Run("usage shows hidden reasoning so body phase is not mislabeled", func(t *testing.T) {
@@ -135,8 +133,9 @@ func TestUSTCSpeedCollectorReasoningAndHiddenReasoning(t *testing.T) {
 		c.Observe([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" continued\"}}]}\n\n"), start.Add(600*time.Millisecond))
 		c.Observe([]byte("data: {\"choices\":[],\"usage\":{\"completion_tokens\":9,\"completion_tokens_details\":{\"reasoning_tokens\":4}}}\n\n"), start.Add(800*time.Millisecond))
 		obs := c.Finish(start.Add(time.Second), nil)
-		if obs.GenerationTPS != nil {
-			t.Fatalf("hidden reasoning produced misleading generation TPS %v", *obs.GenerationTPS)
+		assertFloat(t, obs.GenerationTPS, 15) // Common first-output-to-end approximation.
+		if obs.ReasoningTokens != 4 {
+			t.Fatal("raw reasoning usage was lost")
 		}
 		if obs.OverallTPS == nil {
 			t.Fatal("overall TPS should still use total request duration")

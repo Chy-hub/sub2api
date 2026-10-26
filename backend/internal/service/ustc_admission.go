@@ -430,6 +430,8 @@ func ustcIntegerHeader(headers http.Header, key string) *int {
 	return &value
 }
 
+type ustcLocalResponseBody struct{ io.ReadCloser }
+
 func (s *OpenAIGatewayService) ustcLocalCapacityResponse(request *http.Request, account *Account) *http.Response {
 	retry := 1
 	if userInfoQuotaSchedulingFailureReason(account, time.Now()) != "" {
@@ -447,7 +449,7 @@ func (s *OpenAIGatewayService) ustcLocalCapacityResponse(request *http.Request, 
 	}
 	return &http.Response{StatusCode: 429, Status: "429 Too Many Requests", Request: request,
 		Header: http.Header{"Content-Type": []string{"application/json"}, "Retry-After": []string{strconv.Itoa(retry)}, "X-Sub2api-Ustc-Local-Admission": []string{"1"}},
-		Body:   io.NopCloser(strings.NewReader("{\"error\":{\"type\":\"rate_limit_error\",\"code\":\"gateway_account_limit\",\"message\":\"USTC capacity changed before forwarding; retry later\"}}"))}
+		Body:   &ustcLocalResponseBody{io.NopCloser(strings.NewReader("{\"error\":{\"type\":\"rate_limit_error\",\"code\":\"gateway_account_limit\",\"message\":\"USTC capacity changed before forwarding; retry later\"}}"))}}
 }
 
 // Rejection-time hints are conservative bounds, never proof of a new window.

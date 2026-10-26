@@ -5,10 +5,10 @@ import USTCSpeedView from '../USTCSpeedView.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
 
-const { benchmark, usage, dimensions, settings, tasks, runtime, toast } = vi.hoisted(() => ({
-  benchmark: vi.fn(), usage: vi.fn(), dimensions: vi.fn(), settings: vi.fn(), tasks: vi.fn(), runtime: vi.fn(), toast: vi.fn(),
+const { benchmark, usage, dimensions, settings, tasks, runtime, toast, createTask } = vi.hoisted(() => ({
+  benchmark: vi.fn(), usage: vi.fn(), dimensions: vi.fn(), settings: vi.fn(), tasks: vi.fn(), runtime: vi.fn(), toast: vi.fn(), createTask: vi.fn(),
 }))
-vi.mock('@/api/admin/ustcSpeed', () => ({ adminUSTCSpeedAPI: { getOverview: benchmark, getDimensions: dimensions, getSettings: settings, listTasks: tasks, getRuntime: runtime, listSamples: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }))
+vi.mock('@/api/admin/ustcSpeed', () => ({ adminUSTCSpeedAPI: { getOverview: benchmark, getDimensions: dimensions, getSettings: settings, listTasks: tasks, getRuntime: runtime, createTask, listSamples: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }))
 vi.mock('@/api/admin/usage', () => ({ getSpeedOverview: usage, adminUsageAPI: { getSpeedOverview: usage }, default: { getSpeedOverview: usage } }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showToast: toast }) }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ path: '/admin/ustc-speed', query: {} }), useRouter: () => ({ push: vi.fn() }) }))
@@ -170,6 +170,53 @@ describe('separate usage and benchmark views', () => {
     await flushPromises()
     expect(benchmark).toHaveBeenCalledTimes(before + 1)
     expect(benchmark.mock.calls.at(-1)?.[0]).toMatchObject({ account_ids: '2' })
+  })
+
+  it('shows normalized API validation messages when saving a task fails', async () => {
+    createTask.mockRejectedValueOnce({ status: 400, message: 'invalid request timeouts' })
+    const wrapper = render()
+    await flushPromises()
+    await (wrapper.vm as any).saveTask({ name: 'Probe' })
+    expect(toast).toHaveBeenCalledWith('error', expect.stringContaining('invalid request timeouts'))
+  })
+
+  it('uses the actual calendar bucket end across a 25-hour DST day', async () => {
+    const start = Date.parse('2026-11-01T00:00:00-04:00')
+    const end = Date.parse('2026-11-02T00:00:00-05:00')
+    benchmark.mockImplementation(async (q: any) => ({ ...response(q), interval: '1d', range_start: new Date(start).toISOString(), range_end: new Date(end).toISOString(), series: [{ ...response(q).series[0], time: new Date(start).toISOString(), bucket_end: new Date(end).toISOString() }] }))
+    const wrapper = render()
+    await flushPromises()
+    expect(datasets(wrapper)[0].data[0].x).toBe(start + (end - start) / 2)
+  })
+
+  it('does not display conditional success and 429 rates when status is filtered', async () => {
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.ustcSpeed.overview.successRate')
+    await wrapper.get('[data-testid="benchmark-filters"]').findAll('select')[4]!.setValue('success')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('admin.ustcSpeed.overview.successRate')
+    expect(wrapper.text()).not.toContain('admin.ustcSpeed.overview.rateLimitedRate')
+  })
+
+  it('leaves missing hours disconnected and gates tail percentiles by valid sample count', async () => {
+    benchmark.mockImplementation(async (q: any) => {
+      const out = response(q)
+      out.hourly = [
+        { ...out.hourly[0], hour: 10, valid_count: 19, p90: 42 },
+        { ...out.hourly[0], hour: 12, valid_count: 20, p90: 44 },
+      ]
+      return out
+    })
+    const wrapper = render()
+    await flushPromises()
+    await wrapper.get('[data-testid="benchmark-filters"]').findAll('select')[5]!.setValue('p90')
+    await flushPromises()
+    const ds = (wrapper.vm as any).hourlyChartData.datasets[0]
+    expect(ds.spanGaps).toBe(false)
+    expect(ds.data[10]).toBeNull()
+    expect(ds.data[11]).toBeNull()
+    expect(ds.data[12]).toBe(44)
   })
 
   it('applies date presets and custom dates immediately, clearing and restoring the rolling window', async () => {

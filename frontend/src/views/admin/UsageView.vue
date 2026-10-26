@@ -189,6 +189,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { usageGenerationTPS, usageOverallTPS } from '@/utils/tokenSpeed'
+import { spreadsheetCell } from '@/utils/spreadsheet'
 import { saveAs } from 'file-saver'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admin'; import { adminUsageAPI } from '@/api/admin/usage'
@@ -602,7 +604,7 @@ const exportToExcel = async () => {
       t('admin.usage.inputCost'), t('admin.usage.outputCost'),
       t('admin.usage.cacheReadCost'), t('admin.usage.cacheCreationCost'),
       t('usage.rate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
-      t('usage.firstToken'), t('usage.duration'),
+      t('usage.firstToken'), t('usage.duration'), t('admin.ustcSpeed.samples.generationTps'), t('admin.ustcSpeed.samples.overallTps'),
       t('admin.usage.requestId'), t('admin.usage.upstreamRequestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
     ]
     const ws = XLSX.utils.aoa_to_sheet([headers])
@@ -621,9 +623,9 @@ const exportToExcel = async () => {
         log.cache_read_cost?.toFixed(6) || '0.000000', log.cache_creation_cost?.toFixed(6) || '0.000000',
         log.rate_multiplier?.toPrecision(4) || '1.00', (log.account_rate_multiplier ?? 1).toPrecision(4),
         log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',
-        ((log.account_stats_cost ?? log.total_cost) * (log.account_rate_multiplier ?? 1)).toFixed(6), log.first_token_ms ?? '', log.duration_ms,
+        ((log.account_stats_cost ?? log.total_cost) * (log.account_rate_multiplier ?? 1)).toFixed(6), log.first_token_ms ?? '', log.duration_ms, usageGenerationTPS(log) ?? '', usageOverallTPS(log) ?? '',
         log.request_id || '', log.upstream_request_id || '', log.user_agent || '', log.ip_address || ''
-      ])
+      ].map(spreadsheetCell))
       if (rows.length) {
         XLSX.utils.sheet_add_aoa(ws, rows, { origin: -1 })
       }

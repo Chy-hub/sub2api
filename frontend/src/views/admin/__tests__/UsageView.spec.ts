@@ -839,6 +839,24 @@ describe('admin UsageView model audit export', () => {
 		expect(row.slice(4, 8)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'Yes'])
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
+
+	it('exports numeric generation/overall TPS and keeps formula-like names as text', async () => {
+		exportList.mockResolvedValueOnce({ items: [{
+			created_at: '2026-10-26T00:00:00Z', model: '=1+1', user: { email: '@untrusted' },
+			stream: true, image_count: 0, output_tokens: 2, duration_ms: 1000, first_token_ms: 200,
+		}], total: 1 })
+		const wrapper = mountRouteFilteredUsageView()
+		vi.advanceTimersByTime(120)
+		await flushPromises()
+		await (wrapper.vm as any).exportToExcel()
+		const headers = aoaToSheet.mock.calls[0][0][0]
+		const row = sheetAddAoa.mock.calls[0][1][0]
+		expect(row[headers.indexOf('admin.ustcSpeed.samples.generationTps')]).toBe(2.5)
+		expect(row[headers.indexOf('admin.ustcSpeed.samples.overallTps')]).toBe(2)
+		expect(row[4]).toBe("'=1+1")
+		expect(row[1]).toBe("'@untrusted")
+		wrapper.unmount()
+	})
 })
 
 describe('admin UsageView speed analysis tab', () => {

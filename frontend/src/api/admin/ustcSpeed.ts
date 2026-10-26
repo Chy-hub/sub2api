@@ -28,6 +28,7 @@ export interface USTCSpeedAccountDimension {
 export interface USTCSpeedDimensions {
   accounts: USTCSpeedAccountDimension[]
   models: string[]
+  task_defaults?: USTCSpeedTaskInput
 }
 
 export interface USTCSpeedQuery {
@@ -111,6 +112,7 @@ export interface USTCSpeedSample extends USTCSpeedObservation {
 
 export interface USTCSpeedPoint {
   time: string
+  bucket_end?: string
   account_id: number
   account_name: string
   model: string
@@ -173,11 +175,10 @@ export interface USTCSpeedOverview {
   interval: USTCSpeedInterval
   aggregate: USTCSpeedAggregate
   requested_source: USTCSpeedSource
-  fallback_applied: boolean
-  fallback_window_seconds: number
   summary: USTCSpeedSummary
   series: USTCSpeedPoint[]
   hourly?: USTCSpeedHourPoint[]
+  hourly_truncated?: boolean
   truncated: boolean
   dropped_samples: number
 }
@@ -263,9 +264,6 @@ export interface USTCSpeedTask {
   max_interval_seconds: number
   pause_after_429: number
   recovery_successes: number
-  real_fallback: boolean
-  real_fallback_max_age_seconds: number
-  real_fallback_min_samples: number
   next_run_at: string | null
   last_run_at: string | null
   last_status: string
@@ -299,7 +297,6 @@ export type USTCSpeedTaskInput = Omit<
 >
 
 export interface USTCSpeedSettings {
-  capture_enabled: boolean
   max_background_concurrency: number
 }
 

@@ -90,11 +90,13 @@ interface Props {
   startDate: string
   endDate: string
   autoApply?: boolean
+  preset?: string | null
 }
 
 interface Emits {
   (e: 'update:startDate', value: string): void
   (e: 'update:endDate', value: string): void
+  (e: 'update:preset', value: string | null): void
   (e: 'change', range: { startDate: string; endDate: string; preset: string | null }): void
 }
 
@@ -107,7 +109,10 @@ const isOpen = ref(false)
 const containerRef = ref<HTMLElement | null>(null)
 const localStartDate = ref(props.startDate)
 const localEndDate = ref(props.endDate)
-const activePreset = ref<string | null>('last24Hours')
+const activePreset = ref<string | null>(props.preset ?? null)
+let appliedPreset: string | null = props.preset ?? null
+let appliedStart = props.startDate
+let appliedEnd = props.endDate
 
 const today = () => formatDateToString(new Date())
 
@@ -247,19 +252,24 @@ const selectPreset = (preset: DatePreset) => {
 }
 
 const onDateChange = () => {
-  // Check if current dates match any preset
+  if (props.preset !== undefined) { activePreset.value = props.preset; return }
+  if (props.startDate === appliedStart && props.endDate === appliedEnd) { activePreset.value = appliedPreset; return }
   activePreset.value = null
   for (const preset of presets) {
+    if (preset.value === 'last24Hours') continue
     const range = preset.getRange()
     if (range.start === localStartDate.value && range.end === localEndDate.value) {
       activePreset.value = preset.value
       break
     }
   }
+  appliedStart = props.startDate
+  appliedEnd = props.endDate
+  appliedPreset = activePreset.value
 }
 
 const onCustomDateChange = () => {
-  onDateChange()
+  activePreset.value = null
   // Keep the calendar open while editing both endpoints. Incomplete or
   // temporarily inverted ranges must not trigger a request.
   if (props.autoApply && localStartDate.value && localEndDate.value && localStartDate.value <= localEndDate.value) {
@@ -272,8 +282,12 @@ const toggle = () => {
 }
 
 const emitRange = () => {
+  appliedPreset = activePreset.value
+  appliedStart = localStartDate.value
+  appliedEnd = localEndDate.value
   emit('update:startDate', localStartDate.value)
   emit('update:endDate', localEndDate.value)
+  emit('update:preset', activePreset.value)
   emit('change', {
     startDate: localStartDate.value,
     endDate: localEndDate.value,
@@ -311,26 +325,17 @@ watch(isOpen, (open) => {
 }, { flush: 'post' })
 
 // Sync local state with props
-watch(
-  () => props.startDate,
-  (val) => {
-    localStartDate.value = val
-    onDateChange()
-  }
-)
-
-watch(
-  () => props.endDate,
-  (val) => {
-    localEndDate.value = val
-    onDateChange()
-  }
-)
+watch(() => [props.startDate, props.endDate, props.preset], () => {
+  localStartDate.value = props.startDate
+  localEndDate.value = props.endDate
+  onDateChange()
+}, { flush: 'post' })
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleEscape)
   // Initialize active preset detection
+  if (props.preset === undefined) { appliedStart = ''; appliedEnd = '' }
   onDateChange()
 })
 
