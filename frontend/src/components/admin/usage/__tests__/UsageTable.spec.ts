@@ -944,6 +944,7 @@ describe('admin UsageTable TPS dual-row column', () => {
     // 整体(总): 1000 / (2500/1000) = 400.0
     const wrapper = mountTable({
       request_id: 'req-stream-1',
+      stream: true,
       billing_mode: 'token',
       image_count: 0,
       output_tokens: 1000,

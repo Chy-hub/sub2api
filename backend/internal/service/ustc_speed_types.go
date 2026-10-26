@@ -103,9 +103,6 @@ type USTCSpeedTask struct {
 	MaxIntervalSeconds        int        `json:"max_interval_seconds"`
 	PauseAfter429             int        `json:"pause_after_429"`
 	RecoverySuccesses         int        `json:"recovery_successes"`
-	RealFallback              bool       `json:"real_fallback"`
-	RealFallbackMaxAgeSeconds int        `json:"real_fallback_max_age_seconds"`
-	RealFallbackMinSamples    int        `json:"real_fallback_min_samples"`
 	NextRunAt                 *time.Time `json:"next_run_at"`
 	LastRunAt                 *time.Time `json:"last_run_at"`
 	LastStatus                string     `json:"last_status"`
@@ -113,8 +110,9 @@ type USTCSpeedTask struct {
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
 
-	Progress   *USTCSpeedTaskProgress `json:"progress,omitempty"`
-	LeaseUntil *time.Time             `json:"lease_until,omitempty"`
+	Progress      *USTCSpeedTaskProgress `json:"progress,omitempty"`
+	LeaseUntil    *time.Time             `json:"lease_until,omitempty"`
+	LeaseRevision *int64                 `json:"-"`
 }
 
 type USTCSpeedActiveProbe struct {
@@ -145,8 +143,7 @@ type USTCSpeedTaskProgress struct {
 }
 
 type USTCSpeedSettings struct {
-	CaptureEnabled           bool `json:"capture_enabled"`
-	MaxBackgroundConcurrency int  `json:"max_background_concurrency"`
+	MaxBackgroundConcurrency int `json:"max_background_concurrency"`
 }
 
 type USTCSpeedQuery struct {
@@ -212,23 +209,24 @@ type USTCSpeedStats struct {
 }
 
 type USTCSpeedPoint struct {
-	Time        time.Time `json:"time"`
-	AccountID   int64     `json:"account_id"`
-	AccountName string    `json:"account_name"`
-	Model       string    `json:"model"`
-	Source      string    `json:"source"`
-	Profile     string    `json:"profile"`
-	RoundID     string    `json:"round_id,omitempty"`
-	SampleID    *int64    `json:"sample_id,omitempty"`
-	Count       int64     `json:"count"`
-	ValidCount  int64     `json:"valid_count"`
-	Value       *float64  `json:"value"`
-	Mean        *float64  `json:"mean"`
-	P10         *float64  `json:"p10"`
-	P50         *float64  `json:"p50"`
-	P90         *float64  `json:"p90"`
-	Min         *float64  `json:"min"`
-	Max         *float64  `json:"max"`
+	Time        time.Time  `json:"time"`
+	BucketEnd   *time.Time `json:"bucket_end,omitempty"`
+	AccountID   int64      `json:"account_id"`
+	AccountName string     `json:"account_name"`
+	Model       string     `json:"model"`
+	Source      string     `json:"source"`
+	Profile     string     `json:"profile"`
+	RoundID     string     `json:"round_id,omitempty"`
+	SampleID    *int64     `json:"sample_id,omitempty"`
+	Count       int64      `json:"count"`
+	ValidCount  int64      `json:"valid_count"`
+	Value       *float64   `json:"value"`
+	Mean        *float64   `json:"mean"`
+	P10         *float64   `json:"p10"`
+	P50         *float64   `json:"p50"`
+	P90         *float64   `json:"p90"`
+	Min         *float64   `json:"min"`
+	Max         *float64   `json:"max"`
 }
 
 type USTCSpeedHourPoint struct {
@@ -238,8 +236,8 @@ type USTCSpeedHourPoint struct {
 	Profile    string `json:"profile"`
 	Count      int64  `json:"count"`
 	ValidCount int64  `json:"valid_count"`
-	// DayCount is how many local calendar days contributed to this hour. Multi-day
-	// ranges are folded into one day before averaging.
+	// DayCount counts distinct local dates with valid observations. Rates and
+	// quantiles always pool individual calls; days are never equally weighted.
 	DayCount int64    `json:"day_count"`
 	Value    *float64 `json:"value"`
 	Mean     *float64 `json:"mean"`
@@ -251,23 +249,22 @@ type USTCSpeedHourPoint struct {
 }
 
 type USTCSpeedOverview struct {
-	RequestedSource       string               `json:"requested_source"`
-	FallbackApplied       bool                 `json:"fallback_applied"`
-	FallbackWindowSeconds int                  `json:"fallback_window_seconds"`
-	RangeStart            time.Time            `json:"range_start"`
-	RangeEnd              time.Time            `json:"range_end"`
-	Metric                string               `json:"metric"`
-	Unit                  string               `json:"unit"`
-	Interval              string               `json:"interval"`
-	GroupBy               string               `json:"group_by"`
-	Aggregate             string               `json:"aggregate"`
-	Summary               USTCSpeedSummary     `json:"summary"`
-	Stats                 *USTCSpeedStats      `json:"stats,omitempty"`
-	Series                []USTCSpeedPoint     `json:"series"`
-	Hourly                []USTCSpeedHourPoint `json:"hourly,omitempty"`
-	Truncated             bool                 `json:"truncated"`
-	DroppedSamples        uint64               `json:"dropped_samples"`
-	Analysis              *USTCSpeedAnalysis   `json:"analysis,omitempty"`
+	RequestedSource string               `json:"requested_source"`
+	RangeStart      time.Time            `json:"range_start"`
+	RangeEnd        time.Time            `json:"range_end"`
+	Metric          string               `json:"metric"`
+	Unit            string               `json:"unit"`
+	Interval        string               `json:"interval"`
+	GroupBy         string               `json:"group_by"`
+	Aggregate       string               `json:"aggregate"`
+	Summary         USTCSpeedSummary     `json:"summary"`
+	Stats           *USTCSpeedStats      `json:"stats,omitempty"`
+	Series          []USTCSpeedPoint     `json:"series"`
+	Hourly          []USTCSpeedHourPoint `json:"hourly,omitempty"`
+	HourlyTruncated bool                 `json:"hourly_truncated"`
+	Truncated       bool                 `json:"truncated"`
+	DroppedSamples  uint64               `json:"dropped_samples"`
+	Analysis        *USTCSpeedAnalysis   `json:"analysis,omitempty"`
 }
 
 type USTCSpeedRuntime struct {
@@ -293,17 +290,16 @@ type USTCSpeedAccountDimension struct {
 }
 
 type USTCSpeedDimensions struct {
-	Accounts []USTCSpeedAccountDimension `json:"accounts"`
-	Models   []string                    `json:"models"`
+	Accounts     []USTCSpeedAccountDimension `json:"accounts"`
+	Models       []string                    `json:"models"`
+	TaskDefaults *USTCSpeedTask              `json:"task_defaults,omitempty"`
 }
 
 // SQL persistence is kept behind a small port so runner/collector behavior can
 // be tested without a live server or spending real upstream quota.
 type USTCSpeedRepository interface {
-	GetSettings(context.Context) (*USTCSpeedSettings, time.Time, error)
+	GetSettings(context.Context) (*USTCSpeedSettings, error)
 	SaveSettings(context.Context, USTCSpeedSettings) error
-	ImportUsage(context.Context, time.Time, time.Time, []int64, int) (int64, error)
-	ImportRecentUsage(context.Context, time.Time, time.Time, []int64, int) (int64, error)
 	Models(context.Context) ([]string, error)
 	InsertSample(context.Context, *USTCSpeedSample) error
 	Overview(context.Context, USTCSpeedQuery) (*USTCSpeedOverview, error)

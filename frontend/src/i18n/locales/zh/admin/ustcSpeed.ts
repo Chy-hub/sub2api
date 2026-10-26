@@ -50,11 +50,12 @@ export default {
       validPoints: '有效指标点',
       auxiliary: '数据覆盖与系列明细', auxiliaryDescription: '查看最新数据时间、指标覆盖和各模型系列的样本数。', seriesBreakdown: '按模型与来源分组',
       fallbackApplied: '基准检测因限流或资源繁忙正在缓测/暂停，当前临时显示最近 {minutes} 分钟的真实调用；图例仍标记为真实来源。',
-      truncated: '后端为控制返回量截断了趋势数据。', dropped: '有 {count} 个样本因数据限制未进入图表。',
+      truncated: '趋势仅保留最新 5000 个数据点；汇总与周期分析仍使用完整数据。', dropped: '有 {count} 个样本因数据限制未进入图表。',
       noReal: '当前时间范围内没有真实调用样本。', noProbe: '当前时间范围内没有基准检测样本。',
       ageUnknown: '时间未知', profile: '配置', configuration: '配置 {number}', account: '账号', source: '来源', coverage: '有效账号覆盖'
     },
     analysis: {
+      lengthUnknown: '长度未知',
       view: '分析视角', trend: '时间趋势', compare: '周期对比', distribution: '分布与波动', baseline: '对照周期',
       comparison: { previous: '上一等长时段', week: '上周同期', month: '上月同期', year: '去年同期', none: '不对照' },
       compareHint: '判断同一模型是否变慢：按两段时期各自的起点对齐，同时比较平均表现与慢速尾部。今天尚未结束时，对照也只取对应的已过去时段。',
@@ -73,6 +74,7 @@ export default {
       method: '统计直接使用筛选后的全部有效调用，每次调用等权，模型和来源分开；不平均时间桶的均值或分位数。真实生成 TPS 来自使用记录的近似计算，记录首字不区分思考与正文。'
     },
     hourly: {
+      minimumSamples: '此分位数每小时至少需要 {count} 个有效样本。', truncated: '时段数据超过上限，已显示截断提示；请缩小模型或时间范围。',
       models: '{count} 个模型', noHourData: '该时段无有效观测',
       title: '调用时段分布', description: '所选时间范围内的调用按本地小时折叠：多天数据合并到同一天，同一时段按当前统计口径汇总。',
       samples: '{count} 个有效观测', days: '覆盖 {count} 天', noData: '所选范围没有可按时段比较的有效调用。',
@@ -134,7 +136,7 @@ export default {
       manualRun: '手动运行', nextRun: '下次运行', lastRun: '上次运行', lastStatus: '上次结果',
       target: '测试目标', schedule: '计划与时段', request: '请求配置', safety: '容量与限流保护',
       intervalUnit: { seconds: '秒', minutes: '分钟', hours: '小时' }, everyInterval: '每 {count} {unit}', editSchedule: '修改间隔',
-      fallback: '真实数据替代', advanced: '高级配置', advancedSchedule: '高级调度',
+      advanced: '高级配置', advancedSchedule: '高级调度',
       field: {
         name: '名称', interval: '检测间隔', jitter: '轮次抖动（秒）', timezone: '时区',
         cronExpression: 'Cron 表达式（5 个字段）',
@@ -146,19 +148,18 @@ export default {
         reserveConcurrency: '预留并发数', maxActive: '最大活动请求数', skipWaiting: '有用户排队时跳过检测',
         backoffAfter429: '缓测触发 429 次数', backoffWindow: '429 观察窗口（秒）', backoffMultiplier: '间隔退避倍率',
         maxInterval: '最大检测间隔（秒）', pauseAfter429: '暂停前连续 429 次数', recoverySuccesses: '恢复所需成功数',
-        realFallback: '基准暂停时使用真实调用数据', realFallbackAge: '真实数据最大年龄（秒）', realFallbackSamples: '最低真实样本数',
       },
       hint: {
+        editSnapshot: '当前运行按启动时配置完成，新配置下一轮生效；停用或删除会取消当前运行。', sameHours: '开始与结束时间相同时表示全天。Cron 不应用轮次抖动。',
         perKeyConcurrency: '每把物理 Key 的后台并发固定最多 1；全局并发还受“最高同轮账号数”和系统设置限制。',
         capacities: '账号能力信息来自维度接口；服务端会在发起前校验模型权限与共享容量。',
         physicalKeyGroup: '物理 Key 分组 #{id}',
-        days: '留空表示每天都可运行。',
+        days: '至少选择一天；全部选中表示每天运行。',
         cronExpression: '留空时按检测间隔运行。Cron 按此任务时区解释，字段顺序为“分 时 日 月 周”。',
         cronOverridesInterval: 'Cron 有值时按 Cron 调度，并替代检测间隔。',
-        realFallback: '真实调用始终保留自己的来源与任务条件，不会并入基准成功率。',
         zeroUnlimited: '活动请求上限填 0 表示不增加任务级限制；RPM 预留可为 0，并发至少预留 1 个。'
       },
-      validation: { name: '请填写任务名称。', models: '至少选择一个模型。', accounts: '请选择账号或开启自动包含账号。', numbers: '请填写有效的数值配置。' },
+      validation: { range: '{field} 必须为 {min}–{max} 范围内的有效数值。', days: '至少选择一天；每天运行请保留全选。', request: '提示词或请求参数超出限制。', timezone: '请填写有效时区。', name: '请填写任务名称。', models: '至少选择一个模型。', accounts: '请选择账号或开启自动包含账号。', numbers: '请填写有效的数值配置。' },
       defaultPrompt: '请用简洁文字介绍一个你熟悉的科学概念。',
       apis: { chat: 'Chat Completions', responses: 'Responses' },
       thinking: { off: '关闭', on: '开启', auto: '自动（不额外指定）' },
@@ -178,7 +179,7 @@ export default {
     },
     settings: {
       title: '后台检测并发', description: '定时频率在各检测任务中配置，实际发起遵循共享 RPM、并发与任务保护设置。',
-      captureEnabled: '从使用记录同步真实调用', concurrency: '后台检测最大并发',
+      concurrency: '后台检测最大并发',
       perKey: '每把物理 Key 的后台并发上限为 1。', saved: '全局设置已保存。',
       disableCapture: '关闭后不再从使用记录导入新的真实调用速度数据；检测任务不受影响。'
     },

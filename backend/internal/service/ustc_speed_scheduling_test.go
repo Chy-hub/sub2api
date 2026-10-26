@@ -57,3 +57,35 @@ func TestUSTCSpeedEditedOrDeletedTaskStopsBeforeDispatch(t *testing.T) {
 		require.Zero(t, calls)
 	}
 }
+
+func TestUSTCSpeedRunningSnapshotSurvivesEditsButNotDisableOrExpiredLease(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		enabled, expired, want bool
+	}{
+		{"edited", true, false, true}, {"disabled", false, false, false}, {"expired", true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := DefaultUSTCSpeedTask()
+			original.ID, original.Revision, original.Enabled = 1, 1, true
+			until := time.Now().Add(time.Minute)
+			if tc.expired {
+				until = time.Now().Add(-time.Second)
+			}
+			current := original
+			current.Revision, current.Enabled, current.LeaseRevision, current.LeaseUntil = 2, tc.enabled, &original.Revision, &until
+			svc := NewUSTCSpeedService(&ustcSpeedTaskRevisionRepo{task: &current}, nil, nil)
+			require.Equal(t, tc.want, svc.speedTaskCurrent(context.Background(), original))
+		})
+	}
+}
+
+func TestUSTCSpeedCronDoesNotApplyIntervalJitter(t *testing.T) {
+	task := DefaultUSTCSpeedTask()
+	task.CronExpression, task.Timezone, task.JitterSeconds = "*/1 * * * *", "Asia/Shanghai", 180
+	now := time.Date(2026, 10, 26, 5, 4, 30, 0, time.UTC)
+	want := time.Date(2026, 10, 26, 5, 5, 0, 0, time.UTC)
+	for range 10 {
+		require.True(t, want.Equal(nextUSTCSpeedTask(task, now)))
+	}
+}

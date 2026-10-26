@@ -89,10 +89,29 @@ func TestUSTCSpeedSaveTaskStartsNewlyEnabledTaskPromptly(t *testing.T) {
 	}
 }
 
+func TestUSTCSpeedSaveTaskPreservesScheduleAndActiveRunOnOrdinaryEdits(t *testing.T) {
+	next := time.Now().Add(9 * time.Minute)
+	previous := DefaultUSTCSpeedTask()
+	previous.ID, previous.Name, previous.Models, previous.AllAccounts, previous.Enabled = 1, "probe", []string{"model"}, true, true
+	previous.NextRunAt = &next
+	repo := &ustcSpeedSaveTaskRepo{existing: &previous}
+	svc := NewUSTCSpeedService(repo, nil, nil)
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.jobs[1] = cancel
+	task := previous
+	task.Name, task.Prompt = "renamed", "updated prompt"
+	require.NoError(t, svc.SaveTask(context.Background(), &task))
+	require.True(t, next.Equal(*repo.saved.NextRunAt))
+	require.NoError(t, runCtx.Err(), "ordinary edits must not cancel the running snapshot")
+	task.Enabled = false
+	require.NoError(t, svc.SaveTask(context.Background(), &task))
+	require.ErrorIs(t, runCtx.Err(), context.Canceled, "disabling cancels a running task")
+}
+
 func TestUSTCSpeedBenchmarkNeverFallsBackToRealCalls(t *testing.T) {
 	now := time.Now()
 	policy := DefaultUSTCSpeedTask()
-	policy.RealFallback = true // A saved legacy policy cannot mix data sources.
 	policy.Models = []string{"model-a"}
 	value := 45.0
 	repo := &ustcSpeedFallbackRepo{
@@ -104,11 +123,10 @@ func TestUSTCSpeedBenchmarkNeverFallsBackToRealCalls(t *testing.T) {
 	q := USTCSpeedQuery{Start: now.Add(-24 * time.Hour), End: now.Add(time.Hour), Source: "probe", Model: "model-a", Metric: "generation_tps"}
 	out, err := svc.Overview(context.Background(), q)
 	require.NoError(t, err)
-	require.False(t, out.FallbackApplied)
 	require.Empty(t, out.Series)
 	require.Zero(t, out.Summary.RealSamples)
-	require.Equal(t, q.Start, out.RangeStart)
-	require.Equal(t, q.End, out.RangeEnd)
+	require.True(t, q.Start.Equal(out.RangeStart))
+	require.True(t, q.End.Equal(out.RangeEnd))
 	require.Len(t, repo.queries, 1, "benchmark queries must not query or substitute real calls")
 	require.Equal(t, "probe", repo.queries[0].Source)
 }
@@ -138,8 +156,6 @@ func TestUSTCSpeedFallbackNeverSubstitutesHistoricalOrUnusableData(t *testing.T)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			task := policy
-			task.RealFallback = tc.enabled
-			task.RealFallbackMinSamples = tc.minimum
 			probe := &USTCSpeedOverview{Summary: USTCSpeedSummary{Skipped: 1}}
 			if tc.fresh {
 				probe.Summary.LatestProbeAt = &now
@@ -149,9 +165,8 @@ func TestUSTCSpeedFallbackNeverSubstitutesHistoricalOrUnusableData(t *testing.T)
 			query := USTCSpeedQuery{Start: now.Add(-24 * time.Hour), End: tc.end, Source: "probe", Model: "m", Metric: "generation_tps"}
 			out, err := svc.Overview(context.Background(), query)
 			require.NoError(t, err)
-			require.False(t, out.FallbackApplied)
-			require.Equal(t, query.Start, out.RangeStart)
-			require.Equal(t, query.End, out.RangeEnd)
+			require.True(t, query.Start.Equal(out.RangeStart))
+			require.True(t, query.End.Equal(out.RangeEnd))
 		})
 	}
 }

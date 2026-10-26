@@ -547,6 +547,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { usageGenerationTPS, usageOverallTPS } from '@/utils/tokenSpeed'
 import { useAppStore } from '@/stores/app'
 import { formatDateTime, formatReasoningEffort, reasoningEffortValuesEqual } from '@/utils/format'
 import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
@@ -627,7 +628,7 @@ const emit = defineEmits<{
   sort: [key: string, order: 'asc' | 'desc']
   ipGeoBatchFailed: []
 }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const appStore = useAppStore()
 const copiedRequestId = ref<string | null>(null)
 const showAccountBilling = props.showAccountBilling
@@ -748,28 +749,10 @@ const formatDuration = (ms: number | null | undefined): string => {
   return `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m`
 }
 
-// 生成速度（净速）：output_tokens / (总耗时 - 首字时间)
-// 仅流式请求有首字时间；图片请求、无输出、非流式、或生成阶段耗时为 0 均返回 '-'
-const formatTokenSpeedGenerate = (row: AdminUsageLog): string => {
-  const output = row.output_tokens || 0
-  if (isImageUsage(row) || output <= 0) return '-'
-  if (row.first_token_ms == null) return '-' // 非流式无首字时间，与流式口径不同，不显示
-  if (row.duration_ms == null || row.duration_ms <= 0) return '-'
-  const generateMs = row.duration_ms - row.first_token_ms
-  if (generateMs <= 0) return '-'
-  const speed = output / (generateMs / 1000)
-  return speed.toLocaleString(undefined, { maximumFractionDigits: 1 })
-}
-
-// 整体速度（总速）：output_tokens / 总耗时
-// 图片请求、无输出、或总耗时不合法均返回 '-'；非流式也有总耗时，故此处可用
-const formatTokenSpeedOverall = (row: AdminUsageLog): string => {
-  const output = row.output_tokens || 0
-  if (isImageUsage(row) || output <= 0) return '-'
-  if (row.duration_ms == null || row.duration_ms <= 0) return '-'
-  const speed = output / (row.duration_ms / 1000)
-  return speed.toLocaleString(undefined, { maximumFractionDigits: 1 })
-}
+// The table, Excel export and usage analysis share the same rate definition.
+const formatTokenSpeed = (value: number | null): string => value == null ? '-' : value.toLocaleString(locale?.value === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 1 })
+const formatTokenSpeedGenerate = (row: AdminUsageLog): string => formatTokenSpeed(usageGenerationTPS(row))
+const formatTokenSpeedOverall = (row: AdminUsageLog): string => formatTokenSpeed(usageOverallTPS(row))
 
 const tokenSpeedColor = (row: AdminUsageLog): string => {
   // 任一速度有值即上色，全部为 '-' 时灰显

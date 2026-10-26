@@ -62,7 +62,8 @@ function timestamp(value: string) {
 }
 function taskName(id: number | null) { return id == null ? '—' : props.tasks.find((task) => task.id === id)?.name || `#${id}` }
 function overallTps(sample: USTCSpeedSample) {
-  return sample.overall_tps ?? (sample.token_count_known && sample.total_ms != null && sample.total_ms > 0 ? sample.output_tokens * 1000 / sample.total_ms : null)
+  if (sample.token_count_known && sample.output_tokens < 2) return null
+  return sample.overall_tps ?? (sample.token_count_known && sample.output_tokens >= 2 && sample.total_ms != null && sample.total_ms > 0 ? sample.output_tokens * 1000 / sample.total_ms : null)
 }
 function statusClass(status: string) {
   return status === 'success' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'

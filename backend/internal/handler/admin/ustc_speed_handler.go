@@ -131,6 +131,9 @@ func parseUsageSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery
 	f.BillingMode = strings.TrimSpace(c.Query("billing_mode"))
 	f.RequestID = strings.TrimSpace(c.Query("request_id"))
 	q.Source = "real"
+	// Usage records have no reliable probe outcome status. Never apply the
+	// probe-only status filter to their constant "recorded" projection.
+	q.Status = ""
 	q.GroupBy = "model"
 	q.TaskID = 0
 	q.Profile = ""

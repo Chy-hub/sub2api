@@ -61,7 +61,7 @@ func (w *ustcSpeedWatch) headers(response *http.Response) {
 	w.headersAt = time.Now()
 	w.httpStatus = response.StatusCode
 	w.contentType = response.Header.Get("Content-Type")
-	w.local = response.Header.Get("X-Sub2api-Ustc-Local-Admission") != ""
+	_, w.local = response.Body.(*ustcLocalResponseBody)
 }
 func (w *ustcSpeedWatch) wrap(response *http.Response, err error) (*http.Response, error) {
 	if w == nil {

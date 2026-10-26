@@ -25,12 +25,12 @@ func speedBadRequest(message string) error {
 	return infraerrors.BadRequest("USTC_SPEED_INVALID", message)
 }
 func DefaultUSTCSpeedSettings() USTCSpeedSettings {
-	return USTCSpeedSettings{CaptureEnabled: false, MaxBackgroundConcurrency: 4}
+	return USTCSpeedSettings{MaxBackgroundConcurrency: 4}
 }
 func DefaultUSTCSpeedTask() USTCSpeedTask {
 	return USTCSpeedTask{
 		AccountIDs: []int64{}, Models: []string{}, IntervalSeconds: 1800, JitterSeconds: 180, Timezone: "Asia/Shanghai", ActiveStart: "00:00", ActiveEnd: "23:59", DaysOfWeek: []int{}, APIMode: "chat_completions", Stream: true,
-		Prompt: "Generate a numbered list of 120 practical suggestions for keeping a personal research notebook. Each item must be one short English sentence. Start immediately with item 1; do not add an introduction or conclusion.", PromptVariants: []string{}, MaxTokens: 512, Temperature: 0, Stop: []string{}, ThinkingMode: "off", TimeoutSeconds: 60, FirstOutputTimeoutSeconds: 30, MaxParallelAccounts: 4, MaxStartSkewSeconds: 5, ReserveRPM: 4, ReserveConcurrency: 2, MaxActiveRequests: 16, SkipIfUserWaiting: true, BackoffAfter429: 3, BackoffWindowSeconds: 900, BackoffMultiplier: 2, MaxIntervalSeconds: 7200, PauseAfter429: 6, RecoverySuccesses: 2, RealFallback: false, RealFallbackMaxAgeSeconds: 900, RealFallbackMinSamples: 1,
+		Prompt: "Generate a numbered list of 120 practical suggestions for keeping a personal research notebook. Each item must be one short English sentence. Start immediately with item 1; do not add an introduction or conclusion.", PromptVariants: []string{}, MaxTokens: 512, Temperature: 0, Stop: []string{}, ThinkingMode: "off", TimeoutSeconds: 60, FirstOutputTimeoutSeconds: 30, MaxParallelAccounts: 4, MaxStartSkewSeconds: 5, ReserveRPM: 4, ReserveConcurrency: 2, MaxActiveRequests: 16, SkipIfUserWaiting: true, BackoffAfter429: 3, BackoffWindowSeconds: 900, BackoffMultiplier: 2, MaxIntervalSeconds: 7200, PauseAfter429: 6, RecoverySuccesses: 2,
 	}
 }
 func ValidateUSTCSpeedSettings(s USTCSpeedSettings) error {
@@ -71,7 +71,7 @@ func ValidateUSTCSpeedTask(t *USTCSpeedTask) error {
 			return speedBadRequest("invalid account id")
 		}
 	}
-	if t.IntervalSeconds < 60 || t.IntervalSeconds > 86400 || t.JitterSeconds < 0 || t.JitterSeconds >= t.IntervalSeconds {
+	if t.IntervalSeconds < 60 || t.IntervalSeconds > 86400 || t.JitterSeconds < 0 || (t.CronExpression == "" && t.JitterSeconds >= t.IntervalSeconds) {
 		return speedBadRequest("invalid interval or jitter")
 	}
 	if t.CronExpression != "" {
@@ -142,24 +142,23 @@ func ValidateUSTCSpeedTask(t *USTCSpeedTask) error {
 	if t.BackoffAfter429 < 1 || t.BackoffAfter429 > 20 || t.BackoffWindowSeconds < 60 || t.BackoffWindowSeconds > 86400 || t.BackoffMultiplier < 1 || t.BackoffMultiplier > 10 || t.MaxIntervalSeconds < t.IntervalSeconds || t.MaxIntervalSeconds > 86400 || t.PauseAfter429 < t.BackoffAfter429 || t.PauseAfter429 > 40 || t.RecoverySuccesses < 1 || t.RecoverySuccesses > 20 {
 		return speedBadRequest("invalid 429 backoff settings")
 	}
-	if t.RealFallbackMaxAgeSeconds < 60 || t.RealFallbackMaxAgeSeconds > 86400 || t.RealFallbackMinSamples < 1 || t.RealFallbackMinSamples > 1000 {
-		return speedBadRequest("invalid real data fallback settings")
-	}
 	return nil
 }
 
 type USTCSpeedService struct {
-	repo     USTCSpeedRepository
-	accounts AccountRepository
-	gateway  *OpenAIGatewayService
-	cfg      atomic.Pointer[USTCSpeedSettings]
-	stopped  atomic.Bool
-	dropped  atomic.Uint64
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	jobsMu   sync.Mutex
-	jobs     map[int64]context.CancelFunc
+	repo          USTCSpeedRepository
+	accounts      AccountRepository
+	gateway       *OpenAIGatewayService
+	cfg           atomic.Pointer[USTCSpeedSettings]
+	stopped       atomic.Bool
+	dropped       atomic.Uint64
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	jobsMu        sync.Mutex
+	jobs          map[int64]context.CancelFunc
+	overviewCache speedOverviewCache
+	overviewEpoch atomic.Uint64
 }
 
 func NewUSTCSpeedService(repo USTCSpeedRepository, accounts AccountRepository, gateway *OpenAIGatewayService) *USTCSpeedService {
@@ -194,10 +193,12 @@ func (s *USTCSpeedService) persist(sample USTCSpeedSample) {
 	if err := s.repo.InsertSample(ctx, &sample); err != nil {
 		s.dropped.Add(1)
 		slog.Warn("ustc_speed_sample_write_failed", "error", err)
+	} else {
+		s.overviewEpoch.Add(1)
 	}
 }
 func (s *USTCSpeedService) refreshSettings(ctx context.Context) {
-	cfg, _, err := s.repo.GetSettings(ctx)
+	cfg, err := s.repo.GetSettings(ctx)
 	if err != nil {
 		slog.Warn("ustc_speed_settings_read_failed", "error", err)
 		return
@@ -208,7 +209,7 @@ func (s *USTCSpeedService) refreshSettings(ctx context.Context) {
 	s.cfg.Store(cfg)
 }
 func (s *USTCSpeedService) GetSettings(ctx context.Context) (*USTCSpeedSettings, error) {
-	cfg, _, err := s.repo.GetSettings(ctx)
+	cfg, err := s.repo.GetSettings(ctx)
 	return cfg, err
 }
 func (s *USTCSpeedService) SaveSettings(ctx context.Context, cfg USTCSpeedSettings) error {
@@ -222,17 +223,7 @@ func (s *USTCSpeedService) SaveSettings(ctx context.Context, cfg USTCSpeedSettin
 	return nil
 }
 func (s *USTCSpeedService) Overview(ctx context.Context, q USTCSpeedQuery) (*USTCSpeedOverview, error) {
-	out, err := s.repo.Overview(ctx, q)
-	if err != nil || out == nil {
-		return out, err
-	}
-	out.RequestedSource = q.Source
-	out.RangeStart = q.Start
-	out.RangeEnd = q.End
-	if q.UsageFilters == nil {
-		out.DroppedSamples = s.dropped.Load()
-	}
-	return out, nil
+	return s.cachedOverview(ctx, q)
 }
 func (s *USTCSpeedService) ListSamples(ctx context.Context, q USTCSpeedQuery) ([]USTCSpeedSample, int64, error) {
 	return s.repo.ListSamples(ctx, q)
@@ -268,24 +259,35 @@ func (s *USTCSpeedService) SaveTask(ctx context.Context, task *USTCSpeedTask) er
 			}
 		}
 	}
-	previouslyEnabled := false
+	var previous *USTCSpeedTask
 	if task.ID != 0 {
-		if previous, err := s.repo.GetTask(ctx, task.ID); err == nil && previous != nil {
-			previouslyEnabled = previous.Enabled
+		var err error
+		previous, err = s.repo.GetTask(ctx, task.ID)
+		if err != nil {
+			return err
 		}
 	}
 	next := nextUSTCSpeedTask(*task, time.Now())
+	if previous != nil && previous.NextRunAt != nil && sameUSTCSpeedSchedule(*previous, *task) {
+		next = *previous.NextRunAt
+	}
 	// Enabling a task (or creating one already enabled) should start the first
 	// round promptly instead of waiting a whole interval.
-	if task.Enabled && !previouslyEnabled {
+	if task.Enabled && (previous == nil || !previous.Enabled) {
 		next = time.Now()
 	}
 	task.NextRunAt = &next
 	if err := s.repo.SaveTask(ctx, task); err != nil {
 		return err
 	}
-	s.cancelJob(task.ID)
+	if previous != nil && previous.Enabled && !task.Enabled {
+		s.cancelJob(task.ID)
+	}
 	return nil
+}
+
+func sameUSTCSpeedSchedule(a, b USTCSpeedTask) bool {
+	return a.Enabled == b.Enabled && a.IntervalSeconds == b.IntervalSeconds && a.JitterSeconds == b.JitterSeconds && a.CronExpression == b.CronExpression && a.Timezone == b.Timezone
 }
 func (s *USTCSpeedService) DeleteTask(ctx context.Context, id int64) error {
 	s.cancelJob(id)
@@ -326,6 +328,8 @@ func (s *USTCSpeedService) Dimensions(ctx context.Context) (*USTCSpeedDimensions
 		modelSet[m] = true
 	}
 	out := &USTCSpeedDimensions{Accounts: []USTCSpeedAccountDimension{}, Models: []string{}}
+	defaults := DefaultUSTCSpeedTask()
+	out.TaskDefaults = &defaults
 	canonical := map[string]int64{}
 	for _, a := range accounts {
 		scope := USTCKeyScope(&a)

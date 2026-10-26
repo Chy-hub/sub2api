@@ -19,18 +19,17 @@ func NewUSTCSpeedRepository(db *sql.DB) service.USTCSpeedRepository {
 	return &ustcSpeedRepository{db: db}
 }
 
-func (r *ustcSpeedRepository) GetSettings(ctx context.Context) (*service.USTCSpeedSettings, time.Time, error) {
+func (r *ustcSpeedRepository) GetSettings(ctx context.Context) (*service.USTCSpeedSettings, error) {
 	var raw []byte
-	var since time.Time
-	err := r.db.QueryRowContext(ctx, `SELECT settings,capture_since FROM ustc_speed_config WHERE id=1`).Scan(&raw, &since)
+	err := r.db.QueryRowContext(ctx, `SELECT settings FROM ustc_speed_config WHERE id=1`).Scan(&raw)
 	if err != nil {
-		return nil, since, err
+		return nil, err
 	}
 	cfg := service.DefaultUSTCSpeedSettings()
 	if err = json.Unmarshal(raw, &cfg); err != nil {
-		return nil, since, err
+		return nil, err
 	}
-	return &cfg, since, nil
+	return &cfg, nil
 }
 func (r *ustcSpeedRepository) SaveSettings(ctx context.Context, cfg service.USTCSpeedSettings) error {
 	raw, err := json.Marshal(cfg)
@@ -124,7 +123,11 @@ func ustcSpeedWhere(q service.USTCSpeedQuery) (string, []any) {
 	}{{"input_tokens", "input_tokens_known", ">=", q.InputMin}, {"input_tokens", "input_tokens_known", "<=", q.InputMax}, {"output_tokens", "token_count_known", ">=", q.OutputMin}, {"output_tokens", "token_count_known", "<=", q.OutputMax}} {
 		if filter.value != nil {
 			args = append(args, *filter.value)
-			clauses = append(clauses, fmt.Sprintf("(COALESCE((payload->>'%s')::boolean,false) AND (payload->>'%s')::bigint %s $%d)", filter.known, filter.field, filter.op, len(args)))
+			if q.UsageFilters != nil {
+				clauses = append(clauses, fmt.Sprintf("%s %s $%d", filter.field, filter.op, len(args)))
+			} else {
+				clauses = append(clauses, fmt.Sprintf("(COALESCE((payload->>'%s')::boolean,false) AND (payload->>'%s')::bigint %s $%d)", filter.known, filter.field, filter.op, len(args)))
+			}
 		}
 	}
 	if f := q.UsageFilters; f != nil {
@@ -189,7 +192,11 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		}
 	}
 	s := &out.Summary
-	summarySQL := `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(COALESCE((payload->>'output_tokens')::bigint,0)),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success')`
+	outputTokens := "COALESCE((payload->>'output_tokens')::bigint,0)"
+	if q.UsageFilters != nil {
+		outputTokens = "output_tokens"
+	}
+	summarySQL := `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(` + outputTokens + `),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success')`
 	scan := []any{&s.Samples, &s.Successful, &s.Failed, &s.RateLimited, &s.Skipped, &s.Cancelled, &s.ProbeSamples, &s.RealSamples, &s.OutputTokens, &s.LatestAt, &s.LatestRealAt, &s.LatestProbeAt}
 	if q.UsageFilters == nil {
 		out.Stats = &service.USTCSpeedStats{}
@@ -237,7 +244,7 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		// series per model instead of splitting "historical" from "captured".
 		profileExpr = "''::text"
 	}
-	value := speedMetricValue(q.Metric)
+	value := speedMetricValue(q, q.Metric)
 	// Failed/cancelled observations remain in status summaries, not healthy-speed quantiles.
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
 	if interval == "raw" {
@@ -280,21 +287,41 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 				return nil, err
 			}
 		}
+		if len(out.Hourly) > 5000 {
+			out.HourlyTruncated = true
+			out.Hourly = out.Hourly[:5000]
+		}
 		return out, nil
 	}
 	seconds, ok := service.USTCSpeedIntervalSeconds(interval)
 	if !ok {
 		return nil, fmt.Errorf("invalid speed interval")
 	}
-	bucket := fmt.Sprintf("to_timestamp(floor(extract(epoch from started_at)/%d)*%d)", seconds, seconds)
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT bucket,0::bigint,''::text,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,model,source,profile ORDER BY bucket,model,source,profile LIMIT 5001`, args...)
+	zone := q.Timezone
+	if _, err := time.LoadLocation(zone); zone == "" || err != nil {
+		zone = "UTC"
+	}
+	args = append(args, zone)
+	tz := fmt.Sprintf("$%d::text", len(args))
+	var bucket, bucketEnd string
+	if seconds >= 6*3600 {
+		local := fmt.Sprintf("date_bin(INTERVAL '%d seconds',started_at AT TIME ZONE %s,TIMESTAMP '2000-01-01')", seconds, tz)
+		bucket = "(" + local + ") AT TIME ZONE " + tz
+		bucketEnd = fmt.Sprintf("(%s+INTERVAL '%d seconds') AT TIME ZONE %s", local, seconds, tz)
+	} else {
+		// Native timestamptz truncation retains the occurrence of a repeated
+		// DST hour; minute bins are aligned within that local hour.
+		bucket = fmt.Sprintf("date_trunc('hour',started_at,%s)+floor(extract(minute FROM started_at AT TIME ZONE %s)/%d)*INTERVAL '%d seconds'", tz, tz, seconds/60, seconds)
+		bucketEnd = fmt.Sprintf("(%s)+INTERVAL '%d seconds'", bucket, seconds)
+	}
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+bucket+` AS bucket,`+bucketEnd+` AS bucket_end,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT bucket,bucket_end,0::bigint,''::text,model,source,profile,COUNT(*),COUNT(value),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY bucket,bucket_end,model,source,profile ORDER BY bucket DESC,model DESC,source DESC,profile DESC LIMIT 5001`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var point service.USTCSpeedPoint
-		if err = rows.Scan(&point.Time, &point.AccountID, &point.AccountName, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
+		if err = rows.Scan(&point.Time, &point.BucketEnd, &point.AccountID, &point.AccountName, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
 			return nil, err
 		}
 		switch aggregate {
@@ -316,10 +343,19 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		out.Truncated = true
 		out.Series = out.Series[:5000]
 	}
+	for i, j := 0, len(out.Series)-1; i < j; i, j = i+1, j-1 {
+		out.Series[i], out.Series[j] = out.Series[j], out.Series[i]
+	}
+	// Hourly uses its own timezone parameter and the original filter arguments.
+	args = args[:len(args)-1]
 	if q.Hourly {
 		if out.Hourly, err = r.ustcSpeedHourly(ctx, q, aggregate, where, args, profileExpr); err != nil {
 			return nil, err
 		}
+	}
+	if len(out.Hourly) > 5000 {
+		out.HourlyTruncated = true
+		out.Hourly = out.Hourly[:5000]
 	}
 	return out, nil
 }
@@ -346,9 +382,9 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	if metric != "generation_tps" && metric != "overall_tps" {
 		metric = "overall_tps"
 	}
-	value := speedMetricValue(metric)
+	value := speedMetricValue(q, metric)
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY hour,model,source,profile LIMIT 2000`, hourArgs...)
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY model,source,profile,hour LIMIT 5001`, hourArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -398,6 +434,11 @@ func scanUSTCSpeedSample(row ustcSpeedScanner) (service.USTCSpeedSample, error) 
 	s.KeyScope = scope
 	s.StartedAt = start
 	s.FinishedAt = end
+	if s.TokenCountKnown && s.OutputTokens < 2 {
+		s.GenerationTPS, s.OverallTPS = nil, nil
+	} else if s.TotalMS != nil && s.FirstOutputMS != nil {
+		s.GenerationTPS = service.USTCGenerationTPS(s.USTCSpeedObservation, s.Stream)
+	}
 	return s, nil
 }
 func (r *ustcSpeedRepository) ListSamples(ctx context.Context, q service.USTCSpeedQuery) ([]service.USTCSpeedSample, int64, error) {
@@ -446,7 +487,7 @@ func (r *ustcSpeedRepository) Models(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-const ustcSpeedTaskColumns = "id,revision,config,enabled,next_run_at,last_run_at,last_status,created_at,updated_at,progress,lease_until"
+const ustcSpeedTaskColumns = "id,revision,config,enabled,next_run_at,last_run_at,last_status,created_at,updated_at,progress,lease_until,lease_revision"
 
 func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
 	var task service.USTCSpeedTask
@@ -458,7 +499,8 @@ func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
 	var created, updated time.Time
 	var progress []byte
 	var leaseUntil *time.Time
-	err := row.Scan(&id, &revision, &raw, &enabled, &next, &last, &status, &created, &updated, &progress, &leaseUntil)
+	var leaseRevision *int64
+	err := row.Scan(&id, &revision, &raw, &enabled, &next, &last, &status, &created, &updated, &progress, &leaseUntil, &leaseRevision)
 	if err != nil {
 		return task, err
 	}
@@ -473,7 +515,7 @@ func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
 	task.LastStatus = status
 	task.CreatedAt = created
 	task.UpdatedAt = updated
-	task.Progress, task.LeaseUntil = nil, leaseUntil
+	task.Progress, task.LeaseUntil, task.LeaseRevision = nil, leaseUntil, leaseRevision
 	if len(progress) > 0 {
 		if err = json.Unmarshal(progress, &task.Progress); err != nil {
 			return task, err
@@ -519,7 +561,9 @@ func (r *ustcSpeedRepository) SaveTask(ctx context.Context, task *service.USTCSp
 	if task.ID == 0 {
 		saved, err = scanUSTCSpeedTask(r.db.QueryRowContext(ctx, `INSERT INTO ustc_speed_tasks(config,enabled,next_run_at) VALUES($1,$2,$3) RETURNING `+ustcSpeedTaskColumns, raw, task.Enabled, next))
 	} else {
-		saved, err = scanUSTCSpeedTask(r.db.QueryRowContext(ctx, `UPDATE ustc_speed_tasks SET config=$2,enabled=$3,next_run_at=$4,revision=revision+1,updated_at=NOW() WHERE id=$1 RETURNING `+ustcSpeedTaskColumns, task.ID, raw, task.Enabled, next))
+		saved, err = scanUSTCSpeedTask(r.db.QueryRowContext(ctx, `UPDATE ustc_speed_tasks SET config=($2::jsonb-'last_detail')||CASE WHEN config ? 'last_detail' THEN jsonb_build_object('last_detail',config->'last_detail') ELSE '{}'::jsonb END,enabled=$3,
+    next_run_at=CASE WHEN jsonb_build_array(enabled,config->'interval_seconds',config->'jitter_seconds',config->'cron_expression',config->'timezone')=jsonb_build_array($3::boolean,$2::jsonb->'interval_seconds',$2::jsonb->'jitter_seconds',$2::jsonb->'cron_expression',$2::jsonb->'timezone') THEN next_run_at ELSE $4 END,
+    revision=revision+1,updated_at=NOW() WHERE id=$1 RETURNING `+ustcSpeedTaskColumns, task.ID, raw, task.Enabled, next))
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.ErrUSTCSpeedNotFound
@@ -541,7 +585,7 @@ func (r *ustcSpeedRepository) DeleteTask(ctx context.Context, id int64) error {
 	return nil
 }
 func (r *ustcSpeedRepository) ClaimTask(ctx context.Context, id int64, owner string, ttl time.Duration, force bool, revision int64) (bool, error) {
-	result, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=$2,lease_until=NOW()+$3*INTERVAL '1 second',lease_revision=revision,last_run_at=NOW(),last_status='running',config=config-'last_detail',progress=jsonb_build_object('run_id',$2::text,'state','preparing','started_at',NOW(),'updated_at',NOW(),'total',0,'completed',0,'successful',0,'failed',0,'skipped',0,'cancelled',0,'active','[]'::jsonb) WHERE id=$1 AND revision=$5 AND(lease_until IS NULL OR lease_until<NOW()) AND($4 OR(enabled AND next_run_at<=NOW()))`, id, owner, ttl.Seconds(), force, revision)
+	result, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=$2,lease_until=NOW()+$3*INTERVAL '1 second',lease_revision=revision,lease_schedule=jsonb_build_array(enabled,config->'interval_seconds',config->'jitter_seconds',config->'cron_expression',config->'timezone'),last_run_at=NOW(),last_status='running',config=config-'last_detail',progress=jsonb_build_object('run_id',$2::text,'state','preparing','started_at',NOW(),'updated_at',NOW(),'total',0,'completed',0,'successful',0,'failed',0,'skipped',0,'cancelled',0,'active','[]'::jsonb) WHERE id=$1 AND revision=$5 AND(lease_until IS NULL OR lease_until<NOW()) AND($4 OR(enabled AND next_run_at<=NOW()))`, id, owner, ttl.Seconds(), force, revision)
 	if err != nil {
 		return false, err
 	}
@@ -549,9 +593,15 @@ func (r *ustcSpeedRepository) ClaimTask(ctx context.Context, id int64, owner str
 	return n > 0, nil
 }
 func (r *ustcSpeedRepository) FinishTask(ctx context.Context, id int64, owner string, next time.Time, status, detail string) error {
-	// Edits keep the running lease until its owner exits, but a stale run may
-	// never replace the schedule saved by the newer task revision.
-	_, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=NULL,lease_until=NULL,lease_revision=NULL,next_run_at=CASE WHEN lease_revision=revision THEN $3 ELSE next_run_at END,last_status=CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,progress=progress||jsonb_build_object('state',CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,'reason',CASE WHEN lease_revision=revision THEN $5 ELSE 'task_changed' END,'finished_at',NOW(),'updated_at',NOW(),'active','[]'::jsonb),config=CASE WHEN lease_revision<>revision THEN config WHEN $5='' THEN config-'last_detail' ELSE jsonb_set(config,'{last_detail}',to_jsonb($5::text),true) END,updated_at=NOW() WHERE id=$1 AND lease_owner=$2`, id, owner, next, status, detail)
+	// Only this lease owner may finish. Ordinary edits do not cancel its
+	// snapshot; a changed schedule keeps the new next_run_at.
+	_, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET
+    lease_owner=NULL,lease_until=NULL,lease_revision=NULL,lease_schedule=NULL,
+    next_run_at=CASE WHEN lease_schedule IS NOT DISTINCT FROM jsonb_build_array(enabled,config->'interval_seconds',config->'jitter_seconds',config->'cron_expression',config->'timezone') OR (lease_schedule IS NULL AND lease_revision=revision) THEN $3 ELSE next_run_at END,
+    last_status=$4,
+    progress=progress||jsonb_build_object('state',$4::text,'reason',$5::text,'finished_at',NOW(),'updated_at',NOW(),'active','[]'::jsonb),
+    config=CASE WHEN $5='' THEN config-'last_detail' ELSE jsonb_set(config,'{last_detail}',to_jsonb($5::text),true) END,
+    updated_at=NOW() WHERE id=$1 AND lease_owner=$2`, id, owner, next, status, detail)
 	return err
 }
 func (r *ustcSpeedRepository) UpdateTaskProgress(ctx context.Context, id int64, owner string, progress *service.USTCSpeedTaskProgress) error {
@@ -605,70 +655,4 @@ func (r *ustcSpeedRepository) GetRuntime(ctx context.Context, scope string) (*se
 func (r *ustcSpeedRepository) SaveRuntime(ctx context.Context, scope string, value *service.USTCSpeedRuntime) error {
 	_, err := r.db.ExecContext(ctx, `INSERT INTO ustc_speed_runtime(key_scope,not_before,paused) VALUES($1,$2,$3) ON CONFLICT(key_scope) DO UPDATE SET not_before=$2,paused=$3,updated_at=NOW()`, scope, value.NotBefore, value.Paused)
 	return err
-}
-
-const ustcSpeedUsageSelect = `SELECT u.*,a.name AS speed_account_name,COALESCE(NULLIF(u.upstream_model,''),u.model) AS speed_model,
-	 concat('legacy:',COALESCE(NULLIF(u.upstream_endpoint,''),NULLIF(u.inbound_endpoint,''),'unknown'),
-	 ':stream=',u.stream,':effort=',COALESCE(NULLIF(u.reasoning_effort,''),'unknown'),
-	 ':in=',CASE WHEN u.input_tokens<128 THEN '0-127' WHEN u.input_tokens<1024 THEN '128-1023' WHEN u.input_tokens<4096 THEN '1k-4k' WHEN u.input_tokens<16384 THEN '4k-16k' WHEN u.input_tokens<65536 THEN '16k-64k' ELSE '64k+' END,
-	 ':out=',CASE WHEN u.output_tokens<128 THEN '0-127' WHEN u.output_tokens<1024 THEN '128-1023' WHEN u.output_tokens<4096 THEN '1k-4k' WHEN u.output_tokens<16384 THEN '4k-16k' ELSE '16k+' END,
-	 ':cache=',CASE WHEN u.cache_read_tokens>0 THEN 'hit' ELSE 'unknown' END) AS speed_profile
-	 FROM usage_logs u JOIN accounts a ON a.id=u.account_id`
-
-const ustcSpeedUsageExclusions = `COALESCE(u.image_count,0)=0 AND COALESCE(u.image_output_tokens,0)=0 AND COALESCE(u.upstream_endpoint,u.inbound_endpoint,'') !~ '/(images|videos|embeddings)(/|$)'`
-
-const ustcSpeedUsageInsert = `INSERT INTO ustc_speed_samples(legacy_usage_id,account_id,account_name,model,source,status,profile,reasoning,stream,started_at,finished_at,payload)
-	SELECT u.id,u.account_id,u.speed_account_name,u.speed_model,'real','recorded',u.speed_profile,'unknown',u.stream,u.created_at,u.created_at,
-	jsonb_build_object('legacy_usage_id',u.id,'account_id',u.account_id,'account_name',u.speed_account_name,'model',u.speed_model,
-	'source','real','status','recorded','profile',u.speed_profile,'reasoning','unknown','stream',u.stream,'measurement_mode','legacy_usage',
-	'api_mode',CASE WHEN COALESCE(u.upstream_endpoint,u.inbound_endpoint,'') LIKE '%/responses' THEN 'responses' WHEN COALESCE(u.upstream_endpoint,u.inbound_endpoint,'') LIKE '%/chat/completions' THEN 'chat_completions' ELSE 'unknown' END,
-	'input_tokens',u.input_tokens,'input_tokens_known',true,'output_tokens',u.output_tokens,'cached_tokens',u.cache_read_tokens,'cached_tokens_known',u.cache_read_tokens>0,'token_count_known',true,
-	'total_ms',CASE WHEN u.duration_ms>=0 THEN u.duration_ms ELSE NULL END,
-	'ttft_ms',CASE WHEN u.stream AND u.first_token_ms>=0 THEN u.first_token_ms ELSE NULL END,
-	'first_output_ms',CASE WHEN u.stream AND u.first_token_ms>=0 THEN u.first_token_ms ELSE NULL END,
-	'output_ms',CASE WHEN u.stream AND u.duration_ms>u.first_token_ms AND u.first_token_ms>=0 THEN u.duration_ms-u.first_token_ms ELSE NULL END,
-	'overall_tps',CASE WHEN u.duration_ms>0 AND u.output_tokens>0 THEN u.output_tokens*1000.0/u.duration_ms ELSE NULL END,
-	'generation_tps',CASE WHEN u.stream AND u.duration_ms>u.first_token_ms AND u.first_token_ms>=0 AND u.output_tokens>1 THEN u.output_tokens*1000.0/(u.duration_ms-u.first_token_ms) ELSE NULL END)
-	FROM %s u ON CONFLICT(legacy_usage_id) DO NOTHING`
-
-// ImportUsage backfills usage records older than the feature's capture start.
-func (r *ustcSpeedRepository) ImportUsage(ctx context.Context, before, after time.Time, accountIDs []int64, limit int) (int64, error) {
-	if len(accountIDs) == 0 {
-		return 0, nil
-	}
-	// The cursor walks backwards so a large history is imported in bounded pages.
-	query := `WITH cursors AS(
-	 SELECT account_id,MIN(legacy_usage_id) AS before_id FROM ustc_speed_samples WHERE legacy_usage_id IS NOT NULL GROUP BY account_id
-	), historical AS (` + ustcSpeedUsageSelect + ` LEFT JOIN cursors c ON c.account_id=u.account_id
-	 WHERE u.account_id=ANY($1) AND u.created_at<$2 AND u.created_at>=$3 AND u.id<COALESCE(c.before_id,9223372036854775807)
-	 AND ` + ustcSpeedUsageExclusions + `
-	 ORDER BY u.id DESC LIMIT $4
-	)
-	` + strings.Replace(ustcSpeedUsageInsert, "%s", "historical", 1)
-	result, err := r.db.ExecContext(ctx, query, pq.Array(accountIDs), before, after, limit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// ImportRecentUsage continuously mirrors usage records into speed samples. It
-// deduplicates by legacy_usage_id and walks newest-first, so new calls appear
-// within one scheduler tick and any gap after an upgrade fills in over time.
-func (r *ustcSpeedRepository) ImportRecentUsage(ctx context.Context, before, after time.Time, accountIDs []int64, limit int) (int64, error) {
-	if len(accountIDs) == 0 {
-		return 0, nil
-	}
-	query := `WITH recent AS (` + ustcSpeedUsageSelect + `
-	 WHERE u.account_id=ANY($1) AND u.created_at<$2 AND u.created_at>=$3
-	 AND NOT EXISTS(SELECT 1 FROM ustc_speed_samples s WHERE s.legacy_usage_id=u.id)
-	 AND ` + ustcSpeedUsageExclusions + `
-	 ORDER BY u.id DESC LIMIT $4
-	)
-	` + strings.Replace(ustcSpeedUsageInsert, "%s", "recent", 1)
-	result, err := r.db.ExecContext(ctx, query, pq.Array(accountIDs), before, after, limit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
