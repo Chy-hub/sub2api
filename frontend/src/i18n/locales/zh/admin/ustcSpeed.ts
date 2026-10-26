@@ -105,7 +105,7 @@ export default {
       title: '执行状态与进度', preparing: '准备中', running: '进行中', notStarted: '尚未运行',
       preparingHint: '正在确定测试账号与模型。', elapsed: '{seconds} 秒',
       counts: '成功 {success} · 失败 {failed} · 跳过 {skipped} · 取消 {cancelled}',
-      working: '处理中 {active} · 待处理 {pending}', checking: '检查调用条件', requesting: '请求中',
+      working: '处理中 {active} · 待处理 {pending}', checking: '检查调用条件', requesting: '请求中', waiting_capacity: '等待共享容量恢复',
       stale: '状态更新中断', staleHint: '暂时无法确认任务仍在执行，等待最新状态。',
       live: '自动更新', refreshFailed: '运行状态更新失败', details: '查看测试明细',
       hint: '进度按账号 × 模型的测试项计算，跳过和取消也计入已处理。'
@@ -122,7 +122,7 @@ export default {
       providerCost: '上游成本', legacyNotice: '真实调用速度由使用记录中的总耗时、首字时间和 token 数计算。事件级阶段耗时、输出停顿和可靠的结果状态只对检测任务样本可用。', measurementUsageLog: '使用记录'
     },
     task: {
-      ignoreConstraints: '忽略任务约束', ignoreConstraintsHint: '按普通模型调用限制执行；忽略本任务的活动时段、账号并行数、起跑差、后台检测并发保护、用户排队保护、RPM/并发预留、活动请求上限及额外 429 退避/暂停。保留检测频率、目标、请求参数与超时，账号正常额度和共享准入照常生效。',
+      ignoreConstraints: '忽略任务约束', ignoreConstraintsHint: '适合闲时加速测试：按单 Key 模型并行数连续执行，共享容量暂不可用时最多等待 2 分钟。忽略活动时段、账号并行数、起跑差、后台检测并发保护、用户排队保护、RPM/并发预留、活动请求上限及额外 429 退避/暂停；保留频率、目标、请求参数、请求超时和账号实际额度。',
       title: '检测任务', add: '新建检测任务', edit: '编辑检测任务', deleteTitle: '删除检测任务',
       deleteMessage: '删除“{name}”？已保存的样本不会随任务删除。', runTitle: '运行检测任务',
       runIgnoringMessage: '将“{name}”加入队列，按已保存的“忽略任务约束”设置执行，并遵循正常模型调用限制。',
@@ -144,14 +144,15 @@ export default {
         prompt: '合成提示词', promptHint: '检测使用合成提示，不会保存真实调用的提示或回答。', promptVariants: '提示词变体（每行一个）',
         maxTokens: '输出上限', temperature: 'Temperature', topP: 'Top P', seed: 'Seed', stop: '停止词（每行一个）',
         thinkingMode: '思考模式', reasoningEffort: '思考强度', timeout: '整体超时（秒）', firstOutputTimeout: '首个输出超时（秒）',
-        maxParallel: '同轮最大账号并发', maxStartSkew: '允许起跑差（秒）', reserveRpm: '预留 RPM',
+        maxParallel: '同轮最大账号并发', idleModelConcurrency: '闲时单 Key 模型并行数', maxStartSkew: '允许起跑差（秒）', reserveRpm: '预留 RPM',
         reserveConcurrency: '预留并发数', maxActive: '最大活动请求数', skipWaiting: '有用户排队时跳过检测',
         backoffAfter429: '缓测触发 429 次数', backoffWindow: '429 观察窗口（秒）', backoffMultiplier: '间隔退避倍率',
         maxInterval: '最大检测间隔（秒）', pauseAfter429: '暂停前连续 429 次数', recoverySuccesses: '恢复所需成功数',
       },
       hint: {
         editSnapshot: '当前运行按启动时配置完成，新配置下一轮生效；停用或删除会取消当前运行。', sameHours: '开始与结束时间相同时表示全天。Cron 不应用轮次抖动。',
-        perKeyConcurrency: '每把物理 Key 的后台并发固定最多 1；全局并发还受“最高同轮账号数”和系统设置限制。',
+        perKeyConcurrency: '常规模式每把物理 Key 最多同时检测 1 个模型；闲时模式按单 Key 模型并行数执行。',
+        idleModelConcurrency: '启用“忽略任务约束”时生效，默认 4；设为 1 时逐模型对齐测试。实际并发受账号共享 RPM 和并发额度限制，并行测试反映并发负载下的速度。',
         capacities: '账号能力信息来自维度接口；服务端会在发起前校验模型权限与共享容量。',
         physicalKeyGroup: '物理 Key 分组 #{id}',
         days: '至少选择一天；全部选中表示每天运行。',
@@ -165,7 +166,7 @@ export default {
       thinking: { off: '关闭', on: '开启', auto: '自动（不额外指定）' },
       effort: { none: '未设置', low: '低', medium: '中', high: '高', xhigh: '极高' },
       reason: {
-        accountUnavailable: '账号当前不可调度', quotaBlocked: '账号额度阻塞', capacityUnavailable: '共享容量读取失败', capacityCooldown: '共享容量冷却中', capacityExhausted: '共享容量已用完', rpmReserved: '剩余 RPM 不足以满足用户预留', concurrencyReserved: '剩余并发不足以满足用户预留', activeRequestLimit: '达到任务活动请求上限', queueStateUnavailable: '用户队列状态读取失败', usersWaiting: '有真实用户正在排队',
+        accountUnavailable: '账号当前不可调度', quotaBlocked: '账号额度阻塞', capacityUnavailable: '共享容量读取失败', capacityCooldown: '共享容量同步等待中', capacityWaitTimeout: '等待共享容量超时（2 分钟）', capacityExhausted: '共享容量已用完', rpmReserved: '剩余 RPM 不足以满足用户预留', concurrencyReserved: '剩余并发不足以满足用户预留', activeRequestLimit: '达到任务活动请求上限', queueStateUnavailable: '用户队列状态读取失败', usersWaiting: '有真实用户正在排队',
         userLoad: '用户繁忙或容量不足', backgroundCapacity: '后台并发已满', sharedAdmission: '共享准入未通过',
         paused429: '429 暂停中', backoff429: '429 缓测中', limitsUnknown: '额度信息未知', modelNotSupported: '账号不支持该模型',
         roundStartSkew: '起跑差超过限制', runtimeUnavailable: '运行状态读取失败', gatewayUnavailable: '网关不可用',
@@ -180,7 +181,7 @@ export default {
     settings: {
       title: '后台检测并发', description: '定时频率在各检测任务中配置，实际发起遵循共享 RPM、并发与任务保护设置。',
       concurrency: '后台检测最大并发',
-      perKey: '每把物理 Key 的后台并发上限为 1。', saved: '全局设置已保存。',
+      perKey: '常规模式每把物理 Key 并发上限为 1；“忽略任务约束”的任务使用其闲时模型并行数。', saved: '全局设置已保存。',
       disableCapture: '关闭后不再从使用记录导入新的真实调用速度数据；检测任务不受影响。'
     },
     runtime: {

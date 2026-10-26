@@ -490,7 +490,7 @@ func (r *ustcSpeedRepository) Models(ctx context.Context) ([]string, error) {
 const ustcSpeedTaskColumns = "id,revision,config,enabled,next_run_at,last_run_at,last_status,created_at,updated_at,progress,lease_until,lease_revision"
 
 func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
-	var task service.USTCSpeedTask
+	task := service.DefaultUSTCSpeedTask()
 	var raw []byte
 	var id, revision int64
 	var enabled bool

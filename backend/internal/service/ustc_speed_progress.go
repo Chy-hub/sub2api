@@ -95,7 +95,12 @@ func (p *ustcSpeedProgressTracker) snapshot() USTCSpeedTaskProgress {
 	for _, active := range p.active {
 		out.Active = append(out.Active, active)
 	}
-	sort.Slice(out.Active, func(i, j int) bool { return out.Active[i].AccountID < out.Active[j].AccountID })
+	sort.Slice(out.Active, func(i, j int) bool {
+		if out.Active[i].AccountID == out.Active[j].AccountID {
+			return out.Active[i].Model < out.Active[j].Model
+		}
+		return out.Active[i].AccountID < out.Active[j].AccountID
+	})
 	return out
 }
 

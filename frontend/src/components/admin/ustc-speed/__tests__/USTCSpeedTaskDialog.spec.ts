@@ -87,6 +87,7 @@ it('uses schedulable admission defaults when creating a task', async () => {
     interval_seconds: 1800,
     max_start_skew_seconds: 5,
     max_parallel_accounts: 4,
+    idle_model_concurrency: 4,
     reserve_concurrency: 2,
   })
   expect(field('admin.ustcSpeed.task.field.maxStartSkew').get('input').attributes('max')).toBe('30')
@@ -148,9 +149,11 @@ it('saves the task constraint policy without discarding its schedule or reserve 
   vi.spyOn(HTMLFormElement.prototype, 'reportValidity').mockReturnValue(true)
   const wrapper = mountDialog(makeTask(1800, 7200))
   await wrapper.get('[data-testid="ignore-task-constraints"]').setValue(true)
+  const concurrency = wrapper.findAll('label').find((item) => item.text().includes('admin.ustcSpeed.task.field.idleModelConcurrency'))!
+  await concurrency.get('input[type="number"]').setValue('6')
   await wrapper.get('button.btn-primary').trigger('click')
   expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
-    ignore_task_constraints: true, interval_seconds: 1800, reserve_concurrency: 1,
+    ignore_task_constraints: true, idle_model_concurrency: 6, interval_seconds: 1800, reserve_concurrency: 1,
   })
   wrapper.unmount()
 })
@@ -158,6 +161,7 @@ it('saves the task constraint policy without discarding its schedule or reserve 
 it.each([
   ['maxTokens', 8], ['timeout', 2], ['firstOutputTimeout', 61],
   ['pauseAfter429', 1], ['maxInterval', 120],
+  ['idleModelConcurrency', 0], ['idleModelConcurrency', 21],
 ])('rejects invalid %s before submitting even when browser validation is bypassed', async (key, value) => {
   vi.spyOn(HTMLFormElement.prototype, 'reportValidity').mockReturnValue(true)
   const wrapper = mountDialog(makeTask(1800, 7200))
