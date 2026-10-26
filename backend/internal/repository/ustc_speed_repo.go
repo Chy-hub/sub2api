@@ -189,9 +189,37 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 		}
 	}
 	s := &out.Summary
-	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(COALESCE((payload->>'output_tokens')::bigint,0)),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success') FROM `+speedObservationTable(q)+` WHERE `+where, args...).Scan(&s.Samples, &s.Successful, &s.Failed, &s.RateLimited, &s.Skipped, &s.Cancelled, &s.ProbeSamples, &s.RealSamples, &s.OutputTokens, &s.LatestAt, &s.LatestRealAt, &s.LatestProbeAt)
+	summarySQL := `SELECT COUNT(*),COUNT(*) FILTER(WHERE status='success'),COUNT(*) FILTER(WHERE status='error'),COUNT(*) FILTER(WHERE status='rate_limited'),COUNT(*) FILTER(WHERE status='skipped'),COUNT(*) FILTER(WHERE status='cancelled'),COUNT(*) FILTER(WHERE source='probe'),COUNT(*) FILTER(WHERE source='real'),COALESCE(SUM(COALESCE((payload->>'output_tokens')::bigint,0)),0),MAX(started_at),MAX(started_at) FILTER(WHERE source='real' AND status IN ('success','recorded')),MAX(started_at) FILTER(WHERE source='probe' AND status='success')`
+	scan := []any{&s.Samples, &s.Successful, &s.Failed, &s.RateLimited, &s.Skipped, &s.Cancelled, &s.ProbeSamples, &s.RealSamples, &s.OutputTokens, &s.LatestAt, &s.LatestRealAt, &s.LatestProbeAt}
+	if q.UsageFilters == nil {
+		out.Stats = &service.USTCSpeedStats{}
+		stats := out.Stats
+		const attempted = "status<>'skipped'"
+		input := attempted + " AND COALESCE((payload->>'input_tokens_known')::boolean,false) AND payload->>'input_tokens' IS NOT NULL"
+		output := attempted + " AND COALESCE((payload->>'token_count_known')::boolean,false) AND payload->>'output_tokens' IS NOT NULL"
+		cost := attempted + " AND (payload->>'provider_cost')::double precision>=0"
+		duration := attempted + " AND (payload->>'total_ms')::double precision>=0"
+		summarySQL += fmt.Sprintf(`,COUNT(*) FILTER(WHERE %[1]s),SUM((payload->>'input_tokens')::bigint) FILTER(WHERE %[2]s),SUM((payload->>'output_tokens')::bigint) FILTER(WHERE %[3]s),SUM((payload->>'provider_cost')::double precision) FILTER(WHERE %[4]s),AVG((payload->>'total_ms')::double precision) FILTER(WHERE %[5]s),COUNT(*) FILTER(WHERE %[2]s),COUNT(*) FILTER(WHERE %[3]s),COUNT(*) FILTER(WHERE %[4]s),COUNT(*) FILTER(WHERE %[5]s)`, attempted, input, output, cost, duration)
+		scan = append(scan, &stats.TotalRequests, &stats.TotalInputTokens, &stats.TotalOutputTokens, &stats.TotalProviderCost, &stats.AverageDurationMS, &stats.InputSamples, &stats.OutputSamples, &stats.CostSamples, &stats.DurationSamples)
+	}
+	err := r.db.QueryRowContext(ctx, summarySQL+` FROM `+speedObservationTable(q)+` WHERE `+where, args...).Scan(scan...)
 	if err != nil {
 		return nil, err
+	}
+	if stats := out.Stats; stats != nil {
+		if stats.TotalRequests == 0 {
+			stats.TotalInputTokens, stats.TotalOutputTokens = new(int64), new(int64)
+			stats.TotalProviderCost = new(float64)
+		}
+		if stats.TotalInputTokens != nil || stats.TotalOutputTokens != nil {
+			stats.TotalTokens = new(int64)
+			if stats.TotalInputTokens != nil {
+				*stats.TotalTokens += *stats.TotalInputTokens
+			}
+			if stats.TotalOutputTokens != nil {
+				*stats.TotalTokens += *stats.TotalOutputTokens
+			}
+		}
 	}
 	denominator := s.Successful + s.Failed + s.RateLimited
 	if denominator > 0 {

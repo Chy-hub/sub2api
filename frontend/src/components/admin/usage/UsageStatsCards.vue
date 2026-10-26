@@ -7,14 +7,15 @@
       <div>
         <p class="text-xs font-medium text-gray-500">{{ t('usage.totalRequests') }}</p>
         <p class="text-xl font-bold">{{ stats?.total_requests?.toLocaleString() || '0' }}</p>
-        <p class="text-xs text-gray-400">{{ t('usage.inSelectedRange') }}</p>
+        <p class="text-xs text-gray-400"><slot name="requests-note">{{ t('usage.inSelectedRange') }}</slot></p>
       </div>
     </div>
     <div class="card p-4 flex items-center gap-3">
       <div class="rounded-lg bg-amber-100 p-2 dark:bg-amber-900/30 text-amber-600"><svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" /></svg></div>
       <div>
         <p class="text-xs font-medium text-gray-500">{{ t('usage.totalTokens') }}</p>
-        <p class="text-xl font-bold">{{ formatTokens(stats?.total_tokens || 0) }}</p>
+        <p class="text-xl font-bold"><slot name="tokens-value" :format-tokens="formatTokens">{{ formatTokens(stats?.total_tokens || 0) }}</slot></p>
+        <slot name="tokens-detail" :format-tokens="formatTokens">
         <p class="flex flex-wrap items-center gap-x-1 text-xs text-gray-500">
           <span>{{ t('usage.in') }}: {{ formatTokens(stats?.total_input_tokens || 0) }}</span>
           <span>/</span>
@@ -56,6 +57,7 @@
             </span>
           </span>
         </p>
+        </slot>
       </div>
     </div>
     <div class="card p-4 flex items-center gap-3">
@@ -65,8 +67,9 @@
       <div class="min-w-0 flex-1">
         <p class="text-xs font-medium text-gray-500">{{ t('usage.totalCost') }}</p>
         <p class="text-xl font-bold text-green-600">
-          ${{ (stats?.total_actual_cost || 0).toFixed(4) }}
+          <slot name="cost-value">${{ (stats?.total_actual_cost || 0).toFixed(4) }}</slot>
         </p>
+        <slot name="cost-detail">
         <p class="text-xs text-gray-400">
           <template v-if="showAccountCost && totalAccountCost != null">
             <span class="text-orange-500">{{ t('usage.accountCost') }} ${{ totalAccountCost.toFixed(4) }}</span>
@@ -77,13 +80,14 @@
             <span :class="{ 'line-through': strikeStandardCost }">${{ (stats?.total_cost || 0).toFixed(4) }}</span>
           </span>
         </p>
+        </slot>
       </div>
     </div>
     <div class="card p-4 flex items-center gap-3">
       <div class="rounded-lg bg-purple-100 p-2 dark:bg-purple-900/30 text-purple-600">
         <Icon name="clock" size="md" />
       </div>
-      <div><p class="text-xs font-medium text-gray-500">{{ t('usage.avgDuration') }}</p><p class="text-xl font-bold">{{ formatDuration(stats?.average_duration_ms || 0) }}</p></div>
+      <div><p class="text-xs font-medium text-gray-500">{{ t('usage.avgDuration') }}</p><p class="text-xl font-bold"><slot name="duration-value" :format-duration="formatDuration">{{ formatDuration(stats?.average_duration_ms || 0) }}</slot></p><slot name="duration-note" /></div>
     </div>
   </div>
 </template>
@@ -91,12 +95,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { AdminUsageStatsResponse } from '@/api/admin/usage'
-import type { UsageStatsResponse } from '@/types'
 import Icon from '@/components/icons/Icon.vue'
 
+type UsageStatsCardData = Partial<Record<
+  'total_requests' | 'total_input_tokens' | 'total_output_tokens' | 'total_tokens' |
+  'total_cache_tokens' | 'total_cache_creation_tokens' | 'total_cache_read_tokens' |
+  'total_cost' | 'total_actual_cost' | 'total_account_cost' | 'average_duration_ms', number | null
+>>
+
 const props = withDefaults(defineProps<{
-  stats: (AdminUsageStatsResponse | UsageStatsResponse) | null
+  stats: UsageStatsCardData | null
   showAccountCost?: boolean
   strikeStandardCost?: boolean
 }>(), {
@@ -107,8 +115,7 @@ const props = withDefaults(defineProps<{
 const { t } = useI18n()
 
 const totalAccountCost = computed(() => {
-  const stats = props.stats as (AdminUsageStatsResponse & { total_account_cost?: number }) | null
-  return stats?.total_account_cost ?? null
+  return props.stats?.total_account_cost ?? null
 })
 const showAccountCost = computed(() => props.showAccountCost)
 const strikeStandardCost = computed(() => props.strikeStandardCost)
