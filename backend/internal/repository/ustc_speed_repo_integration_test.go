@@ -100,23 +100,39 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrUSTCSpeedNotFound)
 	require.Nil(t, missing)
 
+	legacyID := time.Now().UnixNano()
 	legacySample := &service.USTCSpeedSample{
-		RoundID:     roundID,
-		AccountID:   accountID,
-		AccountName: "ustc-integration-account",
-		Model:       created[0].Model,
-		Source:      "real",
-		Status:      "recorded",
-		Profile:     "legacy:legacy_usage",
-		Reasoning:   "unknown",
-		StartedAt:   base.Add(time.Minute),
-		FinishedAt:  base.Add(time.Minute),
+		LegacyUsageID: &legacyID,
+		RoundID:       roundID,
+		AccountID:     accountID,
+		AccountName:   "ustc-integration-account",
+		Model:         created[0].Model,
+		Source:        "real",
+		Status:        "recorded",
+		Profile:       "legacy:legacy_usage",
+		Reasoning:     "unknown",
+		StartedAt:     base.Add(time.Minute),
+		FinishedAt:    base.Add(time.Minute),
 		USTCSpeedObservation: service.USTCSpeedObservation{
 			GenerationTPS:   ustcSpeedFloat(500),
 			MeasurementMode: "legacy_usage",
 		},
 	}
 	require.NoError(t, repo.InsertSample(ctx, legacySample))
+	capturedReal := &service.USTCSpeedSample{
+		RoundID: roundID, AccountID: accountID, AccountName: "ustc-integration-account",
+		Model: created[0].Model, Source: "real", Status: "success", Profile: "real:chat:true",
+		StartedAt: base.Add(2 * time.Minute), FinishedAt: base.Add(2 * time.Minute),
+		USTCSpeedObservation: service.USTCSpeedObservation{GenerationTPS: ustcSpeedFloat(999)},
+	}
+	require.NoError(t, repo.InsertSample(ctx, capturedReal))
+	rawReal, err := repo.Overview(ctx, service.USTCSpeedQuery{
+		Start: base.Add(-time.Minute), End: base.Add(5 * time.Minute),
+		AccountIDs: []int64{accountID}, Model: created[0].Model, Source: "real", Metric: "generation_tps", Interval: "raw",
+	})
+	require.NoError(t, err)
+	require.Len(t, rawReal.Series, 1, "passively captured real samples must not be mixed into usage-record data")
+	require.Equal(t, legacySample.ID, *rawReal.Series[0].SampleID)
 
 	query := service.USTCSpeedQuery{
 		Start:      base.Add(-time.Minute),
@@ -198,7 +214,7 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "model", modelOverview.GroupBy)
 	require.Equal(t, "mean", modelOverview.Aggregate)
-	require.Len(t, modelOverview.Series, 2, "the source and legacy line remain independent")
+	require.Len(t, modelOverview.Series, 2, "probe and real sources remain independent")
 	bySource := map[string]service.USTCSpeedPoint{}
 	for _, point := range modelOverview.Series {
 		bySource[point.Source] = point
@@ -210,7 +226,7 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	require.InDelta(t, 40, *probe.Mean, 0.001, "mean must be weighted across original valid samples from different profiles")
 	require.InDelta(t, 40, *probe.Value, 0.001)
 	legacy := bySource["real"]
-	require.Equal(t, "legacy", legacy.Profile)
+	require.Empty(t, legacy.Profile, "model grouping merges all real-call sources")
 	require.Equal(t, int64(1), legacy.Count)
 	require.Equal(t, int64(1), legacy.ValidCount)
 	require.InDelta(t, 500, *legacy.Value, 0.001)
@@ -231,7 +247,7 @@ func TestUSTCSpeedRepositorySampleCRUDAndOverview(t *testing.T) {
 	legacyFiltered, err := repo.Overview(ctx, modelQuery)
 	require.NoError(t, err)
 	require.Len(t, legacyFiltered.Series, 1)
-	require.Equal(t, "legacy", legacyFiltered.Series[0].Profile)
+	require.Empty(t, legacyFiltered.Series[0].Profile, "the legacy profile filter still applies but model grouping does not split it out")
 
 	autoQuery := modelQuery
 	autoQuery.Profile = ""
@@ -516,7 +532,7 @@ func TestUSTCSpeedRepositoryLegacyImportBoundariesAndBatches(t *testing.T) {
 	require.Equal(t, int64(0), overview.Summary.Successful)
 	require.Nil(t, overview.Summary.SuccessRate, "recorded legacy imports must not count in success-rate denominator")
 	for _, point := range overview.Series {
-		require.Equal(t, "legacy", point.Profile, "model grouping must keep imported legacy usage on its own line")
+		require.Empty(t, point.Profile, "model grouping merges all real-call sources")
 		require.NotNil(t, point.SampleID)
 	}
 
@@ -531,8 +547,26 @@ func TestUSTCSpeedRepositoryLegacyImportBoundariesAndBatches(t *testing.T) {
 	})
 	require.NoError(t, err)
 	for _, point := range legacyProfileOverview.Series {
-		require.True(t, strings.HasPrefix(point.Profile, "legacy:"), "profile grouping retains legacy profile details")
+		require.True(t, strings.HasPrefix(point.Profile, "legacy:"), "profile grouping retains detailed usage-record dimensions")
 	}
+
+	recentAt := before.Add(time.Hour)
+	var recentID int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO usage_logs(
+		user_id,api_key_id,account_id,request_id,model,input_tokens,output_tokens,stream,duration_ms,first_token_ms,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		user.ID, apiKey.ID, accounts[0].ID, "ustc-recent-"+suffix,
+		"requested-model", 10, 20, true, 1500, 200, recentAt,
+	).Scan(&recentID))
+	imported, err := repo.ImportRecentUsage(ctx, recentAt.Add(time.Hour), recentAt, accountIDs, 10)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), imported, "new usage records must be picked up by the continuous importer")
+	imported, err = repo.ImportRecentUsage(ctx, recentAt.Add(time.Hour), recentAt, accountIDs, 10)
+	require.NoError(t, err)
+	require.Zero(t, imported, "re-importing the same usage record must not duplicate it")
+	var recentSamples int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM ustc_speed_samples WHERE legacy_usage_id=$1`, recentID).Scan(&recentSamples))
+	require.Equal(t, 1, recentSamples)
 }
 
 func TestUSTCSpeedRepositoryEditedTaskKeepsNewSchedule(t *testing.T) {

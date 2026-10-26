@@ -142,9 +142,6 @@
       </section>
 
       <template v-if="isOverview">
-        <div v-if="hasLegacy" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
-          {{ t('admin.ustcSpeed.overview.legacyNotice') }}
-        </div>
         <div v-if="overview?.truncated || (overview?.dropped_samples ?? 0) > 0" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
           <span v-if="overview?.truncated">{{ t('admin.ustcSpeed.overview.truncated') }}</span>
           <span v-if="overview?.truncated && (overview?.dropped_samples ?? 0) > 0"> </span>
@@ -255,7 +252,7 @@
                   </thead>
                   <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
                     <tr v-for="series in seriesBreakdown" :key="series.key" class="text-gray-700 dark:text-gray-300">
-                      <td class="px-3 py-2">{{ series.model }}<span v-if="series.profile === 'legacy'" class="ml-2 text-xs text-amber-600">{{ t('admin.ustcSpeed.overview.legacyMeasurement') }}</span></td><td class="px-3 py-2">{{ sourceLabel(series.source) }}</td><td class="px-3 py-2">{{ formatNumber(series.count) }}</td><td class="px-3 py-2">{{ formatNumber(series.valid) }} / {{ formatNumber(series.count) }}</td>
+                      <td class="px-3 py-2">{{ series.model }}</td><td class="px-3 py-2">{{ sourceLabel(series.source) }}</td><td class="px-3 py-2">{{ formatNumber(series.count) }}</td><td class="px-3 py-2">{{ formatNumber(series.valid) }} / {{ formatNumber(series.count) }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -558,7 +555,6 @@ const aggregationLabel = computed(() => {
 })
 const filteredPoints = computed(() => overview.value?.series ?? [])
 const validMetricPointCount = computed(() => filteredPoints.value.filter((point) => readValue(point) !== null).reduce((sum, point) => sum + Math.max(1, point.valid_count || 0), 0))
-const hasLegacy = computed(() => filteredPoints.value.some((point) => point.profile.toLowerCase().startsWith('legacy')))
 
 function formatRangeTimestamp(timestamp: number): string {
   return formatChartDate(new Date(timestamp), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -632,7 +628,7 @@ function makeRenderSeries(points: USTCSpeedPoint[]): RenderSeries[] {
   const sources = sourceCountsByModel(points)
   for (const series of grouped.values()) {
     const showSource = (sources.get(series.model)?.size ?? 0) > 1
-    series.label = seriesLabel(series.model, series.profile, showSource ? sourceLabel(series.source) : '')
+    series.label = seriesLabel(series.model, showSource ? sourceLabel(series.source) : '')
     series.points.sort((a, b) => a.time.localeCompare(b.time))
   }
   return [...grouped.values()]
@@ -662,8 +658,8 @@ function tint(hex: string, alpha: string): string {
   return `${hex}${alpha}`
 }
 
-function seriesLabel(model: string, profile: string, source = ''): string {
-  return [model, profile === 'legacy' ? t('admin.ustcSpeed.overview.legacyMeasurement') : '', source].filter(Boolean).join(' · ')
+function seriesLabel(model: string, source = ''): string {
+  return [model, source].filter(Boolean).join(' · ')
 }
 
 function sourceCountsByModel(points: Array<{ model: string; source: string }>): Map<string, Set<string>> {
@@ -798,7 +794,6 @@ const chartOptions = computed<any>(() => {
             const point = pointAt(item.datasetIndex, item.dataIndex)
             if (!point) return []
             const details: string[] = []
-            if (point.profile === 'legacy') details.push(t('admin.ustcSpeed.overview.legacyMeasurement'))
             details.push(t('admin.ustcSpeed.overview.bucketSamples', { count: point.validCount }))
             if (bucketMilliseconds.value > 0 && Number.isFinite(point.p10) && Number.isFinite(point.p50) && Number.isFinite(point.p90)) {
               details.push(t('admin.ustcSpeed.overview.spread', {
@@ -857,7 +852,7 @@ const hourlySeries = computed<HourlySeries[]>(() => {
     const key = JSON.stringify([point.model, point.source, point.profile])
     const series = grouped.get(key) ?? {
       key,
-      label: seriesLabel(point.model, point.profile, (sources.get(point.model)?.size ?? 0) > 1 ? sourceLabel(point.source) : ''),
+      label: seriesLabel(point.model, (sources.get(point.model)?.size ?? 0) > 1 ? sourceLabel(point.source) : ''),
       source: point.source,
       hours: Array.from({ length: 24 }, () => undefined),
     }

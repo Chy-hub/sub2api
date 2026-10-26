@@ -76,7 +76,10 @@ func (r *ustcSpeedRepository) InsertSample(ctx context.Context, s *service.USTCS
 
 func ustcSpeedWhere(q service.USTCSpeedQuery) (string, []any) {
 	args := []any{q.Start, q.End}
-	clauses := []string{"started_at >= $1", "started_at < $2"}
+	// Real-call speed now comes only from usage records. Older passively
+	// captured real samples stay in the table for audit but must not double
+	// count the same call after its usage record is imported.
+	clauses := []string{"started_at >= $1", "started_at < $2", "(source <> 'real' OR legacy_usage_id IS NOT NULL)"}
 	add := func(column string, value any) {
 		args = append(args, value)
 		clauses = append(clauses, fmt.Sprintf("%s=$%d", column, len(args)))
@@ -178,7 +181,9 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 	out.Interval = interval
 	profileExpr := "profile"
 	if groupBy == "model" {
-		profileExpr = "CASE WHEN payload->>'measurement_mode'='legacy_usage' THEN 'legacy' ELSE '' END"
+		// Real-call metrics now come from usage records; all of them share one
+		// series per model instead of splitting "historical" from "captured".
+		profileExpr = "''::text"
 	}
 	value := "(payload->>'" + q.Metric + "')::double precision"
 	// Failed/cancelled observations remain in status summaries, not healthy-speed quantiles.
@@ -522,27 +527,18 @@ func (r *ustcSpeedRepository) SaveRuntime(ctx context.Context, scope string, val
 	_, err := r.db.ExecContext(ctx, `INSERT INTO ustc_speed_runtime(key_scope,not_before,paused) VALUES($1,$2,$3) ON CONFLICT(key_scope) DO UPDATE SET not_before=$2,paused=$3,updated_at=NOW()`, scope, value.NotBefore, value.Paused)
 	return err
 }
-func (r *ustcSpeedRepository) ImportUsage(ctx context.Context, before, after time.Time, accountIDs []int64, limit int) (int64, error) {
-	if len(accountIDs) == 0 {
-		return 0, nil
-	}
-	// Legacy data keeps its old timing semantics and is stratified rather than
-	// mixing streams, protocols, reasoning efforts, lengths and known cache hits.
-	result, err := r.db.ExecContext(ctx, `WITH cursors AS(
-	 SELECT account_id,MIN(legacy_usage_id) AS before_id FROM ustc_speed_samples WHERE legacy_usage_id IS NOT NULL GROUP BY account_id
-	), historical AS (
-	 SELECT u.*,a.name AS speed_account_name,COALESCE(NULLIF(u.upstream_model,''),u.model) AS speed_model,
+
+const ustcSpeedUsageSelect = `SELECT u.*,a.name AS speed_account_name,COALESCE(NULLIF(u.upstream_model,''),u.model) AS speed_model,
 	 concat('legacy:',COALESCE(NULLIF(u.upstream_endpoint,''),NULLIF(u.inbound_endpoint,''),'unknown'),
 	 ':stream=',u.stream,':effort=',COALESCE(NULLIF(u.reasoning_effort,''),'unknown'),
 	 ':in=',CASE WHEN u.input_tokens<128 THEN '0-127' WHEN u.input_tokens<1024 THEN '128-1023' WHEN u.input_tokens<4096 THEN '1k-4k' WHEN u.input_tokens<16384 THEN '4k-16k' WHEN u.input_tokens<65536 THEN '16k-64k' ELSE '64k+' END,
 	 ':out=',CASE WHEN u.output_tokens<128 THEN '0-127' WHEN u.output_tokens<1024 THEN '128-1023' WHEN u.output_tokens<4096 THEN '1k-4k' WHEN u.output_tokens<16384 THEN '4k-16k' ELSE '16k+' END,
 	 ':cache=',CASE WHEN u.cache_read_tokens>0 THEN 'hit' ELSE 'unknown' END) AS speed_profile
-	 FROM usage_logs u JOIN accounts a ON a.id=u.account_id LEFT JOIN cursors c ON c.account_id=u.account_id
-	 WHERE u.account_id=ANY($1) AND u.created_at<$2 AND u.created_at>=$3 AND u.id<COALESCE(c.before_id,9223372036854775807)
-	 AND COALESCE(u.image_count,0)=0 AND COALESCE(u.image_output_tokens,0)=0 AND COALESCE(u.upstream_endpoint,u.inbound_endpoint,'') !~ '/(images|videos|embeddings)(/|$)'
-	 ORDER BY u.id DESC LIMIT $4
-	)
-	INSERT INTO ustc_speed_samples(legacy_usage_id,account_id,account_name,model,source,status,profile,reasoning,stream,started_at,finished_at,payload)
+	 FROM usage_logs u JOIN accounts a ON a.id=u.account_id`
+
+const ustcSpeedUsageExclusions = `COALESCE(u.image_count,0)=0 AND COALESCE(u.image_output_tokens,0)=0 AND COALESCE(u.upstream_endpoint,u.inbound_endpoint,'') !~ '/(images|videos|embeddings)(/|$)'`
+
+const ustcSpeedUsageInsert = `INSERT INTO ustc_speed_samples(legacy_usage_id,account_id,account_name,model,source,status,profile,reasoning,stream,started_at,finished_at,payload)
 	SELECT u.id,u.account_id,u.speed_account_name,u.speed_model,'real','recorded',u.speed_profile,'unknown',u.stream,u.created_at,u.created_at,
 	jsonb_build_object('legacy_usage_id',u.id,'account_id',u.account_id,'account_name',u.speed_account_name,'model',u.speed_model,
 	'source','real','status','recorded','profile',u.speed_profile,'reasoning','unknown','stream',u.stream,'measurement_mode','legacy_usage',
@@ -554,7 +550,44 @@ func (r *ustcSpeedRepository) ImportUsage(ctx context.Context, before, after tim
 	'output_ms',CASE WHEN u.stream AND u.duration_ms>u.first_token_ms AND u.first_token_ms>=0 THEN u.duration_ms-u.first_token_ms ELSE NULL END,
 	'overall_tps',CASE WHEN u.duration_ms>0 AND u.output_tokens>0 THEN u.output_tokens*1000.0/u.duration_ms ELSE NULL END,
 	'generation_tps',CASE WHEN u.stream AND u.duration_ms>u.first_token_ms AND u.first_token_ms>=0 AND u.output_tokens>1 THEN u.output_tokens*1000.0/(u.duration_ms-u.first_token_ms) ELSE NULL END)
-	FROM historical u ON CONFLICT(legacy_usage_id) DO NOTHING`, pq.Array(accountIDs), before, after, limit)
+	FROM %s u ON CONFLICT(legacy_usage_id) DO NOTHING`
+
+// ImportUsage backfills usage records older than the feature's capture start.
+func (r *ustcSpeedRepository) ImportUsage(ctx context.Context, before, after time.Time, accountIDs []int64, limit int) (int64, error) {
+	if len(accountIDs) == 0 {
+		return 0, nil
+	}
+	// The cursor walks backwards so a large history is imported in bounded pages.
+	query := `WITH cursors AS(
+	 SELECT account_id,MIN(legacy_usage_id) AS before_id FROM ustc_speed_samples WHERE legacy_usage_id IS NOT NULL GROUP BY account_id
+	), historical AS (` + ustcSpeedUsageSelect + ` LEFT JOIN cursors c ON c.account_id=u.account_id
+	 WHERE u.account_id=ANY($1) AND u.created_at<$2 AND u.created_at>=$3 AND u.id<COALESCE(c.before_id,9223372036854775807)
+	 AND ` + ustcSpeedUsageExclusions + `
+	 ORDER BY u.id DESC LIMIT $4
+	)
+	` + strings.Replace(ustcSpeedUsageInsert, "%s", "historical", 1)
+	result, err := r.db.ExecContext(ctx, query, pq.Array(accountIDs), before, after, limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// ImportRecentUsage continuously mirrors usage records into speed samples. It
+// deduplicates by legacy_usage_id and walks newest-first, so new calls appear
+// within one scheduler tick and any gap after an upgrade fills in over time.
+func (r *ustcSpeedRepository) ImportRecentUsage(ctx context.Context, before, after time.Time, accountIDs []int64, limit int) (int64, error) {
+	if len(accountIDs) == 0 {
+		return 0, nil
+	}
+	query := `WITH recent AS (` + ustcSpeedUsageSelect + `
+	 WHERE u.account_id=ANY($1) AND u.created_at<$2 AND u.created_at>=$3
+	 AND NOT EXISTS(SELECT 1 FROM ustc_speed_samples s WHERE s.legacy_usage_id=u.id)
+	 AND ` + ustcSpeedUsageExclusions + `
+	 ORDER BY u.id DESC LIMIT $4
+	)
+	` + strings.Replace(ustcSpeedUsageInsert, "%s", "recent", 1)
+	result, err := r.db.ExecContext(ctx, query, pq.Array(accountIDs), before, after, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -239,6 +239,7 @@ type USTCSpeedRepository interface {
 	GetSettings(context.Context) (*USTCSpeedSettings, time.Time, error)
 	SaveSettings(context.Context, USTCSpeedSettings) error
 	ImportUsage(context.Context, time.Time, time.Time, []int64, int) (int64, error)
+	ImportRecentUsage(context.Context, time.Time, time.Time, []int64, int) (int64, error)
 	Models(context.Context) ([]string, error)
 	InsertSample(context.Context, *USTCSpeedSample) error
 	Overview(context.Context, USTCSpeedQuery) (*USTCSpeedOverview, error)

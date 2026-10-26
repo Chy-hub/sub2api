@@ -39,7 +39,7 @@ export default {
       distribution: 'P10–P90 spread', spread: 'P10 / P50 / P90: {p10} / {p50} / {p90}',
       lowSamples: 'Fewer than 5 valid observations; treat this point as indicative only.',
       lastHours: 'Last {hours} hours',
-      usageRecords: 'View usage records', probeDrilldown: 'Showing raw probe observations. Select a point to inspect its speed measurement.', legacyMeasurement: 'Historical approximation',
+      usageRecords: 'View usage records', probeDrilldown: 'Showing raw probe observations. Select a point to inspect its speed measurement.',
       noSeries: 'There are no observations to chart for these filters.', noSeriesHint: 'Empty periods are not filled with zeros or interpolated. Adjust the date range or filters.',
       samples: 'Samples', successful: 'Successful', rateLimited: 'Rate limited', realSamples: 'Real calls', probeSamples: 'Probes', outputTokens: 'Output tokens',
       failed: 'Errors', skipped: 'Skipped', cancelled: 'Cancelled',
@@ -47,7 +47,6 @@ export default {
       realAge: 'Latest real call {age}', probeAge: 'Latest probe {age}',
       validPoints: 'Valid metric points',
       auxiliary: 'Coverage and series details', auxiliaryDescription: 'Review the latest data time, metric coverage, and sample counts by model series.', seriesBreakdown: 'Grouped by model and source',
-      legacyNotice: 'Includes imported historical usage. Legacy TTFT/TPS are approximate; status is unknown and is not counted as success or failure.',
       fallbackApplied: 'Probes are throttled or paused because of rate limits or capacity. Showing recent real calls from the last {minutes} minutes temporarily; the series remains labeled as real.',
       truncated: 'The backend truncated trend data to limit response size.', dropped: '{count} samples were omitted from the chart due to data limits.',
       noReal: 'No real call samples exist in this time range.', noProbe: 'No probe samples exist in this time range.',
@@ -81,7 +80,7 @@ export default {
       reasoningChars: 'Reasoning characters', gapOver1s: 'Gaps over 1 second', gapOver2s: 'Gaps over 2 seconds', streamDone: 'Stream completed',
       yes: 'Yes', no: 'No', notObserved: 'Not observed', notAvailable: 'Not applicable', reason: 'Reason', task: 'Task ID',
       round: 'Round ID', startedAt: 'Started', finishedAt: 'Finished', errorCode: 'Error code',
-      providerCost: 'Provider cost', legacyNotice: 'This sample came from usage recorded before launch. Legacy first-token and TPS values are approximate; they are not exact prefill or full client duration. The result is unknown and missing metrics remain empty.'
+      providerCost: 'Provider cost', legacyNotice: 'Real-call speed is derived from usage records: total duration, first-token time, and token counts. Event-level stage timings, output gaps, and a reliable result status are available only for probe samples.', measurementUsageLog: 'Usage record'
     },
     task: {
       title: 'Probe tasks', add: 'New probe task', edit: 'Edit probe task', deleteTitle: 'Delete probe task',
@@ -137,10 +136,10 @@ export default {
       weekday: { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' }
     },
     settings: {
-      title: 'Capture and background concurrency', description: 'Speed history is kept indefinitely. Set the frequency in each probe task; shared RPM, concurrency, and 429 protections still apply.',
-      captureEnabled: 'Capture performance metrics from real calls', concurrency: 'Maximum background probe concurrency',
+      title: 'Real-call sync and background concurrency', description: 'Real-call speed is computed from existing usage records and synced in the background. Set probe frequency in each task; shared RPM, concurrency, and 429 protections still apply.',
+      captureEnabled: 'Sync real calls from usage records', concurrency: 'Maximum background probe concurrency',
       perKey: 'Background concurrency is limited to one request per physical key.', saved: 'Global settings saved.',
-      disableCapture: 'When disabled, new real call performance metrics will not be captured.'
+      disableCapture: 'When off, no new usage records are imported for real-call speed. Probe tasks are unaffected.'
     },
     runtime: {
       title: 'Account runtime status', description: 'Shared 429 cooldowns, pauses, and background leases.',
