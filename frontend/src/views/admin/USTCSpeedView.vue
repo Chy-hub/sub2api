@@ -198,7 +198,8 @@
 
         <section v-if="!embedded" id="benchmark-tasks" class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
-            <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.task.disabledByDefault') }}</p></div>
+            <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('admin.ustcSpeed.task.title') }}</h2><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ustcSpeed.progress.hint') }}</p></div>
+            <span class="ml-auto text-xs" :class="tasksPollError ? 'text-amber-600' : 'text-primary-600 dark:text-primary-300'">{{ t(tasksPollError ? 'admin.ustcSpeed.progress.refreshFailed' : 'admin.ustcSpeed.progress.live') }}</span>
             <button type="button" class="btn btn-secondary" :disabled="tasksLoading" @click="loadTasks()">{{ t('admin.ustcSpeed.action.refresh') }}</button>
           </div>
           <div v-if="tasksLoading" class="flex min-h-40 items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
@@ -206,28 +207,28 @@
           <div v-else class="overflow-x-auto">
             <table class="min-w-[1080px] w-full divide-y divide-gray-100 text-left text-sm dark:divide-dark-700">
               <thead class="bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-gray-400"><tr>
-                <th class="px-4 py-3">{{ t('admin.ustcSpeed.task.field.name') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectModels') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectAccounts') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.nextRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastStatus') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.status') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
+                <th class="px-4 py-3">{{ t('admin.ustcSpeed.task.field.name') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.progress.title') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectModels') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.selectAccounts') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.nextRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.lastRun') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.task.scheduleStatus') }}</th><th class="px-4 py-3">{{ t('admin.ustcSpeed.samples.action') }}</th>
               </tr></thead>
               <tbody class="divide-y divide-gray-100 dark:divide-dark-700"><tr v-for="task in tasks" :key="task.id" class="hover:bg-gray-50/70 dark:hover:bg-dark-700/30">
                 <td class="px-4 py-3"><span class="block font-medium text-gray-900 dark:text-gray-100">{{ task.name }}</span><span v-if="task.ignore_task_constraints" class="mt-1 block text-xs text-primary-600 dark:text-primary-300">{{ t('admin.ustcSpeed.task.ignoreConstraints') }}</span><span class="mt-1 inline-flex rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ taskScheduleLabel(task) }}</span><button type="button" class="ml-2 text-xs font-medium text-primary-600 hover:underline dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.task.editSchedule') }}</button></td>
+                <td class="px-4 py-3"><USTCSpeedTaskProgress :task="task" :now="monitorNow" :reason-label="taskDetailLabel" /></td>
                 <td class="max-w-60 truncate px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.models.join(', ') }}</td>
                 <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ task.all_accounts ? t('admin.ustcSpeed.task.allAccounts') : accountNames(task.account_ids) }}</td>
                 <td :title="formatDateTime(task.next_run_at)" class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatTaskTimestamp(task.next_run_at) }}</td>
                 <td :title="formatDateTime(task.last_run_at)" class="whitespace-nowrap px-4 py-3 text-gray-600 dark:text-gray-300">{{ formatTaskTimestamp(task.last_run_at) }}</td>
-                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">
-                  <span>{{ task.last_status ? statusLabel(task.last_status) : '—' }}</span>
-                  <span v-if="task.last_detail" class="mt-0.5 block text-xs text-gray-400 dark:text-gray-500">{{ taskDetailLabel(task.last_detail) }}</span>
-                </td>
-                <td class="px-4 py-3"><span :class="task.enabled ? 'status-pill status-success' : 'status-pill status-muted'">{{ task.enabled ? t('admin.ustcSpeed.task.enabled') : t('admin.ustcSpeed.status.paused') }}</span></td>
+                <td class="px-4 py-3"><span :class="task.enabled ? 'status-pill status-success' : 'status-pill status-muted'">{{ t(task.enabled ? 'admin.ustcSpeed.task.scheduleEnabled' : 'admin.ustcSpeed.task.scheduleDisabled') }}</span></td>
                 <td class="px-4 py-3"><div class="flex items-center gap-3 whitespace-nowrap">
                   <button type="button" class="shrink-0 text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="openTaskDialog(task)">{{ t('admin.ustcSpeed.action.edit') }}</button>
-                  <button type="button" class="shrink-0 text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="confirmRun(task)">{{ t('admin.ustcSpeed.task.manualRun') }}</button>
+                  <button type="button" class="shrink-0 text-sm font-medium text-primary-600 hover:text-primary-700 disabled:cursor-wait disabled:opacity-50 dark:text-primary-300" :disabled="taskIsRunning(task) || runningTaskId === task.id" @click="confirmRun(task)">{{ t(taskIsRunning(task) ? 'admin.ustcSpeed.status.running' : 'admin.ustcSpeed.task.manualRun') }}</button>
+                  <button type="button" class="shrink-0 text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="showTaskSamples(task)">{{ t('admin.ustcSpeed.progress.details') }}</button>
                   <button type="button" class="shrink-0 text-sm font-medium text-red-600 hover:text-red-700 dark:text-red-400" @click="confirmDelete(task)">{{ t('admin.ustcSpeed.action.delete') }}</button>
                 </div></td>
               </tr></tbody>
             </table>
           </div>
         </section>
+
+        <USTCSpeedSamples v-if="!embedded" :query="sampleQuery" :tasks="tasks" :refresh-version="samplesRefreshVersion" :reason-label="taskDetailLabel" @open="openSample" />
 
         <section v-if="overview" class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="flex flex-wrap items-end justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700">
@@ -365,6 +366,8 @@ import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import USTCSpeedTaskDialog from '@/components/admin/ustc-speed/USTCSpeedTaskDialog.vue'
 import USTCSpeedSampleDialog from '@/components/admin/ustc-speed/USTCSpeedSampleDialog.vue'
+import USTCSpeedSamples from '@/components/admin/ustc-speed/USTCSpeedSamples.vue'
+import USTCSpeedTaskProgress from '@/components/admin/ustc-speed/USTCSpeedTaskProgress.vue'
 import USTCSpeedAnalysis from '@/components/admin/ustc-speed/USTCSpeedAnalysis.vue'
 import { adminUSTCSpeedAPI } from '@/api/admin/ustcSpeed'
 import { getSpeedOverview } from '@/api/admin/usage'
@@ -476,6 +479,11 @@ const sampleDetailLoading = ref(false)
 
 const tasks = ref<USTCSpeedTask[]>([])
 const tasksLoading = ref(false)
+const tasksPollError = ref(false)
+const monitorNow = ref(Date.now())
+const samplesRefreshVersion = ref(0)
+const runningTaskId = ref<number | null>(null)
+let tasksRequestSeq = 0
 const taskDialogOpen = ref(false)
 const selectedTask = ref<USTCSpeedTask | null>(null)
 const taskSaving = ref(false)
@@ -487,20 +495,34 @@ const runtime = ref<USTCSpeedRuntime[]>([])
 const runtimeLoading = ref(false)
 const pendingAction = ref<PendingAction>(null)
 let tasksRefreshTimer: number | undefined
+let tasksPollGeneration = 0
+let runtimeRefreshedAt = 0
 
 function startTasksAutoRefresh() {
   stopTasksAutoRefresh()
-  tasksRefreshTimer = window.setInterval(() => {
-    if (!isTasks.value) return
-    void Promise.all([loadTasks(true), loadRuntime(true)])
-  }, 10000)
+  const generation = tasksPollGeneration
+  const schedule = () => {
+    tasksRefreshTimer = window.setTimeout(async () => {
+      if (!isTasks.value || overviewViewDisposed || generation !== tasksPollGeneration) return
+      monitorNow.value = Date.now()
+      await Promise.allSettled([loadTasks(true), ...(Date.now() - runtimeRefreshedAt > 10000 ? [loadRuntime(true)] : [])])
+      monitorNow.value = Date.now()
+      if (!overviewViewDisposed && generation === tasksPollGeneration) schedule()
+    }, tasks.value.some(taskIsRunning) ? 2000 : 5000)
+  }
+  schedule()
 }
 
 function stopTasksAutoRefresh() {
+  tasksPollGeneration++
   if (tasksRefreshTimer !== undefined) {
-    window.clearInterval(tasksRefreshTimer)
+    window.clearTimeout(tasksRefreshTimer)
     tasksRefreshTimer = undefined
   }
+}
+
+function taskIsRunning(task: USTCSpeedTask): boolean {
+  return task.last_status === 'running' && (!task.lease_until || Date.parse(task.lease_until) > monitorNow.value)
 }
 
 const statuses = ['success', 'error', 'rate_limited', 'skipped', 'cancelled']
@@ -1021,6 +1043,20 @@ function buildQuery(): USTCSpeedQuery {
   }
 }
 
+// The records share scope filters, independent of chart metric/presentation.
+const sampleQuery = computed(() => {
+  const query = { ...buildQuery() }
+  delete query.metric
+  delete query.interval
+  delete query.aggregate
+  delete query.group_by
+  delete query.hourly
+  delete query.hourly_metric
+  delete query.analysis
+  delete query.comparison
+  return query
+})
+
 function numberFilter(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
@@ -1066,17 +1102,27 @@ async function loadOverview() {
 }
 
 async function loadTasks(silent = false) {
+  const requestSeq = ++tasksRequestSeq
   if (!silent) tasksLoading.value = true
   try {
     const result = await adminUSTCSpeedAPI.listTasks()
+    if (requestSeq !== tasksRequestSeq || overviewViewDisposed) return
+    const signature = (items: USTCSpeedTask[]) => JSON.stringify(items.map((task) => [task.id, task.progress?.run_id, task.progress?.completed, task.last_status, task.last_run_at]))
+    const changed = tasks.value.length > 0 && signature(tasks.value) !== signature(result.items ?? [])
     tasks.value = result.items ?? []
+    tasksPollError.value = false
+    if (overviewReady && changed) {
+      samplesRefreshVersion.value++
+      void loadOverview()
+    }
   } catch {
+    if (requestSeq !== tasksRequestSeq || overviewViewDisposed) return
+    tasksPollError.value = true
     if (!silent) {
-      tasks.value = []
       toastError(t('admin.ustcSpeed.error.loadTasks'))
     }
   } finally {
-    if (!silent) tasksLoading.value = false
+    if (requestSeq === tasksRequestSeq) tasksLoading.value = false
   }
 }
 
@@ -1097,6 +1143,7 @@ async function loadRuntime(silent = false) {
   if (!silent) runtimeLoading.value = true
   try {
     const result = await adminUSTCSpeedAPI.getRuntime()
+    runtimeRefreshedAt = Date.now()
     runtime.value = result.items ?? []
   } catch {
     if (!silent) {
@@ -1114,7 +1161,7 @@ async function loadCurrentSection() {
   await loadOverview()
 }
 
-function refreshCurrent() { void loadCurrentSection() }
+function refreshCurrent() { samplesRefreshVersion.value++; void loadCurrentSection() }
 function applyDateRange(range: { startDate: string; endDate: string; preset?: string | null }) {
   const requestSeq = overviewRequestSeq
   startDate.value = range.startDate
@@ -1176,7 +1223,7 @@ function sourceLabel(source: string): string {
 }
 
 function statusLabel(status: string): string {
-  const supported = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded', 'queued', 'paused', 'completed', 'failed', 'partial', 'no_accounts', 'outside_active_window']
+  const supported = ['success', 'error', 'rate_limited', 'skipped', 'cancelled', 'recorded', 'queued', 'running', 'paused', 'completed', 'failed', 'partial', 'no_accounts', 'outside_active_window']
   return supported.includes(status) ? t(`admin.ustcSpeed.status.${status}`) : status || t('admin.ustcSpeed.status.unknown')
 }
 
@@ -1292,13 +1339,28 @@ async function executePendingAction() {
       appStore.showToast('success', t('admin.ustcSpeed.task.deleted'))
       await Promise.all([loadTasks(), ...(changesFilter ? [] : [loadOverview()])])
     } else {
+      runningTaskId.value = action.task.id
       const result = await adminUSTCSpeedAPI.runTask(action.task.id)
-      appStore.showToast('success', t('admin.ustcSpeed.task.runQueued', { round: result.round_id }))
-      await Promise.all([loadTasks(), loadRuntime()])
+      const now = new Date().toISOString()
+      tasks.value = tasks.value.map((task) => task.id !== action.task.id ? task : {
+        ...task, last_status: 'running', last_run_at: now, last_detail: '', lease_until: null,
+        progress: { run_id: result.round_id, state: 'preparing', started_at: now, updated_at: now, total: 0, completed: 0, successful: 0, failed: 0, skipped: 0, cancelled: 0, active: [] },
+      })
+      appStore.showToast('success', t('admin.ustcSpeed.task.runQueued'))
+      await Promise.all([loadTasks(true), loadRuntime(true)])
+      startTasksAutoRefresh()
     }
   } catch {
     toastError(action.kind === 'delete' ? t('admin.ustcSpeed.error.deleteTask') : t('admin.ustcSpeed.error.runTask'))
+  } finally {
+    runningTaskId.value = null
   }
+}
+
+async function showTaskSamples(task: USTCSpeedTask) {
+  filters.taskId = task.id
+  await nextTick()
+  document.getElementById('benchmark-samples')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function saveGlobalSettings() {
@@ -1459,6 +1521,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopTasksAutoRefresh()
   overviewViewDisposed = true
+  tasksRequestSeq++
   overviewRequestSeq += 1
   overviewAbortController?.abort()
   overviewAbortController = null

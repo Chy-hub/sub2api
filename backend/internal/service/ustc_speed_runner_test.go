@@ -135,6 +135,10 @@ func (r *ustcSpeedRunnerRepository) ListSamples(context.Context, USTCSpeedQuery)
 	return nil, 0, nil
 }
 
+func (r *ustcSpeedRunnerRepository) UpdateTaskProgress(context.Context, int64, string, *USTCSpeedTaskProgress) error {
+	return nil
+}
+
 func (r *ustcSpeedRunnerRepository) snapshot() (inserted []USTCSpeedSample, acquireCalls, releaseCalls int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

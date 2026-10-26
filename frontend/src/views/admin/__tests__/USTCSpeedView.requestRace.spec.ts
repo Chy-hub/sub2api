@@ -18,6 +18,7 @@ vi.mock('@/api/admin/ustcSpeed', () => ({
     getSettings,
     listTasks,
     getRuntime,
+    listSamples: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   },
 }))
 
