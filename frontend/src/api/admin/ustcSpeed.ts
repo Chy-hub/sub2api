@@ -256,13 +256,32 @@ export interface USTCSpeedTask {
   last_run_at: string | null
   last_status: string
   last_detail?: string
+  progress?: USTCSpeedTaskProgress | null
+  lease_until?: string | null
   created_at: string
   updated_at: string
 }
 
+export interface USTCSpeedTaskProgress {
+  run_id: string
+  state: string
+  started_at: string
+  updated_at: string
+  finished_at?: string | null
+  total: number
+  completed: number
+  successful: number
+  failed: number
+  skipped: number
+  cancelled: number
+  current_model?: string
+  reason?: string
+  active: Array<{ account_id: number; account_name: string; model: string; phase: 'checking' | 'requesting'; started_at: string }>
+}
+
 export type USTCSpeedTaskInput = Omit<
   USTCSpeedTask,
-  'next_run_at' | 'last_run_at' | 'last_status' | 'last_detail' | 'created_at' | 'updated_at'
+  'next_run_at' | 'last_run_at' | 'last_status' | 'last_detail' | 'created_at' | 'updated_at' | 'progress' | 'lease_until'
 >
 
 export interface USTCSpeedSettings {

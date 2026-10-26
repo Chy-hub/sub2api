@@ -78,7 +78,7 @@ export default {
       metric: 'Metric', metricGeneration: 'TPS (generation)', metricOverall: 'End-to-end speed'
     },
     samples: {
-      tableTitle: 'Calls and probe samples', total: '{count} total', noData: 'No samples match these filters.',
+      tableTitle: 'Test records', description: 'Uses the time, task, model and account filters above, including successful, failed and skipped tests.', overallTps: 'End-to-end speed', total: '{count} total', noData: 'No matching test records.',
       startedAt: 'Started', model: 'Model', account: 'Account', source: 'Source', status: 'Status',
       generationTps: 'Generation TPS', ttft: 'Upstream first text', duration: 'Total request time', tokens: 'Input / output',
       profile: 'Profile', reasoning: 'Reasoning', stream: 'Stream', action: 'Action',
@@ -86,10 +86,20 @@ export default {
       id: 'Sample ID', inputTokens: 'Input tokens', outputTokens: 'Output tokens'
     },
     status: {
+      running: 'Running',
       success: 'Success', error: 'Error', rate_limited: 'Rate limited', skipped: 'Skipped', cancelled: 'Cancelled',
       recorded: 'Recorded (result unknown)', queued: 'Queued', paused: 'Paused', unknown: 'Unknown',
       completed: 'Completed', failed: 'Failed', partial: 'Partially completed',
       no_accounts: 'No eligible accounts', outside_active_window: 'Outside active window'
+    },
+    progress: {
+      title: 'Execution and progress', preparing: 'Preparing', running: 'In progress', notStarted: 'Not started',
+      preparingHint: 'Resolving test accounts and models.', elapsed: '{seconds} s',
+      counts: 'Success {success} · Failed {failed} · Skipped {skipped} · Cancelled {cancelled}',
+      working: 'Processing {active} · Pending {pending}', checking: 'Checking admission', requesting: 'Requesting',
+      stale: 'Updates interrupted', staleHint: 'Execution cannot currently be confirmed. Waiting for a fresh update.',
+      live: 'Auto-updating', refreshFailed: 'Status update failed', details: 'View test records',
+      hint: 'Progress counts account × model test items, including skips and cancellations.'
     },
     detail: {
       title: 'Speed measurement', loading: 'Loading speed measurement…', overview: 'Measurement', metrics: 'Observed metrics',
@@ -108,7 +118,8 @@ export default {
       deleteMessage: 'Delete “{name}”? Saved samples will remain.', runTitle: 'Run probe task',
       runIgnoringMessage: 'Queue “{name}” with its saved ignore-task-constraints policy, subject to normal model-call limits.',
       runMessage: 'Queue “{name}” for a background run. The server will still apply user priority, capacity, and 429 protections.',
-      runQueued: 'Probe task queued (round {round}).', saved: 'Probe task saved.', deleted: 'Probe task deleted.',
+      runQueued: 'Benchmark started. Execution progress updates automatically.', saved: 'Probe task saved.', deleted: 'Probe task deleted.',
+      scheduleStatus: 'Scheduled runs', scheduleEnabled: 'Enabled', scheduleDisabled: 'Disabled',
       enabled: 'Enable scheduled runs', disabledByDefault: 'New tasks are disabled by default and will not make upstream calls automatically.',
       empty: 'No probe tasks yet. New tasks are disabled by default, so you can review the configuration before enabling them.', noAccounts: 'No accounts are available for probing.',
       noModels: 'There are no models in the directory yet. Enter a model name below.', selectAccounts: 'Select accounts', selectModels: 'Select models', allAccounts: 'Include all available accounts automatically',
