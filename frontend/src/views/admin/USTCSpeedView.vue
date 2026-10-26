@@ -1253,7 +1253,7 @@ function statusLabel(status: string): string {
 
 const taskReasonLabels: Record<string, string> = {
   account_unavailable: 'accountUnavailable', quota_blocked: 'quotaBlocked', capacity_unavailable: 'capacityUnavailable',
-  capacity_cooldown: 'capacityCooldown', capacity_exhausted: 'capacityExhausted', rpm_reserved: 'rpmReserved',
+  capacity_cooldown: 'capacityCooldown', capacity_wait_timeout: 'capacityWaitTimeout', capacity_exhausted: 'capacityExhausted', rpm_reserved: 'rpmReserved',
   concurrency_reserved: 'concurrencyReserved', active_request_limit: 'activeRequestLimit',
   queue_state_unavailable: 'queueStateUnavailable', users_waiting: 'usersWaiting',
   user_load_or_capacity: 'userLoad',

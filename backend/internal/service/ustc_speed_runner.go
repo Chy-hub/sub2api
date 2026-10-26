@@ -23,6 +23,8 @@ import (
 
 var errUSTCSpeedFirstTimeout = errors.New("ustc speed first-output timeout")
 
+const ustcSpeedCapacityWait = 2 * time.Minute
+
 type ustcProbeResult struct {
 	status string
 	reason string
@@ -107,7 +109,11 @@ func (s *USTCSpeedService) startTask(ctx context.Context, task USTCSpeedTask, fo
 		return "", ErrUSTCSpeedBusy
 	}
 	owner := uuid.NewString()
-	ttl := time.Duration(len(task.Models)*(task.TimeoutSeconds+task.MaxStartSkewSeconds+15)+60) * time.Second
+	secondsPerModel := task.TimeoutSeconds + task.MaxStartSkewSeconds + 15
+	if task.IgnoreTaskConstraints {
+		secondsPerModel += int(ustcSpeedCapacityWait / time.Second)
+	}
+	ttl := time.Duration(len(task.Models)*secondsPerModel+60) * time.Second
 	claimed, err := s.repo.ClaimTask(ctx, task.ID, owner, ttl, force, task.Revision)
 	if err != nil {
 		return "", err
@@ -252,6 +258,9 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 	if len(eligible) > 1 {
 		offset := rand.IntN(len(eligible))
 		eligible = append(eligible[offset:], eligible[:offset]...)
+	}
+	if task.IgnoreTaskConstraints && speedIdleModelConcurrency(task) > 1 {
+		return s.executeConcurrentTask(ctx, task, owner, eligible)
 	}
 	successes, failures, skipped := 0, 0, 0
 	progress := speedProgress(ctx)
@@ -543,7 +552,44 @@ func speedProbeURL(account *Account, mode string) (string, error) {
 	return parsed.String(), nil
 }
 func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, account *Account, model, prompt, round string, roundStart time.Time) (string, string) {
+	deadline := time.Now().Add(ustcSpeedCapacityWait)
+	for {
+		if parent.Err() != nil {
+			return "cancelled", "cancelled"
+		}
+		status, reason := s.runProbeAttempt(parent, task, account, model, prompt, round, roundStart)
+		if status != "waiting" {
+			return status, reason
+		}
+		if !time.Now().Before(deadline) {
+			s.recordSkip(task, account, model, round, "capacity_wait_timeout")
+			return "skipped", "capacity_wait_timeout"
+		}
+		speedProgress(parent).start(round+fmt.Sprintf(":%d", account.ID), account, model, "waiting_capacity")
+		timer := time.NewTimer(min(time.Second, time.Until(deadline)))
+		select {
+		case <-parent.Done():
+			timer.Stop()
+			return "cancelled", "cancelled"
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *USTCSpeedService) runProbeAttempt(parent context.Context, task USTCSpeedTask, account *Account, model, prompt, round string, roundStart time.Time) (string, string) {
 	skip := func(reason string) (string, string) {
+		// Idle runs queue temporary admission pressure. Nothing was sent, so
+		// retries must not create skipped samples or consume request timeouts.
+		if task.IgnoreTaskConstraints {
+			switch reason {
+			case "capacity_cooldown", "capacity_exhausted", "shared_admission", "local_capacity":
+				return "waiting", reason
+			case "account_unavailable":
+				if account.IsRateLimited() {
+					return "waiting", reason
+				}
+			}
+		}
 		s.recordSkip(task, account, model, round, reason)
 		return "skipped", reason
 	}
@@ -675,6 +721,9 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 	if errors.Is(context.Cause(ctx), errUSTCSpeedFirstTimeout) {
 		result.Status = "error"
 		result.Reason = "first_output_timeout"
+	}
+	if result.Status == "skipped" {
+		return skip(result.Reason)
 	}
 	s.persist(result)
 	return result.Status, result.Reason

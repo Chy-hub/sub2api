@@ -105,7 +105,7 @@ export default {
       title: 'Execution and progress', preparing: 'Preparing', running: 'In progress', notStarted: 'Not started',
       preparingHint: 'Resolving test accounts and models.', elapsed: '{seconds} s',
       counts: 'Success {success} · Failed {failed} · Skipped {skipped} · Cancelled {cancelled}',
-      working: 'Processing {active} · Pending {pending}', checking: 'Checking admission', requesting: 'Requesting',
+      working: 'Processing {active} · Pending {pending}', checking: 'Checking admission', requesting: 'Requesting', waiting_capacity: 'Waiting for shared capacity',
       stale: 'Updates interrupted', staleHint: 'Execution cannot currently be confirmed. Waiting for a fresh update.',
       live: 'Auto-updating', refreshFailed: 'Status update failed', details: 'View test records',
       hint: 'Progress counts account × model test items, including skips and cancellations.'
@@ -122,7 +122,7 @@ export default {
       providerCost: 'Provider cost', legacyNotice: 'Real-call speed is derived from usage records: total duration, first-token time, and token counts. Event-level stage timings, output gaps, and a reliable result status are available only for probe samples.', measurementUsageLog: 'Usage record'
     },
     task: {
-      ignoreConstraints: 'Ignore task constraints', ignoreConstraintsHint: 'Use normal model-call limits. Ignore task activity windows, parallel-account and start-skew limits, background-probe caps, queue protection, capacity reserves, active-request caps, and extra 429 backoff/pause. Keep the interval, targets, request parameters and timeouts; normal account quotas and shared admission apply.',
+      ignoreConstraints: 'Ignore task constraints', ignoreConstraintsHint: 'Speed up idle-time tests with parallel models per key. Wait up to 2 minutes for temporary shared-capacity pressure. Ignore activity windows, parallel-account and start-skew limits, background-probe caps, queue protection, capacity reserves, active-request caps, and extra 429 backoff/pause. Keep the interval, targets, request parameters, request timeouts, and actual account quotas.',
       title: 'Probe tasks', add: 'New probe task', edit: 'Edit probe task', deleteTitle: 'Delete probe task',
       deleteMessage: 'Delete “{name}”? Saved samples will remain.', runTitle: 'Run probe task',
       runIgnoringMessage: 'Queue “{name}” with its saved ignore-task-constraints policy, subject to normal model-call limits.',
@@ -144,14 +144,15 @@ export default {
         prompt: 'Synthetic prompt', promptHint: 'Probes use synthetic prompts. Real call prompts and responses are not stored.', promptVariants: 'Prompt variants (one per line)',
         maxTokens: 'Output limit', temperature: 'Temperature', topP: 'Top P', seed: 'Seed', stop: 'Stop sequences (one per line)',
         thinkingMode: 'Reasoning mode', reasoningEffort: 'Reasoning effort', timeout: 'Request timeout (seconds)', firstOutputTimeout: 'First output timeout (seconds)',
-        maxParallel: 'Maximum accounts per round', maxStartSkew: 'Allowed start skew (seconds)', reserveRpm: 'Reserve RPM',
+        maxParallel: 'Maximum accounts per round', idleModelConcurrency: 'Idle-time parallel models per key', maxStartSkew: 'Allowed start skew (seconds)', reserveRpm: 'Reserve RPM',
         reserveConcurrency: 'Reserve concurrency', maxActive: 'Maximum active requests', skipWaiting: 'Skip probes while users are waiting',
         backoffAfter429: '429s before backing off', backoffWindow: '429 observation window (seconds)', backoffMultiplier: 'Backoff multiplier',
         maxInterval: 'Maximum probe interval (seconds)', pauseAfter429: 'Consecutive 429s before pausing', recoverySuccesses: 'Successes required to recover',
       },
       hint: {
         editSnapshot: 'An active run finishes with its original settings. Edits apply to the next run; disabling or deleting cancels it.', sameHours: 'Equal start/end times mean all day. Cron schedules do not apply jitter.',
-        perKeyConcurrency: 'Background concurrency is fixed at one request per physical key. Global concurrency is also bounded by this task and system settings.',
+        perKeyConcurrency: 'Normal mode tests one model per physical key at a time. Idle-time mode uses the parallel-model setting.',
+        idleModelConcurrency: 'Applies when ignoring task constraints. Defaults to 4; use 1 for sequential, aligned model rounds. Actual requests follow shared RPM and concurrency limits. Parallel tests measure speed under concurrent load.',
         capacities: 'Account capabilities come from the dimensions API. The server checks model access and shared capacity before sending requests.',
         physicalKeyGroup: 'Physical key group #{id}',
         days: 'Leave all days selected to run every day.',
@@ -165,7 +166,7 @@ export default {
       thinking: { off: 'Off', on: 'On', auto: 'Automatic (no extra setting)' },
       effort: { none: 'Unset', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' },
       reason: {
-        accountUnavailable: 'Account is not schedulable', quotaBlocked: 'Account quota is blocked', capacityUnavailable: 'Shared capacity could not be read', capacityCooldown: 'Shared capacity is cooling down', capacityExhausted: 'Shared capacity is exhausted', rpmReserved: 'Insufficient RPM after user reserve', concurrencyReserved: 'Insufficient concurrency after user reserve', activeRequestLimit: 'Task active-request limit reached', queueStateUnavailable: 'User queue state could not be read', usersWaiting: 'Real users are waiting',
+        accountUnavailable: 'Account is not schedulable', quotaBlocked: 'Account quota is blocked', capacityUnavailable: 'Shared capacity could not be read', capacityCooldown: 'Shared capacity is synchronizing', capacityWaitTimeout: 'Shared capacity wait timed out (2 minutes)', capacityExhausted: 'Shared capacity is exhausted', rpmReserved: 'Insufficient RPM after user reserve', concurrencyReserved: 'Insufficient concurrency after user reserve', activeRequestLimit: 'Task active-request limit reached', queueStateUnavailable: 'User queue state could not be read', usersWaiting: 'Real users are waiting',
         userLoad: 'User load or capacity', backgroundCapacity: 'Background concurrency full', sharedAdmission: 'Shared admission blocked',
         paused429: '429 pause', backoff429: '429 backoff', limitsUnknown: 'Quota limits unknown', modelNotSupported: 'Model not supported by account',
         roundStartSkew: 'Start skew exceeded', runtimeUnavailable: 'Runtime state unavailable', gatewayUnavailable: 'Gateway unavailable',
@@ -180,7 +181,7 @@ export default {
     settings: {
       title: 'Background concurrency', description: 'Set the interval per task. Requests follow shared RPM, concurrency and the saved task policy.',
       concurrency: 'Maximum background probe concurrency',
-      perKey: 'Background concurrency is limited to one request per physical key.', saved: 'Global settings saved.',
+      perKey: 'Normal mode allows one background request per physical key. Tasks ignoring constraints use their idle-time parallel-model setting.', saved: 'Global settings saved.',
       disableCapture: 'When off, no new usage records are imported for real-call speed. Probe tasks are unaffected.'
     },
     runtime: {

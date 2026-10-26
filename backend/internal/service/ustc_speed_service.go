@@ -29,7 +29,7 @@ func DefaultUSTCSpeedSettings() USTCSpeedSettings {
 }
 func DefaultUSTCSpeedTask() USTCSpeedTask {
 	return USTCSpeedTask{
-		AccountIDs: []int64{}, Models: []string{}, IntervalSeconds: 1800, JitterSeconds: 180, Timezone: "Asia/Shanghai", ActiveStart: "00:00", ActiveEnd: "23:59", DaysOfWeek: []int{}, APIMode: "chat_completions", Stream: true,
+		AccountIDs: []int64{}, Models: []string{}, IdleModelConcurrency: 4, IntervalSeconds: 1800, JitterSeconds: 180, Timezone: "Asia/Shanghai", ActiveStart: "00:00", ActiveEnd: "23:59", DaysOfWeek: []int{}, APIMode: "chat_completions", Stream: true,
 		Prompt: "Generate a numbered list of 120 practical suggestions for keeping a personal research notebook. Each item must be one short English sentence. Start immediately with item 1; do not add an introduction or conclusion.", PromptVariants: []string{}, MaxTokens: 512, Temperature: 0, Stop: []string{}, ThinkingMode: "off", TimeoutSeconds: 60, FirstOutputTimeoutSeconds: 30, MaxParallelAccounts: 4, MaxStartSkewSeconds: 5, ReserveRPM: 4, ReserveConcurrency: 2, MaxActiveRequests: 16, SkipIfUserWaiting: true, BackoffAfter429: 3, BackoffWindowSeconds: 900, BackoffMultiplier: 2, MaxIntervalSeconds: 7200, PauseAfter429: 6, RecoverySuccesses: 2,
 	}
 }
@@ -40,6 +40,12 @@ func ValidateUSTCSpeedSettings(s USTCSpeedSettings) error {
 	return nil
 }
 func ValidateUSTCSpeedTask(t *USTCSpeedTask) error {
+	if t.IdleModelConcurrency == 0 {
+		t.IdleModelConcurrency = DefaultUSTCSpeedTask().IdleModelConcurrency
+	}
+	if t.IdleModelConcurrency < 1 || t.IdleModelConcurrency > 20 {
+		return speedBadRequest("idle model concurrency must be between 1 and 20")
+	}
 	t.Name = strings.TrimSpace(t.Name)
 	if len(t.Name) < 1 || len(t.Name) > 200 {
 		return speedBadRequest("task name is required (maximum 200 bytes)")

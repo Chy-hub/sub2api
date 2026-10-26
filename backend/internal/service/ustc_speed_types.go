@@ -92,6 +92,7 @@ type USTCSpeedTask struct {
 	TimeoutSeconds            int        `json:"timeout_seconds"`
 	FirstOutputTimeoutSeconds int        `json:"first_output_timeout_seconds"`
 	MaxParallelAccounts       int        `json:"max_parallel_accounts"`
+	IdleModelConcurrency      int        `json:"idle_model_concurrency"`
 	MaxStartSkewSeconds       int        `json:"max_start_skew_seconds"`
 	ReserveRPM                int        `json:"reserve_rpm"`
 	ReserveConcurrency        int        `json:"reserve_concurrency"`
