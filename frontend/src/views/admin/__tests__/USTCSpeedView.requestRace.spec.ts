@@ -3,10 +3,11 @@ import { defineComponent, nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import USTCSpeedView from '../USTCSpeedView.vue'
 
-const { getOverview, getDimensions, getSettings, showToast } = vi.hoisted(() => ({
+const { getOverview, getDimensions, getSettings, listTasks, getRuntime, showToast } = vi.hoisted(() => ({
   getOverview: vi.fn(),
   getDimensions: vi.fn(),
   getSettings: vi.fn(),
+  listTasks: vi.fn(), getRuntime: vi.fn(),
   showToast: vi.fn(),
 }))
 
@@ -15,8 +16,8 @@ vi.mock('@/api/admin/ustcSpeed', () => ({
     getOverview,
     getDimensions,
     getSettings,
-    listTasks: vi.fn().mockResolvedValue({ items: [] }),
-    getRuntime: vi.fn().mockResolvedValue({ items: [] }),
+    listTasks,
+    getRuntime,
   },
 }))
 
@@ -99,6 +100,8 @@ describe('USTCSpeedView overview request races', () => {
     getOverview.mockReset()
     getDimensions.mockReset().mockResolvedValue({ accounts: [], models: ['fixture-model'] })
     getSettings.mockReset().mockResolvedValue({ capture_enabled: true, max_background_concurrency: 4 })
+    listTasks.mockReset().mockResolvedValue({ items: [] })
+    getRuntime.mockReset().mockResolvedValue({ items: [] })
     showToast.mockReset()
   })
 

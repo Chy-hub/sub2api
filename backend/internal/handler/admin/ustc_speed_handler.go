@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -53,12 +54,89 @@ func (h *USTCSpeedHandler) Overview(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	query.Source = "probe"
 	out, err := h.speedService.Overview(c.Request.Context(), query)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, out)
+}
+
+// UsageOverview reads the same usage records and filters as the adjacent
+// usage-detail tab. It never imports records into the benchmark sample store.
+func (h *USTCSpeedHandler) UsageOverview(c *gin.Context) {
+	if !h.requireService(c) {
+		return
+	}
+	query, err := parseUsageSpeedQuery(c, time.Now())
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	out, err := h.speedService.Overview(c.Request.Context(), query)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, out)
+}
+
+func parseUsageSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery, error) {
+	q, err := parseSpeedQuery(c, now, 0)
+	if err != nil {
+		return q, err
+	}
+	if !oneOf(q.Metric, "generation_tps", "overall_tps", "ttft_ms") {
+		return q, errors.New("usage speed supports TPS and recorded first-token timing only")
+	}
+	f := &usagestats.UsageLogFilters{}
+	for _, target := range []struct {
+		name  string
+		value *int64
+	}{{"user_id", &f.UserID}, {"api_key_id", &f.APIKeyID}, {"account_id", &f.AccountID}, {"group_id", &f.GroupID}} {
+		value, err := parseOptionalPositiveInt64(c.Query(target.name), target.name)
+		if err != nil {
+			return q, err
+		}
+		*target.value = value
+	}
+	if raw := strings.TrimSpace(c.Query("request_type")); raw != "" {
+		kind, err := service.ParseUsageRequestType(raw)
+		if err != nil {
+			return q, err
+		}
+		value := int16(kind)
+		f.RequestType = &value
+		q.Stream = "all"
+	}
+	for _, target := range []struct {
+		name  string
+		value **bool
+	}{{"native_compaction_v2", &f.NativeCompactionV2}, {"upstream_model_mismatch", &f.UpstreamModelMismatch}} {
+		value, err := parseOptionalBoolDashboardFilter(c, target.name)
+		if err != nil {
+			return q, err
+		}
+		*target.value = value
+	}
+	if raw := c.Query("billing_type"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 8)
+		if err != nil {
+			return q, errors.New("invalid billing_type")
+		}
+		typed := int8(value)
+		f.BillingType = &typed
+	}
+	f.BillingMode = strings.TrimSpace(c.Query("billing_mode"))
+	f.RequestID = strings.TrimSpace(c.Query("request_id"))
+	q.Source = "real"
+	q.GroupBy = "model"
+	q.TaskID = 0
+	q.Profile = ""
+	q.Reasoning = "all"
+	q.UsageFilters = f
+	return q, nil
 }
 
 func (h *USTCSpeedHandler) Samples(c *gin.Context) {
@@ -70,6 +148,7 @@ func (h *USTCSpeedHandler) Samples(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	query.Source = "probe"
 	items, total, err := h.speedService.ListSamples(c.Request.Context(), query)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -267,6 +346,10 @@ func ustcSpeedPathID(c *gin.Context) (int64, bool) {
 // parseUSTCSpeedQuery validates and converts request filters to the service's
 // half-open time range. The supplied clock makes default-date handling testable.
 func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery, error) {
+	return parseSpeedQuery(c, now, ustcSpeedMaxRangeDays)
+}
+
+func parseSpeedQuery(c *gin.Context, now time.Time, maxRangeDays int) (service.USTCSpeedQuery, error) {
 	var query service.USTCSpeedQuery
 
 	timezone := strings.TrimSpace(c.Query("timezone"))
@@ -309,8 +392,8 @@ func parseUSTCSpeedQuery(c *gin.Context, now time.Time) (service.USTCSpeedQuery,
 		calendarStart := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 		calendarEnd := time.Date(endDateTime.Year(), endDateTime.Month(), endDateTime.Day(), 0, 0, 0, 0, time.UTC)
 		calendarDays := int(calendarEnd.Sub(calendarStart)/(24*time.Hour)) + 1
-		if calendarDays > ustcSpeedMaxRangeDays {
-			return query, fmt.Errorf("date range cannot exceed %d days", ustcSpeedMaxRangeDays)
+		if maxRangeDays > 0 && calendarDays > maxRangeDays {
+			return query, fmt.Errorf("date range cannot exceed %d days", maxRangeDays)
 		}
 	}
 	end := endDateTime.AddDate(0, 0, 1)
