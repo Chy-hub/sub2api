@@ -229,6 +229,7 @@ export interface USTCSpeedTask {
   name: string
   enabled: boolean
   ignore_task_constraints?: boolean
+  idle_model_concurrency?: number
   all_accounts: boolean
   account_ids: number[]
   models: string[]
