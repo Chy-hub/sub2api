@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/tidwall/gjson"
 )
 
 type ustcSpeedProbeKey struct{}
@@ -22,7 +20,6 @@ type ustcSpeedProbeContext struct {
 }
 
 type ustcSpeedWatch struct {
-	svc         *USTCSpeedService
 	request     *http.Request
 	sample      USTCSpeedSample
 	probe       *ustcSpeedProbeContext
@@ -33,57 +30,20 @@ type ustcSpeedWatch struct {
 	contentType string
 	local       bool
 	once        sync.Once
-	effort      string
-	hasTools    bool
 }
 
+// beginUSTCSpeed attaches event-level timing only to scheduled probes. Real
+// traffic is analyzed from existing usage records, so observing it here would
+// duplicate data and add latency without new comparable metrics.
 func (s *OpenAIGatewayService) beginUSTCSpeed(request *http.Request, account *Account) *ustcSpeedWatch {
 	if s.ustcSpeed == nil {
 		return nil
 	}
 	probe, _ := request.Context().Value(ustcSpeedProbeKey{}).(*ustcSpeedProbeContext)
-	if probe == nil && !s.ustcSpeed.captureEnabled() {
+	if probe == nil {
 		return nil
 	}
-	path := request.URL.Path
-	if !strings.HasSuffix(path, "/chat/completions") && !strings.HasSuffix(path, "/responses") && !strings.HasSuffix(path, "/messages") && !strings.HasSuffix(path, "/completions") {
-		return nil
-	}
-	watch := &ustcSpeedWatch{svc: s.ustcSpeed, request: request, probe: probe, start: time.Now(), effort: "unknown"}
-	watch.sample = USTCSpeedSample{AccountID: account.ID, AccountName: account.Name, KeyScope: USTCKeyScope(account), Source: "real", Reasoning: "unknown", APIMode: "chat_completions"}
-	if strings.HasSuffix(path, "/responses") {
-		watch.sample.APIMode = "responses"
-	} else if strings.HasSuffix(path, "/messages") {
-		watch.sample.APIMode = "messages"
-	}
-	if probe != nil {
-		watch.sample = probe.sample
-	}
-	if request.GetBody != nil {
-		body, err := request.GetBody()
-		if err == nil {
-			data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
-			_ = body.Close()
-			watch.sample.Model = gjson.GetBytes(data, "model").String()
-			watch.sample.Stream = gjson.GetBytes(data, "stream").Bool()
-			effort := gjson.GetBytes(data, "reasoning_effort").String()
-			if effort == "" {
-				effort = gjson.GetBytes(data, "reasoning.effort").String()
-			}
-			watch.effort = normalizeUSTCReasoningEffort(effort)
-			thinking := gjson.GetBytes(data, "thinking.type").String()
-			enableThinking := gjson.GetBytes(data, "chat_template_kwargs.enable_thinking")
-			switch {
-			case thinking == "disabled" || watch.effort == "none" || (enableThinking.Exists() && !enableThinking.Bool()):
-				watch.sample.Reasoning = "off"
-			case thinking == "enabled" || isEnabledUSTCReasoningEffort(watch.effort) || (enableThinking.Exists() && enableThinking.Bool()):
-				watch.sample.Reasoning = "on"
-			}
-			watch.hasTools = gjson.GetBytes(data, "tools.#").Int() > 0
-		}
-	}
-	watch.sample.Model = truncateSpeedString(watch.sample.Model, 200)
-	return watch
+	return &ustcSpeedWatch{request: request, probe: probe, sample: probe.sample, start: time.Now()}
 }
 func (w *ustcSpeedWatch) sent() {
 	if w == nil {
@@ -225,23 +185,7 @@ func (w *ustcSpeedWatch) finish(at time.Time, readErr error) {
 		} else if obs.ReasoningTokensKnown {
 			sample.Reasoning = "off"
 		}
-		if sample.Source == "real" {
-			cache := "unknown"
-			if obs.CachedTokensKnown {
-				cache = "miss"
-				if obs.CachedTokens > 0 {
-					cache = "hit"
-				}
-			}
-			inputBin, outputBin := "unknown", "unknown"
-			if obs.InputTokensKnown {
-				inputBin = speedLengthBin(obs.InputTokens)
-			}
-			if obs.TokenCountKnown {
-				outputBin = speedLengthBin(obs.OutputTokens)
-			}
-			sample.Profile = "real:" + sample.APIMode + ":" + fmtSpeedBool(sample.Stream) + ":" + sample.Reasoning + ":" + w.effort + ":in=" + inputBin + ":out=" + outputBin + ":cache=" + cache + ":tools=" + fmtSpeedBool(w.hasTools)
-		} else if sample.Reasoning != w.sample.Reasoning && w.sample.Reasoning != "unknown" {
+		if sample.Reasoning != w.sample.Reasoning && w.sample.Reasoning != "unknown" && w.sample.Reasoning != "" {
 			sample.Profile += ":observed_" + sample.Reasoning
 		}
 		sample.ObservedModel = truncateSpeedString(sample.ObservedModel, 200)
@@ -251,52 +195,10 @@ func (w *ustcSpeedWatch) finish(at time.Time, readErr error) {
 			case w.probe.result <- sample:
 			default:
 			}
-		} else {
-			w.svc.submit(sample)
 		}
 	})
 }
 
-func normalizeUSTCReasoningEffort(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "none", "auto", "minimal", "low", "medium", "high", "xhigh":
-		return strings.ToLower(strings.TrimSpace(value))
-	default:
-		return "unknown"
-	}
-}
-
-func isEnabledUSTCReasoningEffort(value string) bool {
-	switch value {
-	case "minimal", "low", "medium", "high", "xhigh":
-		return true
-	default:
-		return false
-	}
-}
-
-func fmtSpeedBool(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
-}
-func speedLengthBin(value int) string {
-	switch {
-	case value < 128:
-		return "0-127"
-	case value < 1024:
-		return "128-1023"
-	case value < 4096:
-		return "1k-4k"
-	case value < 16384:
-		return "4k-16k"
-	case value < 65536:
-		return "16k-64k"
-	default:
-		return "64k+"
-	}
-}
 func truncateSpeedString(value string, max int) string {
 	if len(value) > max {
 		return value[:max]
