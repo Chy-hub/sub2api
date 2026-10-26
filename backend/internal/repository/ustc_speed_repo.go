@@ -418,7 +418,7 @@ func (r *ustcSpeedRepository) Models(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-const ustcSpeedTaskColumns = "id,revision,config,enabled,next_run_at,last_run_at,last_status,created_at,updated_at"
+const ustcSpeedTaskColumns = "id,revision,config,enabled,next_run_at,last_run_at,last_status,created_at,updated_at,progress,lease_until"
 
 func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
 	var task service.USTCSpeedTask
@@ -428,7 +428,9 @@ func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
 	var next, last *time.Time
 	var status string
 	var created, updated time.Time
-	err := row.Scan(&id, &revision, &raw, &enabled, &next, &last, &status, &created, &updated)
+	var progress []byte
+	var leaseUntil *time.Time
+	err := row.Scan(&id, &revision, &raw, &enabled, &next, &last, &status, &created, &updated, &progress, &leaseUntil)
 	if err != nil {
 		return task, err
 	}
@@ -443,6 +445,12 @@ func scanUSTCSpeedTask(row ustcSpeedScanner) (service.USTCSpeedTask, error) {
 	task.LastStatus = status
 	task.CreatedAt = created
 	task.UpdatedAt = updated
+	task.Progress, task.LeaseUntil = nil, leaseUntil
+	if len(progress) > 0 {
+		if err = json.Unmarshal(progress, &task.Progress); err != nil {
+			return task, err
+		}
+	}
 	return task, nil
 }
 func (r *ustcSpeedRepository) ListTasks(ctx context.Context) ([]service.USTCSpeedTask, error) {
@@ -469,7 +477,9 @@ func (r *ustcSpeedRepository) GetTask(ctx context.Context, id int64) (*service.U
 	return &task, err
 }
 func (r *ustcSpeedRepository) SaveTask(ctx context.Context, task *service.USTCSpeedTask) error {
-	raw, err := json.Marshal(task)
+	config := *task
+	config.Progress, config.LeaseUntil = nil, nil
+	raw, err := json.Marshal(config)
 	if err != nil {
 		return err
 	}
@@ -503,7 +513,7 @@ func (r *ustcSpeedRepository) DeleteTask(ctx context.Context, id int64) error {
 	return nil
 }
 func (r *ustcSpeedRepository) ClaimTask(ctx context.Context, id int64, owner string, ttl time.Duration, force bool, revision int64) (bool, error) {
-	result, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=$2,lease_until=NOW()+$3*INTERVAL '1 second',lease_revision=revision,last_run_at=NOW(),last_status='running' WHERE id=$1 AND revision=$5 AND(lease_until IS NULL OR lease_until<NOW()) AND($4 OR(enabled AND next_run_at<=NOW()))`, id, owner, ttl.Seconds(), force, revision)
+	result, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=$2,lease_until=NOW()+$3*INTERVAL '1 second',lease_revision=revision,last_run_at=NOW(),last_status='running',config=config-'last_detail',progress=jsonb_build_object('run_id',$2::text,'state','preparing','started_at',NOW(),'updated_at',NOW(),'total',0,'completed',0,'successful',0,'failed',0,'skipped',0,'cancelled',0,'active','[]'::jsonb) WHERE id=$1 AND revision=$5 AND(lease_until IS NULL OR lease_until<NOW()) AND($4 OR(enabled AND next_run_at<=NOW()))`, id, owner, ttl.Seconds(), force, revision)
 	if err != nil {
 		return false, err
 	}
@@ -513,7 +523,15 @@ func (r *ustcSpeedRepository) ClaimTask(ctx context.Context, id int64, owner str
 func (r *ustcSpeedRepository) FinishTask(ctx context.Context, id int64, owner string, next time.Time, status, detail string) error {
 	// Edits keep the running lease until its owner exits, but a stale run may
 	// never replace the schedule saved by the newer task revision.
-	_, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=NULL,lease_until=NULL,lease_revision=NULL,next_run_at=CASE WHEN lease_revision=revision THEN $3 ELSE next_run_at END,last_status=CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,config=CASE WHEN lease_revision<>revision THEN config WHEN $5='' THEN config-'last_detail' ELSE jsonb_set(config,'{last_detail}',to_jsonb($5::text),true) END,updated_at=NOW() WHERE id=$1 AND lease_owner=$2`, id, owner, next, status, detail)
+	_, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=NULL,lease_until=NULL,lease_revision=NULL,next_run_at=CASE WHEN lease_revision=revision THEN $3 ELSE next_run_at END,last_status=CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,progress=progress||jsonb_build_object('state',CASE WHEN lease_revision=revision THEN $4 ELSE 'cancelled' END,'reason',CASE WHEN lease_revision=revision THEN $5 ELSE 'task_changed' END,'finished_at',NOW(),'updated_at',NOW(),'active','[]'::jsonb),config=CASE WHEN lease_revision<>revision THEN config WHEN $5='' THEN config-'last_detail' ELSE jsonb_set(config,'{last_detail}',to_jsonb($5::text),true) END,updated_at=NOW() WHERE id=$1 AND lease_owner=$2`, id, owner, next, status, detail)
+	return err
+}
+func (r *ustcSpeedRepository) UpdateTaskProgress(ctx context.Context, id int64, owner string, progress *service.USTCSpeedTaskProgress) error {
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET progress=$3 WHERE id=$1 AND lease_owner=$2`, id, owner, raw)
 	return err
 }
 func (r *ustcSpeedRepository) AcquireKey(ctx context.Context, scope, owner string, ttl time.Duration, maximum int) (bool, error) {

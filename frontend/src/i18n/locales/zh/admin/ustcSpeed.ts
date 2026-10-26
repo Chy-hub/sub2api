@@ -78,7 +78,7 @@ export default {
       metric: '指标', metricGeneration: 'TPS（生成速度）', metricOverall: '端到端速度'
     },
     samples: {
-      tableTitle: '调用与检测样本', total: '共 {count} 条', noData: '没有符合条件的样本。',
+      tableTitle: '测试明细', description: '与顶部时间、任务、模型和账号筛选同步，包含成功、失败及跳过的测试。', overallTps: '端到端速度', total: '共 {count} 条', noData: '没有符合条件的测试记录。',
       startedAt: '开始时间', model: '模型', account: '账号', source: '来源', status: '状态',
       generationTps: '生成 TPS', ttft: '上游首字耗时', duration: '请求总耗时', tokens: '输入 / 输出',
       profile: '配置档案', reasoning: '思考', stream: '流式', action: '操作',
@@ -86,10 +86,20 @@ export default {
       id: '样本 ID', inputTokens: '输入 token', outputTokens: '输出 token'
     },
     status: {
+      running: '运行中',
       success: '成功', error: '错误', rate_limited: '限流', skipped: '跳过', cancelled: '已取消',
       recorded: '已记录（结果未知）', queued: '排队中', paused: '已暂停', unknown: '未知',
       completed: '已完成', failed: '失败', partial: '部分完成',
       no_accounts: '无可用账号', outside_active_window: '不在活动时段'
+    },
+    progress: {
+      title: '执行状态与进度', preparing: '准备中', running: '进行中', notStarted: '尚未运行',
+      preparingHint: '正在确定测试账号与模型。', elapsed: '{seconds} 秒',
+      counts: '成功 {success} · 失败 {failed} · 跳过 {skipped} · 取消 {cancelled}',
+      working: '处理中 {active} · 待处理 {pending}', checking: '检查调用条件', requesting: '请求中',
+      stale: '状态更新中断', staleHint: '暂时无法确认任务仍在执行，等待最新状态。',
+      live: '自动更新', refreshFailed: '运行状态更新失败', details: '查看测试明细',
+      hint: '进度按账号 × 模型的测试项计算，跳过和取消也计入已处理。'
     },
     detail: {
       title: '速度测量详情', loading: '正在读取速度测量…', overview: '测量信息', metrics: '可观测指标',
@@ -108,7 +118,8 @@ export default {
       deleteMessage: '删除“{name}”？已保存的样本不会随任务删除。', runTitle: '运行检测任务',
       runIgnoringMessage: '将“{name}”加入队列，按已保存的“忽略任务约束”设置执行，并遵循正常模型调用限制。',
       runMessage: '将任务“{name}”加入后台队列。服务端仍会执行用户优先、容量和 429 保护。',
-      runQueued: '检测任务已加入队列（轮次 {round}）。', saved: '检测任务已保存。', deleted: '检测任务已删除。',
+      runQueued: '检测任务已启动，执行进度会自动更新。', saved: '检测任务已保存。', deleted: '检测任务已删除。',
+      scheduleStatus: '定时运行', scheduleEnabled: '已启用', scheduleDisabled: '未启用',
       enabled: '启用定时运行', disabledByDefault: '新建任务默认停用，不会自动发起上游请求。',
       empty: '还没有检测任务。新任务默认停用，保存后可先检查配置。', noAccounts: '没有可用于检测的账号。',
       noModels: '目录中暂时没有模型，可在下方手动填写。', selectAccounts: '选择账号', selectModels: '选择模型', allAccounts: '自动包含所有可用账号',

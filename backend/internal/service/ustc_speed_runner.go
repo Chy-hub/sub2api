@@ -122,17 +122,27 @@ func (s *USTCSpeedService) startTask(ctx context.Context, task USTCSpeedTask, fo
 		return "", ErrUSTCSpeedBusy
 	}
 	jobCtx, cancel := context.WithTimeout(s.ctx, ttl-5*time.Second)
+	progress := newUSTCSpeedProgress(owner)
+	jobCtx = context.WithValue(jobCtx, ustcSpeedProgressKey{}, progress)
 	s.jobs[task.ID] = cancel
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		defer cancel()
 		defer func() { s.jobsMu.Lock(); delete(s.jobs, task.ID); s.jobsMu.Unlock() }()
+		stopHeartbeat, heartbeatDone := make(chan struct{}), make(chan struct{})
+		go s.progressHeartbeat(jobCtx, task.ID, owner, progress, stopHeartbeat, heartbeatDone)
 		status, detail := s.executeTask(jobCtx, task, owner, force)
+		progress.finish(status, detail)
+		close(stopHeartbeat)
+		<-heartbeatDone
+		s.publishProgress(task.ID, owner, progress)
 		next := nextUSTCSpeedTask(task, time.Now())
 		finishCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
-		_ = s.repo.FinishTask(finishCtx, task.ID, owner, next, status, detail)
+		if err := s.repo.FinishTask(finishCtx, task.ID, owner, next, status, detail); err != nil {
+			slog.Warn("ustc_speed_task_finish_failed", "task_id", task.ID, "error", err)
+		}
 	}()
 	return owner, nil
 }
@@ -241,11 +251,13 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 		eligible = append(eligible[offset:], eligible[:offset]...)
 	}
 	successes, failures, skipped := 0, 0, 0
+	progress := speedProgress(ctx)
 	reasons := map[string]int{}
 	for modelIndex, model := range task.Models {
 		if !s.speedTaskCurrent(ctx, task) {
 			return "cancelled", "task_changed"
 		}
+		progress.prepare(len(eligible)*len(task.Models), model)
 		round := owner + fmt.Sprintf("-%d", modelIndex)
 		roundStart := time.Now()
 		prompt := task.Prompt
@@ -264,6 +276,11 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
+				progressKey := round + fmt.Sprintf(":%d", account.ID)
+				complete := func(status, reason string) {
+					progress.complete(progressKey, status)
+					results <- ustcProbeResult{status: status, reason: reason}
+				}
 				deadline := time.NewTimer(time.Until(roundStart.Add(time.Duration(task.MaxStartSkewSeconds) * time.Second)))
 				defer deadline.Stop()
 				var startDeadline <-chan time.Time
@@ -273,13 +290,14 @@ func (s *USTCSpeedService) executeTask(ctx context.Context, task USTCSpeedTask, 
 				select {
 				case semaphore <- struct{}{}:
 					defer func() { <-semaphore }()
+					progress.start(progressKey, &account, model, "checking")
 					status, reason := s.runProbe(ctx, task, &account, model, prompt, round, roundStart)
-					results <- ustcProbeResult{status: status, reason: reason}
+					complete(status, reason)
 				case <-startDeadline:
 					s.recordSkip(task, &account, model, round, "round_start_skew")
-					results <- ustcProbeResult{status: "skipped", reason: "round_start_skew"}
+					complete("skipped", "round_start_skew")
 				case <-ctx.Done():
-					results <- ustcProbeResult{status: "cancelled", reason: "cancelled"}
+					complete("cancelled", "cancelled")
 				}
 			}()
 		}
@@ -631,6 +649,7 @@ func (s *USTCSpeedService) runProbe(parent context.Context, task USTCSpeedTask, 
 		})
 	}
 	defer timer.Stop()
+	speedProgress(ctx).start(round+fmt.Sprintf(":%d", account.ID), account, model, "requesting")
 	response, requestErr := s.gateway.doUSTCUpstream(request, proxyURL, account)
 	if response != nil && response.Body != nil {
 		_, _ = io.Copy(io.Discard, response.Body)
