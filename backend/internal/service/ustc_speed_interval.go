@@ -24,6 +24,18 @@ func USTCSpeedIntervalSeconds(interval string) (int, bool) {
 	return 0, false
 }
 
+var ustcSpeedHourlyBucketWidths = map[int]struct{}{
+	15: {}, 30: {}, 60: {}, 120: {}, 240: {},
+}
+
+// USTCSpeedHourlyBucketMinutes reports whether minutes is a supported width for
+// the folded time-of-day buckets. Every width divides a 24-hour day evenly, so
+// the folded chart always ends exactly at local midnight.
+func USTCSpeedHourlyBucketMinutes(minutes int) (int, bool) {
+	_, ok := ustcSpeedHourlyBucketWidths[minutes]
+	return minutes, ok
+}
+
 // USTCSpeedAutoInterval keeps typical windows within roughly 200 time buckets:
 // 24 hours -> 15 minutes, 7 days -> 1 hour, 30 days -> 6 hours. Daily buckets
 // remain useful for longer usage-history ranges. Sparse samples do not change

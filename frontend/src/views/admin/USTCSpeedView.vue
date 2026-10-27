@@ -252,13 +252,21 @@
               <p v-if="overview.hourly_truncated" class="mt-1 text-xs text-amber-600">{{ t('admin.ustcSpeed.hourly.truncated') }}</p>
               <p v-if="appliedQuery" class="mt-1 text-xs text-gray-400 dark:text-gray-500">{{ appliedRangeLabel }}</p>
             </div>
-            <label class="filter-field min-w-40">
-              <span>{{ t('admin.ustcSpeed.hourly.metric') }}</span>
-              <select v-model="hourlyMetric" class="filter-input" data-testid="hourly-metric">
-                <option value="overall_tps">{{ t('admin.ustcSpeed.hourly.metricOverall') }}</option>
-                <option value="generation_tps">{{ t('admin.ustcSpeed.hourly.metricGeneration') }}</option>
-              </select>
-            </label>
+            <div class="flex flex-wrap items-end gap-3">
+              <label class="filter-field min-w-36">
+                <span>{{ t('admin.ustcSpeed.hourly.granularity') }}</span>
+                <select v-model.number="hourlyBucketMinutes" class="filter-input" data-testid="hourly-bucket">
+                  <option v-for="bucket in hourlyBucketOptions" :key="bucket" :value="bucket">{{ t(`admin.ustcSpeed.hourly.bucket${bucket}`) }}</option>
+                </select>
+              </label>
+              <label class="filter-field min-w-40">
+                <span>{{ t('admin.ustcSpeed.hourly.metric') }}</span>
+                <select v-model="hourlyMetric" class="filter-input" data-testid="hourly-metric">
+                  <option value="overall_tps">{{ t('admin.ustcSpeed.hourly.metricOverall') }}</option>
+                  <option value="generation_tps">{{ t('admin.ustcSpeed.hourly.metricGeneration') }}</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div class="px-3 py-3 sm:px-5 sm:py-4">
             <div v-if="loading" class="flex h-[220px] items-center justify-center text-sm text-gray-500">{{ t('admin.ustcSpeed.action.loading') }}</div>
@@ -396,6 +404,7 @@ import type {
   USTCSpeedAccountDimension,
   USTCSpeedAggregate,
   USTCSpeedComparison,
+  USTCSpeedHourlyBucket,
   USTCSpeedHourPoint,
   USTCSpeedInterval,
   USTCSpeedMetric,
@@ -493,6 +502,13 @@ const metric = ref<USTCSpeedMetric>('overall_tps')
 // than the trend chart, so it keeps its own TPS metric instead of inheriting
 // latency/diagnostic metrics that real usage records cannot provide.
 const hourlyMetric = ref<'generation_tps' | 'overall_tps'>('overall_tps')
+// The chart is folded onto one local day; the selected width decides how many
+// slots that day has. It follows the applied query so a pending reload never
+// renders old rows against a new slot count.
+const hourlyBucketOptions: USTCSpeedHourlyBucket[] = [15, 30, 60, 120, 240]
+const hourlyBucketMinutes = ref<USTCSpeedHourlyBucket>(60)
+const appliedHourlyBucket = computed<USTCSpeedHourlyBucket>(() => appliedQuery.value?.hourly_bucket_minutes ?? 60)
+const hourlySlotCount = computed(() => Math.ceil(1440 / appliedHourlyBucket.value))
 const exporting = ref(false)
 const selectedSample = ref<USTCSpeedSample | null>(null)
 const sampleDialogOpen = ref(false)
@@ -891,15 +907,15 @@ const hourlySeries = computed<HourlySeries[]>(() => {
   const sources = sourceCountsByModel(points)
   const grouped = new Map<string, HourlySeries>()
   for (const point of points) {
-    if (point.hour < 0 || point.hour > 23) continue
+    if (point.slot < 0 || point.slot >= hourlySlotCount.value) continue
     const key = JSON.stringify([point.model, point.source, point.profile])
     const series = grouped.get(key) ?? {
       key,
       label: seriesLabel(point.model, (sources.get(point.model)?.size ?? 0) > 1 ? sourceLabel(point.source) : ''),
       source: point.source,
-      hours: Array.from({ length: 24 }, () => undefined),
+      hours: Array.from({ length: hourlySlotCount.value }, () => undefined),
     }
-    series.hours[point.hour] = point
+    series.hours[point.slot] = point
     grouped.set(key, series)
   }
   return [...grouped.values()]
@@ -914,10 +930,15 @@ function hourlyValue(point: USTCSpeedHourPoint | undefined): number | null {
   return value !== null && Number.isFinite(value) ? value : null
 }
 
+function hourlySlotLabel(slot: number): string {
+  const minutes = (slot * appliedHourlyBucket.value) % 1440
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+
 const hourlyChartData = computed<any>(() => {
   if (!hourlySeries.value.some((series) => series.hours.some((point) => hourlyValue(point) !== null))) return null
   return {
-    labels: Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`),
+    labels: Array.from({ length: hourlySlotCount.value }, (_, slot) => hourlySlotLabel(slot)),
     datasets: hourlySeries.value.map((series, index) => {
       const color = chartPalette[index % chartPalette.length]
       return {
@@ -940,17 +961,17 @@ const hourlyChartData = computed<any>(() => {
 
 function showHourlyTooltip({ chart, tooltip }: { chart: ChartInstance; tooltip: TooltipModel<'line'> }) {
   if (!tooltip.opacity) { hourlyTooltipRef.value?.hide(); return }
-  const hour = tooltip.dataPoints[0]?.dataIndex
-  if (hour === undefined) { hourlyTooltipRef.value?.reset(); return }
+  const slot = tooltip.dataPoints[0]?.dataIndex
+  if (slot === undefined) { hourlyTooltipRef.value?.reset(); return }
   // Chart.js omits null points from dataPoints. Keep every visible model in
   // the list and distinguish missing observations from measured zero speed.
   const rows = hourlySeries.value.flatMap((series, index) => {
     if (!chart.isDatasetVisible(index)) return []
-    const point = series.hours[hour]
+    const point = series.hours[slot]
     return [{ key: series.key, label: series.label, value: formatHourlyValue(hourlyValue(point)), color: chartPalette[index % chartPalette.length], detail: point ? [t('admin.ustcSpeed.hourly.samples', { count: point.valid_count }), t('admin.ustcSpeed.hourly.days', { count: point.day_count })].join(' · ') : t('admin.ustcSpeed.hourly.noHourData') }]
   })
   const rect = chart.canvas.getBoundingClientRect()
-  hourlyTooltipRef.value?.show(rect.left + tooltip.caretX * rect.width / chart.width, rect.top + tooltip.caretY * rect.height / chart.height, `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`, rows)
+  hourlyTooltipRef.value?.show(rect.left + tooltip.caretX * rect.width / chart.width, rect.top + tooltip.caretY * rect.height / chart.height, `${hourlySlotLabel(slot)}–${hourlySlotLabel(slot + 1)}`, rows)
 }
 
 const hourlyChartOptions = computed<any>(() => {
@@ -1061,6 +1082,7 @@ function buildQuery(): USTCSpeedQuery {
     group_by: 'model',
     hourly: true,
     hourly_metric: hourlyMetric.value,
+    hourly_bucket_minutes: hourlyBucketMinutes.value,
     last_hours: props.embedded ? undefined : lastHours.value ?? undefined,
   }
 }
@@ -1074,6 +1096,7 @@ const sampleQuery = computed(() => {
   delete query.group_by
   delete query.hourly
   delete query.hourly_metric
+  delete query.hourly_bucket_minutes
   delete query.analysis
   delete query.comparison
   return query

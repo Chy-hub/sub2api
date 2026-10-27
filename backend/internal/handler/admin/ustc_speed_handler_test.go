@@ -137,6 +137,30 @@ func TestParseUSTCSpeedQueryHourly(t *testing.T) {
 	}
 }
 
+func TestParseUSTCSpeedQueryHourlyBucketMinutes(t *testing.T) {
+	for _, minutes := range []string{"15", "30", "60", "120", "240"} {
+		query, err := parseUSTCSpeedQueryValues(url.Values{"hourly": {"true"}, "hourly_bucket_minutes": {minutes}}, time.Now())
+		if err != nil {
+			t.Fatalf("hourly_bucket_minutes=%q should be accepted: %v", minutes, err)
+		}
+		if got := fmt.Sprint(query.HourlyBucketMinutes); got != minutes {
+			t.Fatalf("hourly_bucket_minutes = %d, want %s", query.HourlyBucketMinutes, minutes)
+		}
+	}
+	query, err := parseUSTCSpeedQueryValues(url.Values{"hourly": {"true"}}, time.Now())
+	if err != nil {
+		t.Fatalf("default bucket should parse: %v", err)
+	}
+	if query.HourlyBucketMinutes != 60 {
+		t.Fatalf("hourly_bucket_minutes should default to 60, got %d", query.HourlyBucketMinutes)
+	}
+	for _, minutes := range []string{"45", "0", "-15", "abc"} {
+		if _, err := parseUSTCSpeedQueryValues(url.Values{"hourly_bucket_minutes": {minutes}}, time.Now()); err == nil {
+			t.Fatalf("hourly_bucket_minutes=%q should be rejected", minutes)
+		}
+	}
+}
+
 func TestParseUSTCSpeedQueryHourlyMetricIsIndependent(t *testing.T) {
 	// The hourly chart must be able to show end-to-end speed while the trend
 	// chart stays on a latency metric.

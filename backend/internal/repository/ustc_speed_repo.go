@@ -360,9 +360,10 @@ func (r *ustcSpeedRepository) Overview(ctx context.Context, q service.USTCSpeedQ
 	return out, nil
 }
 
-// ustcSpeedHourly aggregates the same filtered calls by local hour of day. The
+// ustcSpeedHourly aggregates the same filtered calls by local time of day. The
 // caller's IANA zone decides the bucket, so a "best time to run work" answer
-// follows the user's clock rather than the database session timezone.
+// follows the user's clock rather than the database session timezone. The
+// bucket width is caller-selectable (15m/30m/1h/2h/4h) and defaults to one hour.
 func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.USTCSpeedQuery, aggregate, where string, args []any, profileExpr string) ([]service.USTCSpeedHourPoint, error) {
 	timezone := strings.TrimSpace(q.Timezone)
 	if timezone == "" {
@@ -371,8 +372,13 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	if _, err := time.LoadLocation(timezone); err != nil {
 		timezone = "UTC"
 	}
-	hourArgs := append(append([]any(nil), args...), timezone)
-	timezoneParam := len(hourArgs)
+	bucketMinutes, ok := service.USTCSpeedHourlyBucketMinutes(q.HourlyBucketMinutes)
+	if !ok {
+		bucketMinutes = 60
+	}
+	hourArgs := append(append([]any(nil), args...), timezone, bucketMinutes)
+	timezoneParam := len(hourArgs) - 1
+	bucketParam := len(hourArgs)
 	// Hourly has its own metric so it can always answer "when is the upstream
 	// fastest?" even while the trend chart shows a latency metric.
 	metric := q.HourlyMetric
@@ -384,7 +390,11 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	}
 	value := speedMetricValue(q, metric)
 	valid := "CASE WHEN status IN ('success','recorded') THEN " + value + " ELSE NULL END"
-	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::int AS hour,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT hour,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY hour,model,source,profile ORDER BY model,source,profile,hour LIMIT 5001`, hourArgs...)
+	// Minutes since local midnight divided by the bucket width yields the
+	// folded slot. DST transitions can repeat or skip a local hour; folding by
+	// wall-clock minutes keeps those calls in the slot the user sees.
+	localMinute := "(EXTRACT(HOUR FROM started_at AT TIME ZONE $" + fmt.Sprint(timezoneParam) + ")*60+EXTRACT(MINUTE FROM started_at AT TIME ZONE $" + fmt.Sprint(timezoneParam) + "))::int"
+	rows, err := r.db.QueryContext(ctx, `WITH observations AS (SELECT `+localMinute+`/$`+fmt.Sprint(bucketParam)+` AS slot,(started_at AT TIME ZONE $`+fmt.Sprint(timezoneParam)+`)::date AS local_day,model,source,`+profileExpr+` AS profile,`+valid+` AS value FROM `+speedObservationTable(q)+` WHERE `+where+`) SELECT slot,model,source,profile,COUNT(*),COUNT(value),COUNT(DISTINCT local_day) FILTER (WHERE value IS NOT NULL),AVG(value),percentile_cont(0.1) WITHIN GROUP(ORDER BY value),percentile_cont(0.5) WITHIN GROUP(ORDER BY value),percentile_cont(0.9) WITHIN GROUP(ORDER BY value),MIN(value),MAX(value) FROM observations GROUP BY slot,model,source,profile ORDER BY model,source,profile,slot LIMIT 5001`, hourArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +402,7 @@ func (r *ustcSpeedRepository) ustcSpeedHourly(ctx context.Context, q service.UST
 	out := []service.USTCSpeedHourPoint{}
 	for rows.Next() {
 		var point service.USTCSpeedHourPoint
-		if err = rows.Scan(&point.Hour, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.DayCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
+		if err = rows.Scan(&point.Slot, &point.Model, &point.Source, &point.Profile, &point.Count, &point.ValidCount, &point.DayCount, &point.Mean, &point.P10, &point.P50, &point.P90, &point.Min, &point.Max); err != nil {
 			return nil, err
 		}
 		switch aggregate {

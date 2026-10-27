@@ -27,7 +27,7 @@ function response(q: any) {
   return { range_start: start, range_end: end.toISOString(), metric: q.metric, interval: q.interval === 'auto' ? '15m' : q.interval,
     aggregate: q.aggregate, group_by: 'model', requested_source: q.source, fallback_applied: false, fallback_window_seconds: 0,
     summary: { samples: 2, successful: q.source === 'probe' ? 2 : 0, failed: 0, skipped: 0, cancelled: 0, rate_limited: 0, real_samples: q.source === 'real' ? 2 : 0, probe_samples: q.source === 'probe' ? 2 : 0, output_tokens: 1024, latest_at: '2026-10-25T04:00:00Z' },
-    series, hourly: [{ ...series[0], hour: 12, day_count: 2 }], truncated: false, dropped_samples: 0,
+    series, hourly: [{ ...series[0], slot: 12, day_count: 2 }], truncated: false, dropped_samples: 0,
   }
 }
 const scopes = { start_date: '2026-10-25', end_date: '2026-10-26', timezone: 'Asia/Shanghai', user_id: 3, api_key_id: 8, account_id: 2, group_id: 5, model: 'model-a', request_type: 'stream' as const, billing_type: 1, native_compaction_v2: true }
@@ -107,7 +107,7 @@ describe('separate usage and benchmark views', () => {
     const api = embedded ? usage : benchmark
     api.mockImplementation(async (q: any) => {
       const result = response(q)
-      result.hourly = Array.from({ length: 10 }, (_, index) => ({ ...result.hourly[0], model: `model-${index}-complete-long-name`, hour: 12 }))
+      result.hourly = Array.from({ length: 10 }, (_, index) => ({ ...result.hourly[0], model: `model-${index}-complete-long-name`, slot: 12 }))
       return result
     })
     const wrapper = render(embedded)
@@ -131,7 +131,7 @@ describe('separate usage and benchmark views', () => {
   it('includes missing-hour models as unavailable and respects hidden legend items', async () => {
     benchmark.mockImplementation(async (q: any) => {
       const result = response(q)
-      result.hourly = Array.from({ length: 10 }, (_, index) => ({ ...result.hourly[0], model: `model-${index}`, hour: index < 5 ? 12 : 8 }))
+      result.hourly = Array.from({ length: 10 }, (_, index) => ({ ...result.hourly[0], model: `model-${index}`, slot: index < 5 ? 12 : 8 }))
       return result
     })
     const wrapper = render()
@@ -203,8 +203,8 @@ describe('separate usage and benchmark views', () => {
     benchmark.mockImplementation(async (q: any) => {
       const out = response(q)
       out.hourly = [
-        { ...out.hourly[0], hour: 10, valid_count: 19, p90: 42 },
-        { ...out.hourly[0], hour: 12, valid_count: 20, p90: 44 },
+        { ...out.hourly[0], slot: 10, valid_count: 19, p90: 42 },
+        { ...out.hourly[0], slot: 12, valid_count: 20, p90: 44 },
       ]
       return out
     })
@@ -291,6 +291,21 @@ describe('separate usage and benchmark views', () => {
     expect(usage.mock.calls.at(-1)?.[0].metric).toBe('overall_tps')
     await wrapper.get('[data-testid="chart-metric"]').setValue('generation_tps'); await flushPromises()
     expect(usage.mock.calls.at(-1)?.[0].metric).toBe('generation_tps')
+  })
+
+  it('adjusts the folded time-of-day bucket width', async () => {
+    const wrapper = render()
+    await flushPromises()
+    expect(benchmark.mock.calls[0][0]).toMatchObject({ hourly_bucket_minutes: 60 })
+    const select = wrapper.get<HTMLSelectElement>('[data-testid="hourly-bucket"]')
+    expect(select.element.value).toBe('60')
+    await select.setValue('15'); await flushPromises()
+    expect(benchmark.mock.calls.at(-1)?.[0]).toMatchObject({ hourly_bucket_minutes: 15 })
+    const hourly = (wrapper.vm as any).hourlyChartData
+    expect(hourly.labels).toHaveLength(96)
+    expect(hourly.labels[0]).toBe('00:00')
+    expect(hourly.labels[1]).toBe('00:15')
+    expect(hourly.labels.at(-1)).toBe('23:45')
   })
 
   it('keeps the hourly metric independent while the main chart shows TTFT', async () => {

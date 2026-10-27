@@ -74,11 +74,12 @@ export default {
       method: '统计直接使用筛选后的全部有效调用，每次调用等权，模型和来源分开；不平均时间桶的均值或分位数。真实生成 TPS 来自使用记录的近似计算，记录首字不区分思考与正文。'
     },
     hourly: {
-      minimumSamples: '此分位数每小时至少需要 {count} 个有效样本。', truncated: '时段数据超过上限，已显示截断提示；请缩小模型或时间范围。',
+      minimumSamples: '此分位数每个时段至少需要 {count} 个有效样本。', truncated: '时段数据超过上限，已显示截断提示；请缩小模型或时间范围。',
       models: '{count} 个模型', noHourData: '该时段无有效观测',
-      title: '调用时段分布', description: '所选时间范围内的调用按本地小时折叠：多天数据合并到同一天，同一时段按当前统计口径汇总。',
+      title: '调用时段分布', description: '所选时间范围内的调用按本地时段折叠：多天数据合并到同一天，同一时段按当前统计口径汇总；时段粒度可调。',
       samples: '{count} 个有效观测', days: '覆盖 {count} 天', noData: '所选范围没有可按时段比较的有效调用。',
-      metric: '指标', metricGeneration: 'TPS（生成速度）', metricOverall: '端到端速度'
+      metric: '指标', metricGeneration: 'TPS（生成速度）', metricOverall: '端到端速度',
+      granularity: '时段粒度', bucket15: '15 分钟', bucket30: '30 分钟', bucket60: '1 小时', bucket120: '2 小时', bucket240: '4 小时'
     },
     stats: {
       skipped: '另有 {count} 项测试被跳过',
