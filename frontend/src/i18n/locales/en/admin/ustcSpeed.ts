@@ -74,11 +74,12 @@ export default {
       method: 'Statistics use all filtered valid calls with equal call weights, separated by model and source. Bucket means and quantiles are never averaged. Real generation TPS is approximated from usage records; recorded first-token timing does not distinguish reasoning from text.'
     },
     hourly: {
-      minimumSamples: 'This percentile needs at least {count} valid samples per hour.', truncated: 'Hourly data was truncated. Narrow the model or time filters.',
-      models: '{count} models', noHourData: 'No valid observations in this hour',
-      title: 'Calls by hour of day', description: 'Calls in the applied range are folded onto one local day; multi-day observations in the same hour are combined with the selected statistic.',
-      samples: '{count} valid observations', days: '{count} days covered', noData: 'No valid calls in this range to compare by hour.',
-      metric: 'Metric', metricGeneration: 'TPS (generation)', metricOverall: 'End-to-end speed'
+      minimumSamples: 'This percentile needs at least {count} valid samples per slot.', truncated: 'Time-of-day data was truncated. Narrow the model or time filters.',
+      models: '{count} models', noHourData: 'No valid observations in this slot',
+      title: 'Calls by time of day', description: 'Calls in the applied range are folded onto one local day; multi-day observations in the same slot are combined with the selected statistic. The bucket width is adjustable.',
+      samples: '{count} valid observations', days: '{count} days covered', noData: 'No valid calls in this range to compare by time of day.',
+      metric: 'Metric', metricGeneration: 'TPS (generation)', metricOverall: 'End-to-end speed',
+      granularity: 'Bucket width', bucket15: '15 minutes', bucket30: '30 minutes', bucket60: '1 hour', bucket120: '2 hours', bucket240: '4 hours'
     },
     stats: {
       skipped: '{count} additional test items were skipped',

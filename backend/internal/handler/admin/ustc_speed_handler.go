@@ -498,6 +498,17 @@ func parseSpeedQuery(c *gin.Context, now time.Time, maxRangeDays int) (service.U
 	if !oneOf(hourlyMetric, "generation_tps", "overall_tps") {
 		return query, errors.New("hourly_metric must be generation_tps or overall_tps")
 	}
+	hourlyBucketMinutes := 60
+	bucket, err := parseOptionalNonNegativeInt(c.Query("hourly_bucket_minutes"), "hourly_bucket_minutes")
+	if err != nil {
+		return query, err
+	}
+	if bucket != nil {
+		if _, ok := service.USTCSpeedHourlyBucketMinutes(*bucket); !ok {
+			return query, errors.New("hourly_bucket_minutes must be 15, 30, 60, 120 or 240")
+		}
+		hourlyBucketMinutes = *bucket
+	}
 	taskID, err := parseOptionalPositiveInt64(c.Query("task_id"), "task_id")
 	if err != nil {
 		return query, err
@@ -545,7 +556,7 @@ func parseSpeedQuery(c *gin.Context, now time.Time, maxRangeDays int) (service.U
 		AccountIDs: accountIDs, TaskID: taskID, Reasoning: reasoning, Stream: stream, Profile: profile,
 		InputMin: inputMin, InputMax: inputMax, OutputMin: outputMin, OutputMax: outputMax,
 		Metric: metric, Interval: interval, Aggregate: aggregate, Limit: limit, Offset: offset,
-		Timezone: timezone, Hourly: hourly, HourlyMetric: hourlyMetric, LastHours: lastHours,
+		Timezone: timezone, Hourly: hourly, HourlyMetric: hourlyMetric, HourlyBucketMinutes: hourlyBucketMinutes, LastHours: lastHours,
 		Analysis: analysis, Comparison: comparison,
 	}
 	return query, nil

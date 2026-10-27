@@ -159,9 +159,12 @@ type USTCSpeedQuery struct {
 	Metric, Interval, Aggregate string
 	Limit, Offset               int
 	// Timezone is the caller's IANA zone. Hourly groups the same filtered calls
-	// by local hour of day so users can pick a faster time to run work.
+	// by local time of day so users can pick a faster time to run work.
 	Timezone string
 	Hourly   bool
+	// HourlyBucketMinutes is the width of one folded time-of-day bucket. Zero or
+	// an unsupported value falls back to 60, the historical hourly view.
+	HourlyBucketMinutes int
 	// HourlyMetric selects the speed metric for the hourly view independently of
 	// the trend chart. It is limited to TPS metrics; empty falls back to Metric
 	// when that is a TPS metric, otherwise to overall_tps.
@@ -231,7 +234,9 @@ type USTCSpeedPoint struct {
 }
 
 type USTCSpeedHourPoint struct {
-	Hour       int    `json:"hour"`
+	// Slot indexes the folded time-of-day bucket: slot 0 covers local 00:00 up
+	// to the bucket width, and the last slot ends at local midnight.
+	Slot       int    `json:"slot"`
 	Model      string `json:"model"`
 	Source     string `json:"source"`
 	Profile    string `json:"profile"`

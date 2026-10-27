@@ -365,7 +365,7 @@ func TestUSTCSpeedOverviewWeightsRequestsAcrossAccounts(t *testing.T) {
 	byHour, err := repo.Overview(ctx, query)
 	require.NoError(t, err)
 	require.Len(t, byHour.Hourly, 1)
-	require.Equal(t, 12, byHour.Hourly[0].Hour)
+	require.Equal(t, 12, byHour.Hourly[0].Slot)
 	require.Equal(t, int64(4), byHour.Hourly[0].Count)
 	require.Equal(t, int64(4), byHour.Hourly[0].ValidCount)
 	require.Equal(t, int64(1), byHour.Hourly[0].DayCount)
@@ -375,7 +375,7 @@ func TestUSTCSpeedOverviewWeightsRequestsAcrossAccounts(t *testing.T) {
 	byLocalHour, err := repo.Overview(ctx, query)
 	require.NoError(t, err)
 	require.Len(t, byLocalHour.Hourly, 1)
-	require.Equal(t, 20, byLocalHour.Hourly[0].Hour, "hourly buckets follow the requested IANA zone")
+	require.Equal(t, 20, byLocalHour.Hourly[0].Slot, "hourly buckets follow the requested IANA zone")
 }
 
 func TestUSTCSpeedOverviewHourlyFoldsDaysAndUsesItsOwnMetric(t *testing.T) {
@@ -415,7 +415,7 @@ func TestUSTCSpeedOverviewHourlyFoldsDaysAndUsesItsOwnMetric(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, overview.Hourly, 1, "both days must fold into one hour-of-day bucket")
 	hour := overview.Hourly[0]
-	require.Equal(t, 10, hour.Hour)
+	require.Equal(t, 10, hour.Slot)
 	require.Equal(t, int64(2), hour.Count, "calls outside the applied range are excluded")
 	require.Equal(t, int64(2), hour.ValidCount)
 	require.Equal(t, int64(2), hour.DayCount)
@@ -429,6 +429,14 @@ func TestUSTCSpeedOverviewHourlyFoldsDaysAndUsesItsOwnMetric(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, byGeneration.Hourly, 1)
 	require.InDelta(t, 30, *byGeneration.Hourly[0].Value, 0.001)
+
+	// A narrower bucket separates calls that share the same local hour: 10:05
+	// falls into slot 40 and 10:40 into slot 42 at a 15-minute width.
+	query.HourlyBucketMinutes = 15
+	byQuarter, err := repo.Overview(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, byQuarter.Hourly, 2, "a finer bucket must split calls that share an hour")
+	require.Equal(t, []int{40, 42}, []int{byQuarter.Hourly[0].Slot, byQuarter.Hourly[1].Slot})
 }
 
 func TestUSTCSpeedRepositoryKeyLeaseCapacityAndOwnerRelease(t *testing.T) {
