@@ -57,6 +57,7 @@ export interface USTCSpeedQuery {
   offset?: number
   hourly?: boolean
   hourly_metric?: 'generation_tps' | 'overall_tps'
+  hourly_bucket_minutes?: USTCSpeedHourlyBucket
   last_hours?: number
 }
 
@@ -131,8 +132,11 @@ export interface USTCSpeedPoint {
   max: number | null
 }
 
+export type USTCSpeedHourlyBucket = 15 | 30 | 60 | 120 | 240
+
 export interface USTCSpeedHourPoint {
-  hour: number
+  /** Folded time-of-day bucket; slot 0 starts at local 00:00. */
+  slot: number
   model: string
   source: string
   profile: string
