@@ -3022,17 +3022,20 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 func (h *AccountHandler) respondAvailableModels(c *gin.Context, account *service.Account) {
 	if account.IsReverse() {
 		var ids []string
-		if h.accountTestService != nil {
-			ids, _ = h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), account)
-		}
-		if len(ids) == 0 {
-			for requested := range account.GetModelMapping() {
+		for requested := range account.GetModelMapping() {
+			if !strings.Contains(requested, "*") {
 				ids = append(ids, requested)
 			}
 		}
+		if len(ids) == 0 && h.accountTestService != nil {
+			ids, _ = h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), account)
+		}
+		sort.Strings(ids)
 		models := make([]openai.Model, 0, len(ids))
 		for _, id := range ids {
-			models = append(models, openai.Model{ID: id, Object: "model", Type: "model", DisplayName: id})
+			if account.IsModelSupported(id) {
+				models = append(models, openai.Model{ID: id, Object: "model", Type: "model", DisplayName: id})
+			}
 		}
 		response.Success(c, models)
 		return
@@ -3326,12 +3329,14 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 // POST /api/v1/admin/accounts/models/sync-upstream-preview
 func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	var req struct {
-		Platform     string            `json:"platform" binding:"required"`
-		Type         string            `json:"type" binding:"required"`
-		BaseURL      string            `json:"base_url"`
-		APIKey       string            `json:"api_key"`
-		ModelMapping map[string]string `json:"model_mapping"`
-		Credentials  map[string]any    `json:"credentials"`
+		Platform           string            `json:"platform" binding:"required"`
+		Type               string            `json:"type" binding:"required"`
+		BaseURL            string            `json:"base_url"`
+		APIKey             string            `json:"api_key"`
+		ModelMapping       map[string]string `json:"model_mapping"`
+		Credentials        map[string]any    `json:"credentials"`
+		ReverseLoginTicket string            `json:"reverse_login_ticket"`
+		ProxyID            *int64            `json:"proxy_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -3360,6 +3365,30 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		Platform:    req.Platform,
 		Type:        req.Type,
 		Credentials: credentials,
+	}
+	if service.IsReversePlatform(req.Platform) {
+		if h.reverseGateway == nil {
+			response.ErrorFrom(c, service.ErrReverseGatewayUnavailable)
+			return
+		}
+		var err error
+		tempAccount, err = h.reverseGateway.PreviewAccount(req.Platform, credentials, req.ReverseLoginTicket)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+	} else if strings.TrimSpace(req.ReverseLoginTicket) != "" {
+		response.ErrorFrom(c, service.ErrReverseLoginPlatformMismatch)
+		return
+	}
+	if req.ProxyID != nil && *req.ProxyID > 0 {
+		proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID)
+		if err != nil || proxy == nil {
+			response.BadRequest(c, "Invalid proxy")
+			return
+		}
+		tempAccount.ProxyID = req.ProxyID
+		tempAccount.Proxy = proxy
 	}
 
 	if h.accountTestService == nil {

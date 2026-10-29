@@ -113,6 +113,28 @@ func TestAccountHandlerGetAvailableModels_GrokUsesXAIModels(t *testing.T) {
 	require.Equal(t, "grok-4.3", resp.Data[0].ID)
 }
 
+func TestAccountHandlerGetAvailableModels_ReverseUsesConfiguredAliases(t *testing.T) {
+	svc := &availableModelsAdminService{stubAdminService: newStubAdminService(), account: service.Account{
+		ID: 47, Platform: service.PlatformQoderGlobal, Type: service.AccountTypeReverse,
+		Credentials: map[string]any{"model_mapping": map[string]any{"client-alias": "upstream-model", "selected-model": "selected-model", "other-*": "fallback-model"}},
+	}}
+	router := setupAvailableModelsRouter(svc)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/47/models", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &result))
+	var ids []string
+	for _, model := range result.Data {
+		ids = append(ids, model.ID)
+	}
+	require.Equal(t, []string{"client-alias", "selected-model"}, ids)
+}
+
 func TestAccountHandlerGetAvailableModels_GrokDefaultsToXAIModelsWithoutMapping(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
@@ -490,6 +512,35 @@ func TestAccountHandlerSyncUpstreamModelsPreviewUsesProvidedModelMapping(t *test
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, []string{"glm-5.3"}, resp.Data.Models)
 	require.Equal(t, []string{"low", "high"}, resp.Data.Metadata["glm-5.3"].SupportedReasoningLevels)
+}
+
+type reversePreviewProxyAdminService struct{ service.AdminService }
+
+func (*reversePreviewProxyAdminService) GetProxy(context.Context, int64) (*service.Proxy, error) {
+	return nil, nil
+}
+
+func TestAccountHandlerReverseModelPreviewValidatesCredentialsAndProxy(t *testing.T) {
+	for _, payload := range []string{
+		`{"platform":"qoder_cn","type":"reverse"}`,
+		`{"platform":"qoder_cn","type":"reverse","reverse_login_ticket":"invalid-ticket"}`,
+		`{"platform":"openai","type":"apikey","reverse_login_ticket":"wrong-platform"}`,
+		`{"platform":"workbuddy_cn","type":"reverse","credentials":{"access_token":"test-private-token"},"proxy_id":9999}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			handler := NewAccountHandler(&reversePreviewProxyAdminService{newStubAdminService()}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			handler.SetReverseGateway(service.NewReverseGateway(nil))
+			router := gin.New()
+			router.POST("/preview", handler.SyncUpstreamModelsPreview)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/preview", strings.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			require.NotContains(t, recorder.Body.String(), "test-private-token")
+		})
+	}
 }
 
 func TestAccountHandlerSyncUpstreamModels_UpstreamErrorDoesNotExposeBody(t *testing.T) {
