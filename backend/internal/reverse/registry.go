@@ -1,6 +1,16 @@
 package reverse
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
+
+// CacheCleaner is implemented by providers that keep in-memory caches keyed by
+// account. The gateway calls it periodically so deleted or rotated accounts do
+// not accumulate entries for the lifetime of the process.
+type CacheCleaner interface {
+	CleanupCaches(now time.Time)
+}
 
 // Registry maps provider names (qoder / workbuddy) to implementations.
 type Registry struct {
@@ -41,4 +51,16 @@ func (r *Registry) Login(name string) (LoginProvider, bool) {
 	}
 	login, ok := provider.(LoginProvider)
 	return login, ok
+}
+
+// CleanupCaches asks every registered provider to drop expired cache entries.
+func (r *Registry) CleanupCaches(now time.Time) {
+	if r == nil {
+		return
+	}
+	for _, provider := range r.providers {
+		if cleaner, ok := provider.(CacheCleaner); ok {
+			cleaner.CleanupCaches(now)
+		}
+	}
 }

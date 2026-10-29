@@ -61,6 +61,11 @@ const (
 
 	modelCacheTTL = 10 * time.Minute
 
+	// degradedPromptTTL bounds how long a content-policy downgrade sticks. The
+	// marker exists to avoid retrying a rejected prompt forever; after a day a
+	// fresh attempt is reasonable, and the entry stops pinning account state.
+	degradedPromptTTL = 24 * time.Hour
+
 	loginSessionTTL = 15 * time.Minute
 )
 
@@ -115,7 +120,7 @@ type Provider struct {
 	mu            sync.Mutex
 	catalogs      map[string]cachedCatalog
 	efforts       map[string]map[string]modelEfforts
-	degraded      map[int64]string
+	degraded      map[int64]degradedPrompt
 	clientFactory func(*reverse.Account) *http.Client
 }
 
@@ -123,6 +128,13 @@ type cachedCatalog struct {
 	models    []reverse.Model
 	fetchedAt time.Time
 	lastFail  time.Time
+}
+
+// degradedPrompt records the prompt fingerprint that last tripped the content
+// policy for an account, plus when it happened so the entry can be expired.
+type degradedPrompt struct {
+	key string
+	at  time.Time
 }
 
 // modelEfforts is the reasoning-effort capability of one model.
@@ -134,6 +146,7 @@ type modelEfforts struct {
 var (
 	_ reverse.Provider      = (*Provider)(nil)
 	_ reverse.LoginProvider = (*Provider)(nil)
+	_ reverse.CacheCleaner  = (*Provider)(nil)
 )
 
 // New builds the WorkBuddy provider.
@@ -141,6 +154,7 @@ func New() reverse.Provider {
 	return &Provider{
 		catalogs: map[string]cachedCatalog{},
 		efforts:  map[string]map[string]modelEfforts{},
+		degraded: map[int64]degradedPrompt{},
 	}
 }
 
@@ -153,6 +167,38 @@ func (p *Provider) client(acc *reverse.Account) *http.Client {
 		return reverse.HTTPClient("")
 	}
 	return reverse.HTTPClient(acc.ProxyURL)
+}
+
+// CleanupCaches drops catalogs, effort tables and degraded-prompt markers that
+// are past their TTL. Live accounts refetch on demand; the point is to stop
+// deleted or rotated accounts from accumulating entries forever.
+func (p *Provider) CleanupCaches(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, entry := range p.catalogs {
+		// Keep a stale catalog while its failure window is still active: that is
+		// the last-good fallback ListModels serves after a failed probe. Evict
+		// only once both timestamps are stale, which is also when a deleted
+		// account has stopped refreshing either of them.
+		staleFetch := entry.fetchedAt.IsZero() || now.Sub(entry.fetchedAt) >= modelCacheTTL
+		staleFail := entry.lastFail.IsZero() || now.Sub(entry.lastFail) >= modelCacheFailWindow
+		if staleFetch && staleFail {
+			delete(p.catalogs, key)
+			delete(p.efforts, key)
+		}
+	}
+	// Effort tables are published just after their catalog; drop any that lost
+	// their catalog entry so the two maps cannot drift apart.
+	for key := range p.efforts {
+		if _, ok := p.catalogs[key]; !ok {
+			delete(p.efforts, key)
+		}
+	}
+	for id, entry := range p.degraded {
+		if entry.at.IsZero() || now.Sub(entry.at) >= degradedPromptTTL {
+			delete(p.degraded, id)
+		}
+	}
 }
 
 // apiCall sends a request, reads a bounded body and unwraps the

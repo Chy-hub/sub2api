@@ -44,6 +44,7 @@ type Provider struct {
 var (
 	_ reverse.Provider      = (*Provider)(nil)
 	_ reverse.LoginProvider = (*Provider)(nil)
+	_ reverse.CacheCleaner  = (*Provider)(nil)
 )
 
 // New builds a Qoder provider with empty session and model caches.
@@ -87,6 +88,24 @@ func (p *Provider) invalidateBridge(accountID int64) {
 	p.mu.Lock()
 	delete(p.bridges, accountID)
 	p.mu.Unlock()
+}
+
+// CleanupCaches drops bridge sessions and model catalogs past their TTL. Both
+// are rebuilt on demand, so deleting an expired entry changes nothing for a
+// live account; it only stops deleted accounts from lingering forever.
+func (p *Provider) CleanupCaches(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id, entry := range p.bridges {
+		if entry == nil || now.Sub(entry.createdAt) >= bridgeTTL {
+			delete(p.bridges, id)
+		}
+	}
+	for id, entry := range p.models {
+		if entry == nil || now.Sub(entry.fetchedAt) >= modelCacheTTL {
+			delete(p.models, id)
+		}
+	}
 }
 
 // invalidateOnAuthError drops the cached cosy session when the upstream
