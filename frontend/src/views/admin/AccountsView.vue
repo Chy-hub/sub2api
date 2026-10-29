@@ -460,7 +460,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @checkin="handleCheckin" @reverse-manage="handleEdit" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -2458,6 +2458,16 @@ const handleRefresh = async (a: Account) => {
     if (result.warning) appStore.showWarning(result.message)
   } catch (error) {
     console.error('Failed to refresh credentials:', error)
+  }
+}
+const handleCheckin = async (a: Account) => {
+  try {
+    const outcome = await adminAPI.accounts.checkinAccount(a.id)
+    if (outcome.result?.success) appStore.showSuccess(outcome.result.message || t('admin.accounts.reverse.checkinSuccess'))
+    else appStore.showError(outcome.result?.message || t('admin.accounts.reverse.checkinFailed'))
+    reload()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.accounts.reverse.checkinFailed'))
   }
 }
 const handleRecoverState = async (a: Account) => {

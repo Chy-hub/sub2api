@@ -353,6 +353,33 @@ describe('EditAccountModal', () => {
     regularWrapper.unmount()
   })
 
+  it('preserves saved reverse secrets and runtime state while editing account settings', async () => {
+    const account = { ...buildAccount(), platform: 'workbuddy_cn', type: 'reverse', credentials: { uid: 'u1', machine_id: 'machine-1', session_id: 'session-1', client_version: '7.0', domain: 'www.workbuddy.cn' }, credentials_status: { has_access_token: true, has_refresh_token: true, has_device_token: true, has_machine_salt: true }, extra: { reverse_sanitize_fingerprints: false, reverse_checkin: { status: 'failed' }, reverse_tasks: { success: false }, reverse_quota: { updated_at: 'saved' }, reverse_task_hours: { travel: [8, 20] } } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload.credentials).toMatchObject({ uid: 'u1', machine_id: 'machine-1', session_id: 'session-1', client_version: '7.0' })
+    for (const key of ['access_token', 'refresh_token', 'device_token', 'machine_salt']) expect(payload.credentials).not.toHaveProperty(key)
+    expect(payload.extra).toMatchObject({ reverse_sanitize_fingerprints: false, reverse_auto_tasks: false, reverse_checkin: { status: 'failed' }, reverse_tasks: { success: false }, reverse_quota: { updated_at: 'saved' }, reverse_task_hours: { travel: [8, 20] } })
+    wrapper.unmount()
+  })
+
+  it('explicitly clears the saved Qoder machine pair when requested', async () => {
+    const account = { ...buildAccount(), platform: 'qoder_global', type: 'reverse', credentials: { uid: 'u1', machine_type: 'saved-type', machine_code: 'saved-code' }, credentials_status: { has_access_token: true, has_machine_token: true } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    const fields = wrapper.findComponent({ name: 'ReverseAccountFields' })
+    fields.vm.$emit('update:modelValue', { ...fields.props('modelValue'), clear_machine_identity: true, machine_token: '', machine_type: '', machine_code: '' })
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials.machine_token).toBe('')
+    expect(credentials).not.toHaveProperty('machine_type')
+    expect(credentials).not.toHaveProperty('machine_code')
+    expect(credentials).not.toHaveProperty('access_token')
+    wrapper.unmount()
+  })
+
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()
     account.credentials.model_mapping = { 'gpt-5.2': 'gpt-5.2', 'gpt-latest': 'deepseek-chat' }

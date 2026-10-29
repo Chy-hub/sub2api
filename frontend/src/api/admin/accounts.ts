@@ -699,8 +699,9 @@ export interface SyncUpstreamPreviewParams {
   platform: string
   type: string
   base_url?: string
-  api_key: string
+  api_key?: string
   model_mapping?: Record<string, string>
+  credentials?: Record<string, unknown>
 }
 
 /**
@@ -710,6 +711,112 @@ export interface SyncUpstreamPreviewParams {
  */
 export async function syncUpstreamModelsPreview(params: SyncUpstreamPreviewParams): Promise<SyncUpstreamModelsResult> {
   const { data } = await apiClient.post<SyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-preview', params)
+  return data
+}
+
+export interface ReverseLoginStartResult {
+  session_id: string
+  login_url: string
+  expires_at: string
+}
+
+export interface ReverseLoginProfile {
+  uid?: string
+  nickname?: string
+  email?: string
+  domain?: string
+  enterprise_id?: string
+  user_type?: string
+  plan?: string
+}
+
+export interface ReverseLoginPollResult {
+  pending: boolean
+  login_ticket?: string
+  profile?: ReverseLoginProfile
+  account?: Account
+}
+
+export async function startReverseLogin(params: { platform?: string; account_id?: number; proxy_id?: number }): Promise<ReverseLoginStartResult> {
+  const { data } = await apiClient.post<ReverseLoginStartResult>('/admin/accounts/reverse/login/start', params)
+  return data
+}
+
+export async function pollReverseLogin(sessionId: string): Promise<ReverseLoginPollResult> {
+  const { data } = await apiClient.get<ReverseLoginPollResult>('/admin/accounts/reverse/login/poll', {
+    params: { session_id: sessionId }
+  })
+  return data
+}
+
+export interface ReverseCheckinResult {
+  result?: {
+    success?: boolean
+    message?: string
+    reward?: string
+    date?: string
+  }
+  checkin?: Record<string, unknown>
+}
+
+export async function checkinAccount(id: number): Promise<ReverseCheckinResult> {
+  const { data } = await apiClient.post<ReverseCheckinResult>(`/admin/accounts/${id}/checkin`)
+  return data
+}
+
+export interface ReverseQuota {
+  subscription?: { plan?: string; tierName?: string }
+  summary?: Array<{ key: string; label: string; value: number; unit?: string }>
+  groups?: Array<{ displayName?: string; buckets?: Array<{ window?: string; remainingFraction: number; resetTime?: string; description?: string }> }>
+}
+
+export interface ReverseTaskSpec {
+  kind: string
+  label: string
+  description?: string
+  default_hours?: number[]
+  after_checkin?: boolean
+  uses_chat?: boolean
+}
+
+export interface ReverseTaskItem {
+  code: string
+  run_code?: string
+  title: string
+  current: number
+  target: number
+  uses_chat: boolean
+}
+
+export interface ReverseTaskOutcome {
+  started_at: string
+  finished_at: string
+  success: boolean
+  message?: string
+  results?: Array<{ code: string; status: string; message: string; credit: number; energy: number; progress?: string }>
+}
+
+export interface ReverseTasksOverview {
+  specs: ReverseTaskSpec[]
+  inspection: { items: ReverseTaskItem[]; in_period: boolean }
+  status: { error?: string; in_period?: boolean; chances?: unknown; tasks?: Array<{ code: string; title: string; status: string; progress: number; target: number }> }
+  last_run?: ReverseTaskOutcome
+}
+
+export interface ReverseTaskRequest { action: 'run' | 'all' | 'scheduled'; code?: string; kind?: string }
+
+export async function getReverseQuota(id: number): Promise<ReverseQuota> {
+  const { data } = await apiClient.get<ReverseQuota>(`/admin/accounts/${id}/reverse/quota`, { timeout: 90000 })
+  return data
+}
+
+export async function getReverseTasks(id: number): Promise<ReverseTasksOverview> {
+  const { data } = await apiClient.get<ReverseTasksOverview>(`/admin/accounts/${id}/reverse/tasks`, { timeout: 120000 })
+  return data
+}
+
+export async function runReverseTask(id: number, request: ReverseTaskRequest): Promise<ReverseTaskOutcome> {
+  const { data } = await apiClient.post<ReverseTaskOutcome>(`/admin/accounts/${id}/reverse/tasks`, request, { timeout: 660000 })
   return data
 }
 
@@ -1217,6 +1324,12 @@ export const accountsAPI = {
   getAvailableModels,
   syncUpstreamModels,
   syncUpstreamModelsPreview,
+  checkinAccount,
+  getReverseQuota,
+  getReverseTasks,
+  runReverseTask,
+  startReverseLogin,
+  pollReverseLogin,
   generateAuthUrl,
   exchangeCode,
   refreshOpenAIToken,

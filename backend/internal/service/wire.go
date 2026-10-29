@@ -268,6 +268,7 @@ func ProvideAccountTestService(
 	openAIGatewayService *OpenAIGatewayService,
 	settingService *SettingService,
 	pluginManager *PluginManager,
+	reverseGateway *ReverseGateway,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -283,6 +284,8 @@ func ProvideAccountTestService(
 	service.SetOpenAIGatewayService(openAIGatewayService)
 	service.SetSettingService(settingService)
 	service.SetPluginManager(pluginManager)
+	service.SetReverseGateway(reverseGateway)
+	openAIGatewayService.SetReverseGateway(reverseGateway)
 	return service
 }
 
@@ -421,6 +424,21 @@ func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *Timing
 // ProvideAccountExpiryService creates and starts AccountExpiryService.
 func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
 	svc := NewAccountExpiryService(accountRepo, time.Minute)
+	svc.Start()
+	return svc
+}
+
+// ProvideReverseGateway builds the built-in reverse adapters.
+func ProvideReverseGateway(accountRepo AccountRepository, lockCache LeaderLockCache, db *sql.DB) *ReverseGateway {
+	gateway := NewReverseGateway(accountRepo)
+	gateway.lockCache = lockCache
+	gateway.lockDB = db
+	return gateway
+}
+
+// ProvideReverseCheckinScheduler creates and starts the daily reverse check-in scheduler.
+func ProvideReverseCheckinScheduler(accountRepo AccountRepository, gateway *ReverseGateway) *ReverseCheckinScheduler {
+	svc := NewReverseCheckinScheduler(accountRepo, gateway, reverseCheckinInterval)
 	svc.Start()
 	return svc
 }
@@ -972,6 +990,8 @@ var ProviderSet = wire.NewSet(
 	ProvideTokenRefreshService,
 	wire.Bind(new(GrokOAuthReconciler), new(*TokenRefreshService)),
 	ProvideAccountExpiryService,
+	ProvideReverseGateway,
+	ProvideReverseCheckinScheduler,
 	ProvideOpenAICodexVersionSyncService,
 	ProvideClaudeCodeVersionSyncService,
 	ProvideProxyExpiryService,

@@ -318,6 +318,11 @@ func (a *Account) IsOpenAICompatible() bool {
 	return a != nil && domain.UsesOpenAIGateway(a.Platform)
 }
 
+// IsReverse 报告账号是否由内置反代适配层转发。
+func (a *Account) IsReverse() bool {
+	return a != nil && (a.Type == AccountTypeReverse || domain.IsReversePlatform(a.Platform))
+}
+
 func (a *Account) GeminiOAuthType() string {
 	if a.Platform != PlatformGemini || a.Type != AccountTypeOAuth {
 		return ""
@@ -1435,7 +1440,7 @@ func (a *Account) IsAPIKeyOrBedrock() bool {
 // 在 apikey/bedrock 之外额外放开 Vertex service_account；池模式等其它特性仍只看 IsAPIKeyOrBedrock。
 func AccountTypeSupportsQuota(accountType string) bool {
 	switch strings.ToLower(accountType) {
-	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount:
+	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount, AccountTypeReverse:
 		return true
 	}
 	return false
@@ -1847,6 +1852,9 @@ func (a *Account) GetOpenAIApiKey() string {
 func (a *Account) GetOpenAIProtocolAPIKey() string {
 	if a == nil {
 		return ""
+	}
+	if a.IsReverse() {
+		return strings.TrimSpace(a.GetCredential("access_token"))
 	}
 	if a.IsMultiProtocolAPIKey() {
 		if a.Type != AccountTypeAPIKey {

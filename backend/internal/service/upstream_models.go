@@ -802,6 +802,55 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 		return nil, nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
 
+	if account.IsReverse() {
+		if s.reverseGateway == nil {
+			return nil, nil, nil, newUpstreamModelSyncConfigError("Reverse gateway is not configured", nil)
+		}
+		models, err := s.reverseGateway.ListModels(ctx, account)
+		if err != nil {
+			return nil, nil, nil, newUpstreamModelSyncUpstreamError("Failed to fetch reverse model list", err)
+		}
+		ids := make([]string, 0, len(models))
+		entries := make([]map[string]any, 0, len(models))
+		for _, model := range models {
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				continue
+			}
+			ids = append(ids, id)
+			encoded, _ := json.Marshal(model)
+			entry := map[string]any{}
+			_ = json.Unmarshal(encoded, &entry)
+			entry["id"] = id
+			// Translate provider capability names into the gateway's native
+			// catalog schema; otherwise only IDs and output limits survive sync.
+			entry["context_window"] = model.ContextLength
+			reasoning := model.SupportsReasoning
+			for _, effort := range append(append([]string(nil), model.Efforts...), model.DefaultEffort) {
+				if effort != "" && effort != "none" {
+					reasoning = true
+				}
+			}
+			entry["reasoning"] = reasoning
+			entry["default_reasoning_level"] = model.DefaultEffort
+			entry["supported_reasoning_levels"] = model.Efforts
+			modalities := []string{"text"}
+			if model.SupportsImages {
+				modalities = append(modalities, "image")
+			}
+			entry["input_modalities"] = modalities
+			if display := strings.TrimSpace(model.DisplayName); display != "" {
+				entry["display_name"] = display
+			}
+			entries = append(entries, entry)
+		}
+		if len(ids) == 0 {
+			return nil, nil, nil, newUpstreamModelSyncUpstreamError("Reverse upstream returned no supported models", nil)
+		}
+		body, _ := json.Marshal(map[string]any{"object": "list", "data": entries})
+		return ids, body, nil, nil
+	}
+
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		models, body, err := s.fetchAntigravityOAuthUpstreamModels(ctx, account)
 		return models, body, nil, err

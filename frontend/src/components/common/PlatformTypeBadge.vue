@@ -109,6 +109,8 @@ const typeLabel = computed(() => {
       return 'AWS'
     case 'service_account':
       return 'Agent Platform (Vertex)'
+    case 'reverse':
+      return 'Reverse'
     default:
       return props.type
   }

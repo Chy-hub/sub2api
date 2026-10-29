@@ -7,6 +7,11 @@ var SensitiveCredentialKeys = []string{
 	"access_token", "refresh_token", "id_token", "agent_private_key",
 	// API Key 类
 	"api_key", "session_key", "cookie",
+	// 反代平台（Qoder / WorkBuddy）
+	"device_token", "machine_token", "machine_salt",
+	"accessToken", "refreshToken", "deviceToken", "machineToken", "machineSalt",
+	"qoder_machine_token", "workbuddy_device_token", "token", "personal_token", "personalToken",
+	"qoder_token", "pat", "secret",
 	// Grok Web SSO / password (must never persist or echo after Build OAuth)
 	"password", "sso_token", "sso", "sso-rw", "clearTextPassword",
 	// 云服务凭据

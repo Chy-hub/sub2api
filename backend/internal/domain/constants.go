@@ -37,8 +37,14 @@ const (
 	PlatformCommandCode = "command_code"
 	// PlatformCline 是 Cline API（多模型聚合，OpenAI 兼容 Chat Completions；按量积分计费，
 	// 另有 ClinePass 订阅）。
-	PlatformCline     = "cline"
-	PlatformComposite = "composite"
+	PlatformCline = "cline"
+	// 反代平台：由本项目内置的反代适配层对接上游（Qoder cosy 协议 / WorkBuddy
+	// Chat Completions）。CN 与 Global 是独立部署，凭证与模型目录不通用。
+	PlatformQoderCN         = "qoder_cn"
+	PlatformQoderGlobal     = "qoder_global"
+	PlatformWorkbuddyCN     = "workbuddy_cn"
+	PlatformWorkbuddyGlobal = "workbuddy_global"
+	PlatformComposite       = "composite"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
@@ -68,6 +74,7 @@ const (
 	AccountTypeUpstream       = "upstream"        // 上游透传类型账号（通过 Base URL + API Key 连接上游）
 	AccountTypeBedrock        = "bedrock"         // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
 	AccountTypeServiceAccount = "service_account" // Google Service Account 类型账号（用于 Vertex AI）
+	AccountTypeReverse        = "reverse"         // 反代类型账号（网页登录或粘贴 token，经内置反代适配层转发）
 )
 
 // Redeem type constants
