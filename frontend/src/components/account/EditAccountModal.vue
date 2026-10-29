@@ -887,9 +887,9 @@
         </div>
       </div>
 
-      <!-- OpenAI/Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
+      <!-- OAuth 和反代账号共用独立的模型白名单 / 映射区域。 -->
       <div
-        v-if="(account.platform === 'openai' || account.platform === 'grok') && account.type === 'oauth'"
+        v-if="((account.platform === 'openai' || account.platform === 'grok') && account.type === 'oauth') || isReverseAccount"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
         :data-testid="account.platform === 'grok' ? 'grok-model-settings' : undefined"
       >
@@ -5132,7 +5132,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     editBaseUrl.value = platformDefaultUrl
 
     // Load model mappings for OpenAI/Grok OAuth accounts
-    if ((newAccount.platform === 'openai' || newAccount.platform === 'grok') && newAccount.credentials) {
+    if ((newAccount.platform === 'openai' || newAccount.platform === 'grok' || isReversePlatformValue(newAccount.platform)) && newAccount.credentials) {
       const oauthCredentials = newAccount.credentials as Record<string, unknown>
       loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
     } else {
@@ -5815,6 +5815,9 @@ const handleSubmit = async () => {
       assignPlain('enterprise_id', reverseEditForm.enterprise_id)
       assignPlain('nickname', reverseEditForm.nickname)
       assignPlain('domain', reverseEditForm.domain)
+      const modelMapping = buildModelRestrictionMapping()
+      if (modelMapping) newCredentials.model_mapping = modelMapping
+      else delete newCredentials.model_mapping
       updatePayload.credentials = newCredentials
 
       const currentExtra = (props.account.extra as Record<string, unknown>) || {}

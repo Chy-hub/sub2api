@@ -380,6 +380,30 @@ describe('EditAccountModal', () => {
     wrapper.unmount()
   })
 
+  it.each(['qoder_cn', 'qoder_global', 'workbuddy_cn', 'workbuddy_global'])('loads and saves model restrictions for %s without losing mappings', async platform => {
+    const account = { ...buildAccount(), platform, type: 'reverse', credentials: { uid: 'user', model_mapping: { 'old-model': 'old-model', 'client-alias': 'upstream-model' } }, credentials_status: { has_access_token: true } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
+    expect(selector.props('modelValue')).toEqual(['old-model'])
+    expect(selector.props('modelMappings')).toEqual([{ from: 'client-alias', to: 'upstream-model' }])
+    selector.vm.$emit('update:modelValue', ['new-model'])
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({ 'new-model': 'new-model', 'client-alias': 'upstream-model' })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('access_token')
+    wrapper.unmount()
+  })
+
+  it('can clear all reverse model restrictions', async () => {
+    const account = { ...buildAccount(), platform: 'workbuddy_cn', type: 'reverse', credentials: { model_mapping: { 'old-model': 'old-model' } } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    wrapper.getComponent(ModelWhitelistSelectorStub).vm.$emit('update:modelValue', [])
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('model_mapping')
+    wrapper.unmount()
+  })
+
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()
     account.credentials.model_mapping = { 'gpt-5.2': 'gpt-5.2', 'gpt-latest': 'deepseek-chat' }

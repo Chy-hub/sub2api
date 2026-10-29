@@ -2518,9 +2518,9 @@
         </div>
       </div>
 
-      <!-- OpenAI OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
+      <!-- OAuth 和反代账号共用独立的模型白名单 / 映射区域。 -->
       <div
-        v-if="(form.platform === 'openai' || form.platform === 'grok') && isOAuthFlow"
+        v-if="((form.platform === 'openai' || form.platform === 'grok') && isOAuthFlow) || isReversePlatformValue(form.platform)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
@@ -2569,7 +2569,7 @@
               v-model="allowedModels"
               :model-mappings="modelMappings"
               :platform="form.platform"
-              :sync-credentials="syncPreviewCredentials"
+              :sync-credentials="isReversePlatformValue(form.platform) ? reverseSyncPreviewCredentials : syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
             />
             <p class="text-xs text-gray-500 dark:text-gray-400">
@@ -5129,6 +5129,32 @@ const reverseFormModel = computed({
 const reverseLoginTicket = ref('')
 const reverseLoginProfile = ref<import('@/api/admin/accounts').ReverseLoginProfile | null>(null)
 
+function buildReverseCredentials(): Record<string, unknown> {
+  const credentials: Record<string, unknown> = {}
+  for (const key of ['access_token', 'refresh_token', 'uid', 'machine_id', 'machine_token', 'machine_type', 'machine_code', 'user_type', 'device_token', 'session_id', 'enterprise_id', 'nickname', 'domain', 'desktop_version', 'machine_salt', 'user_agent', 'client_version', 'cli_version', 'client_name'] as const) {
+    const value = reverseForm[key].trim()
+    if (value) credentials[key] = value
+  }
+  if (reverseLoginTicket.value) {
+    delete credentials.access_token
+    delete credentials.refresh_token
+  }
+  const mapping = buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
+  if (mapping) credentials.model_mapping = mapping
+  return credentials
+}
+
+const reverseSyncPreviewCredentials = computed(() => {
+  if (!reverseLoginTicket.value && !reverseForm.access_token.trim()) return undefined
+  return {
+    platform: form.platform,
+    type: 'reverse',
+    credentials: buildReverseCredentials(),
+    reverse_login_ticket: reverseLoginTicket.value || undefined,
+    proxy_id: form.proxy_id ?? undefined
+  }
+})
+
 function resetReverseForm() {
   Object.assign(reverseForm, emptyReverseForm())
   reverseLoginTicket.value = ''
@@ -6072,31 +6098,13 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
     }
-    const credentials: Record<string, unknown> = {}
-    const assignCredential = (key: string, value: string) => {
-      const trimmed = value.trim()
-      if (trimmed) credentials[key] = trimmed
-    }
+    const credentials = buildReverseCredentials()
     if (!reverseLoginTicket.value) {
       if (!reverseForm.access_token.trim()) {
         appStore.showError(t('admin.accounts.reverse.accessTokenRequired'))
         return
       }
-      assignCredential('access_token', reverseForm.access_token)
-      assignCredential('refresh_token', reverseForm.refresh_token)
     }
-    assignCredential('uid', reverseForm.uid)
-    assignCredential('machine_id', reverseForm.machine_id)
-    assignCredential('machine_token', reverseForm.machine_token)
-    assignCredential('machine_type', reverseForm.machine_type)
-    assignCredential('machine_code', reverseForm.machine_code)
-    assignCredential('user_type', reverseForm.user_type)
-    assignCredential('device_token', reverseForm.device_token)
-    assignCredential('session_id', reverseForm.session_id)
-    assignCredential('enterprise_id', reverseForm.enterprise_id)
-    assignCredential('nickname', reverseForm.nickname)
-    assignCredential('domain', reverseForm.domain)
-    for (const key of ['desktop_version', 'machine_salt', 'user_agent', 'client_version', 'cli_version', 'client_name'] as const) assignCredential(key, reverseForm[key])
     const extra: Record<string, unknown> = {
       auto_checkin: reverseForm.auto_checkin,
       reverse_auto_refresh: reverseForm.auto_refresh

@@ -691,13 +691,37 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       desktop_version: '1.2.3'
     })
     await wrapper.get('form#create-account-form input[type="text"]').setValue('reverse account')
+    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
+    expect(selector.props('syncCredentials')).toMatchObject({ platform, type: 'reverse', credentials: { access_token: 'account-access', machine_token: 'account-machine' } })
+    await selector.trigger('click')
+    await selectButtonByText(wrapper, 'admin.accounts.modelMapping')
+    await selectButtonByText(wrapper, 'admin.accounts.addMapping')
+    await wrapper.get('input[placeholder="admin.accounts.requestModel"]').setValue('client-alias')
+    await wrapper.get('input[placeholder="admin.accounts.actualModel"]').setValue('upstream-model')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
     const payload = createAccountMock.mock.calls[0]?.[0]
     expect(payload).toMatchObject({ platform, type: 'reverse', credentials: { access_token: 'account-access', refresh_token: 'account-refresh', machine_token: 'account-machine', machine_type: 'account-type', desktop_version: '1.2.3' }, extra: { auto_checkin: false, reverse_auto_refresh: false } })
+    expect(payload.credentials.model_mapping).toEqual({ 'public-glm': 'public-glm', 'client-alias': 'upstream-model' })
     if (platform.startsWith('workbuddy_')) {
       expect(payload.extra).toMatchObject({ reverse_sanitize_fingerprints: true, reverse_auto_tasks: false, reverse_passthrough_ip: false })
     }
+    wrapper.unmount()
+  })
+
+  it('previews and saves reverse models with a browser login ticket without exposing tokens', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-button-qoder_global"]').trigger('click')
+    wrapper.getComponent({ name: 'ReverseAccountFields' }).vm.$emit('login-success', { ticket: 'login-ticket', profile: { uid: 'qoder-user' } })
+    await flushPromises()
+    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
+    expect(selector.props('syncCredentials')).toMatchObject({ platform: 'qoder_global', type: 'reverse', reverse_login_ticket: 'login-ticket' })
+    expect(selector.props('syncCredentials').credentials).not.toHaveProperty('access_token')
+    await selector.trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('browser account')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({ reverse_login_ticket: 'login-ticket', credentials: { model_mapping: { 'public-glm': 'public-glm' } } })
     wrapper.unmount()
   })
 

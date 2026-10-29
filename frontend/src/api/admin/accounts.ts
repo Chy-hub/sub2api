@@ -702,6 +702,8 @@ export interface SyncUpstreamPreviewParams {
   api_key?: string
   model_mapping?: Record<string, string>
   credentials?: Record<string, unknown>
+  reverse_login_ticket?: string
+  proxy_id?: number
 }
 
 /**

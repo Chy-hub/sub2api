@@ -22,6 +22,7 @@ type reverseFixtureProvider struct {
 	forward      func(context.Context, *reverse.Account, []byte, bool) (*http.Response, error)
 	checkin      *reverse.CheckinResult
 	models       []reverse.Model
+	testModel    string
 	run          func(context.Context, *reverse.Account, string) (reverse.TaskRunResult, error)
 	scheduled    func(context.Context, *reverse.Account, string) (string, error)
 	refreshCalls int
@@ -44,7 +45,8 @@ func (p *reverseFixtureProvider) Refresh(context.Context, *reverse.Account) (map
 	p.refreshCalls++
 	return map[string]any{"access_token": "new-access", "refresh_token": "new-refresh"}, nil
 }
-func (*reverseFixtureProvider) Test(context.Context, *reverse.Account, string, string) (*reverse.TestResult, error) {
+func (p *reverseFixtureProvider) Test(_ context.Context, _ *reverse.Account, model, _ string) (*reverse.TestResult, error) {
+	p.testModel = model
 	return &reverse.TestResult{Content: "OK"}, nil
 }
 func (*reverseFixtureProvider) Quota(context.Context, *reverse.Account) (*reverse.QuotaFetchResponse, error) {
@@ -132,6 +134,9 @@ func TestReverseGatewayAllIngressProtocolsPreserveUsage(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/%s/stream=%v", platform, protocol, stream), func(t *testing.T) {
 					gateway, provider, account, _ := newReverseFixture()
 					account.Platform = platform
+					account.Credentials["model_mapping"] = map[string]any{"client-alias": "test-model"}
+					require.True(t, account.IsModelSupported("client-alias"))
+					require.False(t, account.IsModelSupported("not-allowed"))
 					called := 0
 					provider.forward = func(ctx context.Context, acc *reverse.Account, body []byte, wantsStream bool) (*http.Response, error) {
 						called++
@@ -146,9 +151,9 @@ func TestReverseGatewayAllIngressProtocolsPreserveUsage(t *testing.T) {
 						}
 						return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(payload))}, nil
 					}
-					body := fmt.Sprintf(`{"model":"test-model","stream":%v,"max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`, stream)
+					body := fmt.Sprintf(`{"model":"client-alias","stream":%v,"max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`, stream)
 					if protocol == "responses" {
-						body = fmt.Sprintf(`{"model":"test-model","stream":%v,"input":"hello"}`, stream)
+						body = fmt.Sprintf(`{"model":"client-alias","stream":%v,"input":"hello"}`, stream)
 					}
 					recorder := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(recorder)
@@ -194,6 +199,14 @@ func TestReverseFailedCheckinNeverRecordsSuccess(t *testing.T) {
 	encoded, err := json.Marshal(p.checkin)
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(encoded, "success").Bool())
+}
+
+func TestReverseAccountTestAppliesConfiguredModelMapping(t *testing.T) {
+	g, p, account, _ := newReverseFixture()
+	account.Credentials["model_mapping"] = map[string]any{"client-alias": "upstream-model"}
+	_, err := g.Test(context.Background(), account, "client-alias", "hello")
+	require.NoError(t, err)
+	require.Equal(t, "upstream-model", p.testModel)
 }
 
 func TestReverseRefreshPreservesMachineParametersAndAvoidsStaleRotation(t *testing.T) {
@@ -341,6 +354,40 @@ func TestReverseLoginTicketCanRetryFailedCreationAndRemainsSingleUse(t *testing.
 	finish(false)
 	_, _, _, ok = g.AcquireLoginTicket("ticket")
 	require.False(t, ok, "successful creation must consume the ticket permanently")
+}
+
+func TestReverseModelPreviewDoesNotConsumeTicketOrPersistTemporaryCatalog(t *testing.T) {
+	g, _, saved, _ := newReverseFixture()
+	g.tickets["ticket"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, Credentials: map[string]any{"access_token": "dt-browser-access", "uid": "browser-user"}, ExpiresAt: time.Now().Add(time.Minute)}
+	credentials := map[string]any{"machine_token": "account-machine", "machine_type": "account-type", "model_mapping": map[string]any{"client-alias": "test-model"}}
+	preview, err := g.PreviewAccount(PlatformQoderGlobal, credentials, "ticket")
+	require.NoError(t, err)
+	require.Zero(t, preview.ID)
+	require.Equal(t, "dt-browser-access", preview.GetCredential("access_token"))
+	require.Equal(t, "account-machine", preview.GetCredential("machine_token"))
+	require.Equal(t, "test-model", preview.GetModelMapping()["client-alias"])
+	_, err = g.ListModels(context.Background(), preview)
+	require.NoError(t, err)
+	require.Empty(t, saved.Extra, "a temporary preview must not write a catalog to a stored account")
+	require.NotContains(t, credentials, "access_token", "preview must not mutate the form credentials")
+	_, _, finish, ok := g.AcquireLoginTicket("ticket")
+	require.True(t, ok, "the same ticket must still be usable to create an account")
+	finish(true)
+}
+
+func TestReverseModelPreviewRejectsMissingExpiredOrMismatchedCredentials(t *testing.T) {
+	g, _, _, _ := newReverseFixture()
+	g.tickets["expired"] = &reverseLoginTicket{Platform: PlatformQoderCN, ExpiresAt: time.Now().Add(-time.Minute)}
+	g.tickets["other-region"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, ExpiresAt: time.Now().Add(time.Minute)}
+	_, err := g.PreviewAccount(PlatformQoderCN, nil, "expired")
+	require.ErrorIs(t, err, ErrReverseLoginTicketInvalid)
+	_, err = g.PreviewAccount(PlatformQoderCN, nil, "other-region")
+	require.ErrorIs(t, err, ErrReverseLoginPlatformMismatch)
+	_, err = g.PreviewAccount(PlatformQoderCN, nil, "")
+	require.ErrorContains(t, err, "access_token")
+	preview, err := g.PreviewAccount(PlatformWorkbuddyCN, map[string]any{"auth": map[string]any{"accessToken": "manual-access"}}, "")
+	require.NoError(t, err)
+	require.Equal(t, "manual-access", preview.GetCredential("access_token"))
 }
 
 func TestReverseModelFailuresOnlyCoolDownOneModel(t *testing.T) {
