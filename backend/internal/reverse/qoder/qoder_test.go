@@ -235,8 +235,8 @@ func TestBuildEnvelopeDoesNotLeakTemplateTools(t *testing.T) {
 	if templateTools, _ := template["tools"].([]any); len(templateTools) == 0 {
 		t.Fatal("fixture template unexpectedly has no tools")
 	}
-	if messages, _ := envelope["messages"].([]any); len(messages) < 2 {
-		t.Fatalf("template system prompt and user message expected, got %#v", envelope["messages"])
+	if messages, _ := envelope["messages"].([]any); len(messages) != 1 {
+		t.Fatalf("only the client user message is expected, got %#v", envelope["messages"])
 	}
 
 	withTools := `{"model":"dmodel","messages":[{"role":"user","content":"hello"}],
@@ -511,8 +511,59 @@ func TestForwardNonStreamEndToEnd(t *testing.T) {
 		t.Fatalf("forwarded envelope leaked template tools: %#v", tools)
 	}
 	messages, _ := capturedRequest.envelope["messages"].([]any)
-	if len(messages) < 2 {
+	if len(messages) != 1 {
 		t.Fatalf("forwarded messages = %#v", messages)
+	}
+}
+
+func TestBuildEnvelopeNeverInjectsDesktopPrompt(t *testing.T) {
+	template, err := templateBase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		messages string
+		roles    []string
+		texts    []string
+	}{
+		{"user only", `[{"role":"user","content":"hello"}]`, []string{"user"}, []string{"hello"}},
+		{"system", `[{"role":"system","content":"You are my agent."},{"role":"user","content":"hello"}]`, []string{"system", "user"}, []string{"You are my agent.", "hello"}},
+		{"developer", `[{"role":"developer","content":"Follow my agent's instructions."},{"role":"user","content":"hello"}]`, []string{"developer", "user"}, []string{"Follow my agent's instructions.", "hello"}},
+		{"empty system", `[{"role":"system","content":""},{"role":"user","content":"hello"}]`, []string{"user"}, []string{"hello"}},
+		{"empty messages", `[]`, nil, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := decodeChatRequest([]byte(`{"model":"dmodel","messages":` + test.messages + `}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelope := buildEnvelope(template, request, "dmodel", "personal_standard")
+			messages := envelope["messages"].([]any)
+			if len(messages) != len(test.roles) {
+				t.Fatalf("unexpected message count: %#v", messages)
+			}
+			for i, raw := range messages {
+				message := raw.(map[string]any)
+				text := normalizeMessageContent(message)
+				if test.roles[i] == "user" {
+					parts, _ := message["contents"].([]any)
+					text = rawStringValue(parts[0].(map[string]any)["text"])
+				}
+				if stringValue(message["role"]) != test.roles[i] || text != test.texts[i] {
+					t.Fatalf("client message changed: %#v", message)
+				}
+			}
+			encoded := mustJSON(t, envelope)
+			for _, fingerprint := range []string{"You are Qoder", "D:/Projects/Qoder", "Platform: windows", "create-subagent"} {
+				if strings.Contains(encoded, fingerprint) {
+					t.Fatalf("desktop template instruction leaked: %s", fingerprint)
+				}
+			}
+			if envelope["session_type"] != "qoder" || envelope["chat_task"] != "FREE_INPUT" || envelope["stream"] != true {
+				t.Fatal("protocol fields must remain available without a default prompt")
+			}
+		})
 	}
 }
 
