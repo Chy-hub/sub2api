@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/reverse"
 	"net/http"
+
+	"github.com/Wei-Shaw/sub2api/internal/reverse"
 )
 
 type QuotaBucket struct {
@@ -103,8 +104,14 @@ func BuildQuotaResponse(quota *Quota) reverse.QuotaFetchResponse {
 			reverse.QuotaMetric{Key: "quota_exceeded", Label: "额度状态", Value: 1, Unit: "已用尽"})
 	}
 	if quota.ExpiresAt > 0 {
+		expiresAt := quota.ExpiresAt
+		// The quota endpoint may return milliseconds; the normalized "unix"
+		// metric is seconds, matching the other account-management timestamps.
+		if expiresAt >= 1e12 {
+			expiresAt /= 1000
+		}
 		response.Summary = append(response.Summary,
-			reverse.QuotaMetric{Key: "expires_at", Label: "额度到期时间", Value: float64(quota.ExpiresAt), Format: "number", Unit: "unix"})
+			reverse.QuotaMetric{Key: "expires_at", Label: "额度到期时间", Value: float64(expiresAt), Format: "number", Unit: "unix"})
 	}
 	return response
 }
