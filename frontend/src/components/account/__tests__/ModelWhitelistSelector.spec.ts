@@ -144,6 +144,60 @@ describe('ModelWhitelistSelector', () => {
     }
   )
 
+  it.each(['qoder_cn', 'qoder_global', 'workbuddy_cn', 'workbuddy_global'])('syncs and reselects live models for %s without unrelated presets', async platform => {
+    syncUpstreamModels.mockResolvedValue({ models: ['vendor-live-model'] })
+    const wrapper = mountSelector({ platform, accountId: 46 })
+    expect(wrapper.findAll('button').some(button => button.text() === 'admin.accounts.fillRelatedModels')).toBe(false)
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!.trigger('click')
+    await flushPromises()
+    expect(syncUpstreamModels).toHaveBeenCalledWith(46)
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([['vendor-live-model']])
+    await wrapper.setProps({ modelValue: ['vendor-live-model'] })
+    await wrapper.get('div.cursor-pointer').trigger('click')
+    expect(wrapper.findAll('[data-testid="model-option"]').map(row => row.text())).toEqual(['vendor-live-model'])
+    await findModelRow(wrapper, 'vendor-live-model').get('[data-testid="select-model"]').trigger('click')
+    await wrapper.setProps({ modelValue: [] })
+    await findModelRow(wrapper, 'vendor-live-model').get('[data-testid="select-model"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([['vendor-live-model']])
+    wrapper.unmount()
+  })
+
+  it('sends reverse login tickets and the selected proxy to model preview', async () => {
+    syncUpstreamModelsPreview.mockResolvedValue({ models: ['qoder-model'] })
+    const credentials = { platform: 'qoder_global', type: 'reverse', credentials: { machine_token: 'machine', machine_type: 'type' }, reverse_login_ticket: 'ticket', proxy_id: 7 }
+    const wrapper = mountSelector({ platform: 'qoder_global', syncCredentials: credentials })
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!.trigger('click')
+    await flushPromises()
+    expect(syncUpstreamModelsPreview).toHaveBeenCalledWith(credentials)
+    expect(wrapper.emitted('upstream-synced')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('discards a sync result after switching reverse accounts', async () => {
+    let resolve!: (result: { models: string[] }) => void
+    syncUpstreamModels.mockReturnValue(new Promise(done => { resolve = done }))
+    const wrapper = mountSelector({ platform: 'qoder_global', accountId: 1 })
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!.trigger('click')
+    await wrapper.setProps({ accountId: 2 })
+    resolve({ models: ['old-account-model'] })
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(showSuccess).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps preview options after changing the whitelist mapping', async () => {
+    const connection = { platform: 'workbuddy_cn', type: 'reverse', credentials: { access_token: 'access' } }
+    syncUpstreamModelsPreview.mockResolvedValue({ models: ['live-a', 'live-b'] })
+    const wrapper = mountSelector({ platform: 'workbuddy_cn', syncCredentials: connection })
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ modelValue: ['live-a'], syncCredentials: { ...connection, credentials: { ...connection.credentials, model_mapping: { 'live-a': 'live-a' } } } })
+    await wrapper.get('div.cursor-pointer').trigger('click')
+    expect(findModelRow(wrapper, 'live-b').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('requires a supported request builder for newly registered platforms', async () => {
     const wrapper = mountSelector({ platform: 'acme_router', accountId: 46 })
     const platforms = [

@@ -366,7 +366,7 @@ func (g *ReverseGateway) ListModels(ctx context.Context, account *Account) ([]re
 	if err != nil {
 		return nil, err
 	}
-	if g.accountRepo != nil {
+	if g.accountRepo != nil && account.ID > 0 {
 		ids := make([]string, 0, len(models))
 		for _, model := range models {
 			ids = append(ids, model.ID)
@@ -389,7 +389,7 @@ func (g *ReverseGateway) Test(ctx context.Context, account *Account, model, prom
 	if err != nil {
 		return nil, err
 	}
-	return provider.Test(ctx, acc, model, prompt)
+	return provider.Test(ctx, acc, account.GetMappedModel(model), prompt)
 }
 
 // StartLogin begins a browser login session for a platform or account.
@@ -530,6 +530,42 @@ func (g *ReverseGateway) PollLogin(ctx context.Context, sessionID string) (*Reve
 	}
 	g.mu.Unlock()
 	return &ReverseLoginPoll{LoginTicket: ticket, Profile: result.Profile}, nil
+}
+
+// PreviewAccount resolves browser-login credentials server-side without
+// consuming the ticket or exposing tokens to the create-account page.
+func (g *ReverseGateway) PreviewAccount(platform string, credentials map[string]any, ticket string) (*Account, error) {
+	if !IsReversePlatform(platform) {
+		return nil, ErrReverseLoginPlatformMismatch
+	}
+	merged := make(map[string]any, len(credentials))
+	for key, value := range credentials {
+		merged[key] = value
+	}
+	if ticket = strings.TrimSpace(ticket); ticket != "" {
+		g.mu.Lock()
+		entry := g.tickets[ticket]
+		if entry == nil || time.Now().After(entry.ExpiresAt) {
+			g.mu.Unlock()
+			return nil, ErrReverseLoginTicketInvalid
+		}
+		if entry.Platform != platform {
+			g.mu.Unlock()
+			return nil, ErrReverseLoginPlatformMismatch
+		}
+		for key, value := range entry.Credentials {
+			merged[key] = value
+		}
+		g.mu.Unlock()
+	}
+	normalized, err := normalizeReverseCredentials(platform, merged)
+	if err != nil {
+		return nil, err
+	}
+	if token, _ := normalized["access_token"].(string); strings.TrimSpace(token) == "" {
+		return nil, errors.New("access_token or a valid reverse login ticket is required")
+	}
+	return &Account{Platform: platform, Type: AccountTypeReverse, Credentials: normalized}, nil
 }
 
 // AcquireLoginTicket reserves a one-time ticket while an account is created.

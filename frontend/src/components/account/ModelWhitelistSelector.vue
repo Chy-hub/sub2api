@@ -95,6 +95,7 @@
     <!-- Quick Actions -->
     <div class="mb-4 flex flex-wrap gap-2">
       <button
+        v-if="availableOptions.length > 0"
         type="button"
         @click="fillRelated"
         class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -166,12 +167,7 @@ const props = withDefaults(defineProps<{
   platform?: string
   platforms?: string[]
   accountId?: number
-  syncCredentials?: {
-    platform: string
-    type: string
-    base_url?: string
-    api_key: string
-  }
+  syncCredentials?: SyncUpstreamPreviewParams
   showSyncButton?: boolean
 }>(), { showSyncButton: true })
 
@@ -189,20 +185,8 @@ const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
 const isSyncingUpstream = ref(false)
+const syncedModels = ref<string[]>([])
 let upstreamSyncVersion = 0
-
-watch(
-  () => props.accountId,
-  () => {
-    upstreamSyncVersion += 1
-    isSyncingUpstream.value = false
-  }
-)
-
-onUnmounted(() => {
-  upstreamSyncVersion += 1
-})
-
 const normalizedPlatforms = computed(() => {
   const rawPlatforms =
     props.platforms && props.platforms.length > 0
@@ -243,7 +227,15 @@ const availableOptions = computed(() => {
     }
   }
 
-  return allModels.filter(model => allowedModels.has(model.value))
+  const options = allModels.filter(model => allowedModels.has(model.value))
+  const seen = new Set(options.map(model => model.value))
+  for (const model of [...syncedModels.value, ...props.modelValue]) {
+    if (!seen.has(model)) {
+      options.push({ value: model, label: model })
+      seen.add(model)
+    }
+  }
+  return options
 })
 
 const filteredModels = computed(() => {
@@ -297,11 +289,10 @@ const handleEnter = () => {
 
 const fillRelated = () => {
   const newModels = [...props.modelValue]
-  for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-      }
+  const related = [...normalizedPlatforms.value.flatMap(getModelsByPlatform), ...syncedModels.value]
+  for (const model of related) {
+    if (!newModels.includes(model)) {
+      newModels.push(model)
     }
   }
   emit('update:modelValue', newModels)
@@ -332,6 +323,7 @@ const syncUpstreamModels = async () => {
     }
 
     const upstreamModels = result.models.map(model => model.trim()).filter(Boolean)
+    syncedModels.value = [...new Set(upstreamModels)]
     if (upstreamModels.length === 0) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
       return
@@ -389,5 +381,23 @@ defineExpose({ syncUpstreamModels, isSyncingUpstream })
 const clearAll = () => {
   emit('update:modelValue', [])
 }
+
+const syncConnectionKey = computed(() => {
+  if (!props.syncCredentials) return ''
+  const connection = { ...props.syncCredentials }
+  delete connection.model_mapping
+  const credentials = { ...connection.credentials }
+  delete credentials.model_mapping
+  delete credentials.compact_model_mapping
+  return JSON.stringify({ ...connection, credentials })
+})
+
+watch(() => [props.accountId, normalizedPlatforms.value.join(','), syncConnectionKey.value], () => {
+  upstreamSyncVersion += 1
+  syncedModels.value = []
+  isSyncingUpstream.value = false
+  showDropdown.value = false
+})
+onUnmounted(() => { upstreamSyncVersion += 1 })
 
 </script>
