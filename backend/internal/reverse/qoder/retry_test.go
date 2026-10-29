@@ -156,6 +156,16 @@ func TestQuotaNormalizesFreePlanAndAddonBuckets(t *testing.T) {
 	require.InDelta(t, 10.0/11.0, result.Groups[1].Buckets[0].RemainingFraction, 0.0001)
 }
 
+func TestQuotaExpiryUsesUnixSeconds(t *testing.T) {
+	for _, input := range []int64{1794240000, 1794240000000} {
+		result := BuildQuotaResponse(&Quota{ExpiresAt: input})
+		require.Equal(t, []reverse.QuotaMetric{{
+			Key: "expires_at", Label: "额度到期时间", Value: 1794240000, Format: "number", Unit: "unix",
+		}}, result.Summary)
+	}
+	require.Empty(t, BuildQuotaResponse(&Quota{}).Summary)
+}
+
 func TestQoderResponsesPreserveCacheAndReasoningTokenDetails(t *testing.T) {
 	frame := wrapEnvelope(t, `{"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":2}}}`)
 	sse := "data: " + frame + "\n\ndata: [DONE]\n\n"
