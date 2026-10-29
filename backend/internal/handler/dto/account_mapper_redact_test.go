@@ -155,3 +155,25 @@ func TestAccountFromService_RedactsGrokModelDiagnostics(t *testing.T) {
 	require.NotContains(t, string(listRaw), "grok_model_diagnostics")
 	require.NotContains(t, string(listRaw), "access-secret")
 }
+
+func TestReverseCredentialExportsRedactNestedAndAliasSecrets(t *testing.T) {
+	input := map[string]any{
+		"auth":                map[string]any{"accessToken": "nested-access-secret", "refreshToken": "nested-refresh-secret", "domain": "www.workbuddy.cn"},
+		"qoder_machine_token": "machine-secret",
+		"metadata":            []any{map[string]any{"secret": "exported-secret", "label": "keep-label"}},
+		"nested_arrays":       []any{[]any{map[string]any{"deviceToken": "deep-device-secret"}}},
+	}
+	clean, status := RedactCredentials(input)
+	raw, err := json.Marshal(clean)
+	require.NoError(t, err)
+	for _, secret := range []string{"nested-access-secret", "nested-refresh-secret", "machine-secret", "exported-secret", "deep-device-secret"} {
+		require.NotContains(t, string(raw), secret)
+	}
+	require.Contains(t, string(raw), "www.workbuddy.cn")
+	require.Contains(t, string(raw), "keep-label")
+	require.True(t, status["has_access_token"])
+	require.True(t, status["has_refresh_token"])
+	require.True(t, status["has_machine_token"])
+	require.True(t, status["has_device_token"])
+	require.Contains(t, input["auth"].(map[string]any), "accessToken")
+}

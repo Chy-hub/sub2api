@@ -38,6 +38,21 @@
                 {{ t('admin.accounts.refreshToken') }}
               </button>
             </template>
+            <!-- 反代账号：签到与刷新 Token -->
+            <template v-if="isReverseAccount && !isShadow">
+              <button @click="$emit('reverse-manage', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
+                <Icon name="chart" size="sm" />
+                {{ t('admin.accounts.reverse.operations') }}
+              </button>
+              <button @click="$emit('checkin', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-teal-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+                <Icon name="check" size="sm" />
+                {{ t('admin.accounts.reverse.checkinNow') }}
+              </button>
+              <button @click="$emit('refresh-token', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-purple-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+                <Icon name="refresh" size="sm" />
+                {{ t('admin.accounts.refreshToken') }}
+              </button>
+            </template>
             <button v-if="isOpenAIOAuthParent" @click="$emit('create-spark-shadow', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-amber-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="sparkles" size="sm" />
               {{ t('admin.accounts.createSparkShadow') }}
@@ -71,7 +86,7 @@ import type { Account } from '@/types'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 
 const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'checkin', 'reverse-manage'])
 const { t } = useI18n()
 const menuRef = ref<HTMLElement | null>(null)
 const { width: viewportWidth, height: viewportHeight } = useWindowSize()
@@ -110,6 +125,7 @@ const canDuplicate = computed(() => {
   if (!props.account || props.account.parent_account_id != null) return false
   return ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.account.type)
 })
+const isReverseAccount = computed(() => props.account?.type === 'reverse' || !!props.account?.platform?.startsWith('qoder_') || !!props.account?.platform?.startsWith('workbuddy_'))
 const isRateLimited = computed(() => {
   if (props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date()) {
     return true

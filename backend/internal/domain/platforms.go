@@ -31,6 +31,10 @@ type PlatformSpec struct {
 	CNProvider bool `json:"cn_provider"`
 	// LiteLLMProvider 是定价目录中的 provider 名；空表示不支持从定价目录同步模型。
 	LiteLLMProvider string `json:"litellm_provider,omitempty"`
+	// ReverseProvider 标识反代平台的内置适配器（qoder / workbuddy）；空表示非反代平台。
+	ReverseProvider string `json:"reverse_provider,omitempty"`
+	// ReverseRegion 标识反代平台的上游部署区域（cn / global）。
+	ReverseRegion string `json:"reverse_region,omitempty"`
 }
 
 // platformList 的顺序即平台的展示顺序。
@@ -48,6 +52,10 @@ var platformList = []PlatformSpec{
 	{ID: PlatformTypeSafe, DisplayName: "TypeSafe / Jev", Gateway: PlatformGatewayAnthropic, LiteLLMProvider: "typesafe"},
 	{ID: PlatformCommandCode, DisplayName: "Command Code", Gateway: PlatformGatewayOpenAI},
 	{ID: PlatformCline, DisplayName: "Cline", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformQoderCN, DisplayName: "Qoder CN", Gateway: PlatformGatewayOpenAI, ReverseProvider: "qoder", ReverseRegion: "cn"},
+	{ID: PlatformQoderGlobal, DisplayName: "Qoder Global", Gateway: PlatformGatewayOpenAI, ReverseProvider: "qoder", ReverseRegion: "global"},
+	{ID: PlatformWorkbuddyCN, DisplayName: "WorkBuddy CN", Gateway: PlatformGatewayOpenAI, ReverseProvider: "workbuddy", ReverseRegion: "cn"},
+	{ID: PlatformWorkbuddyGlobal, DisplayName: "WorkBuddy Global", Gateway: PlatformGatewayOpenAI, ReverseProvider: "workbuddy", ReverseRegion: "global"},
 }
 
 var platformIndex = func() map[string]int {
@@ -134,4 +142,19 @@ func UsesOpenAIGateway(id string) bool {
 func IsCNProviderPlatform(id string) bool {
 	spec, ok := LookupPlatform(id)
 	return ok && spec.CNProvider
+}
+
+// IsReversePlatform 报告平台是否由内置反代适配层处理。
+func IsReversePlatform(id string) bool {
+	spec, ok := LookupPlatform(id)
+	return ok && spec.ReverseProvider != ""
+}
+
+// ReverseProviderOf 返回反代平台的适配器名（qoder / workbuddy）与区域。
+func ReverseProviderOf(id string) (provider string, region string, ok bool) {
+	spec, found := LookupPlatform(id)
+	if !found || spec.ReverseProvider == "" {
+		return "", "", false
+	}
+	return spec.ReverseProvider, spec.ReverseRegion, true
 }

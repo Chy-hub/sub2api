@@ -1,7 +1,10 @@
 // Package dto provides data transfer objects for HTTP handlers.
 package dto
 
-import "github.com/Wei-Shaw/sub2api/internal/service"
+import (
+	"github.com/Wei-Shaw/sub2api/internal/reverse"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+)
 
 // RedactCredentials 复制一份 in，剥离 service.SensitiveCredentialKeys 列出的所有敏感子键，
 // 并产出一个 has_<key> 状态 map 表示哪些敏感键存在且非零值。
@@ -20,12 +23,49 @@ func RedactCredentials(in map[string]any) (out map[string]any, status map[string
 					status = make(map[string]bool, 4)
 				}
 				status["has_"+k] = true
+				for canonical, aliases := range reverse.CredentialAliases {
+					for _, alias := range aliases {
+						if alias == k {
+							status["has_"+canonical] = true
+						}
+					}
+				}
 			}
 			continue
 		}
-		out[k] = v
+		clean, flags := redactCredentialValue(v)
+		out[k] = clean
+		for key, present := range flags {
+			if status == nil {
+				status = map[string]bool{}
+			}
+			status[key] = present
+		}
 	}
 	return out, status
+}
+
+func redactCredentialValue(value any) (any, map[string]bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		return RedactCredentials(typed)
+	case []any:
+		clean := make([]any, len(typed))
+		var status map[string]bool
+		for i, item := range typed {
+			var flags map[string]bool
+			clean[i], flags = redactCredentialValue(item)
+			for key, present := range flags {
+				if status == nil {
+					status = map[string]bool{}
+				}
+				status[key] = present
+			}
+		}
+		return clean, status
+	default:
+		return value, nil
+	}
 }
 
 // isCredentialValuePresent 判断值是否"存在且非零"。空字符串、nil、false 均视为未配置；
