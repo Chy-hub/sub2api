@@ -370,6 +370,10 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.PUT("/ollama-cloud-usage/settings", h.Admin.Account.UpdateOllamaCloudUsageSettings)
 		accounts.GET("/opencode-go-usage/settings", h.Admin.Account.GetOpenCodeGoUsageSettings)
 		accounts.PUT("/opencode-go-usage/settings", h.Admin.Account.UpdateOpenCodeGoUsageSettings)
+		// Reverse browser login (Qoder / WorkBuddy). Registered before "/:id"
+		// so the static segment wins over the account ID param.
+		accounts.POST("/reverse/login/start", h.Admin.Account.ReverseLoginStart)
+		accounts.GET("/reverse/login/poll", h.Admin.Account.ReverseLoginPoll)
 		accounts.GET("/:id", h.Admin.Account.GetByID)
 		accounts.GET("/:id/claude/reset-credits", h.Admin.Account.ClaudeResetCredits)
 		// Same protection as the Codex reset-quota route (admin auth, audit, compliance guard).
@@ -397,6 +401,10 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/test", h.Admin.Account.Test)
 		accounts.POST("/:id/recover-state", h.Admin.Account.RecoverState)
 		accounts.POST("/:id/refresh", h.Admin.Account.Refresh)
+		accounts.POST("/:id/checkin", h.Admin.Account.Checkin)
+		accounts.GET("/:id/reverse/quota", h.Admin.Account.ReverseQuota)
+		accounts.GET("/:id/reverse/tasks", h.Admin.Account.ReverseTasks)
+		accounts.POST("/:id/reverse/tasks", h.Admin.Account.RunReverseTask)
 		accounts.POST("/:id/apply-oauth-credentials", h.Admin.Account.ApplyOAuthCredentials)
 		accounts.POST("/:id/set-privacy", h.Admin.Account.SetPrivacy)
 		accounts.POST("/:id/refresh-tier", h.Admin.Account.RefreshTier)

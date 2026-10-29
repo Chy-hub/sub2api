@@ -318,11 +318,16 @@ func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKe
 	if service.IsMultiProtocolAPIKeyProvider(apiKey.Group.Platform) {
 		return true
 	}
+	// 反代平台（Qoder / WorkBuddy）以 /v1/messages 为主要服务形态，与 grok /
+	// 国产供应商同语义，不受分组 allow_messages_dispatch 开关限制。
+	if service.IsReversePlatform(apiKey.Group.Platform) {
+		return true
+	}
 	// composite 分组解析到 grok/CN/OpenCode Go 目标时与对应独立分组同语义豁免；
 	// 解析到 openai 目标则受 composite 分组自身的可配置开关控制。
 	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
 		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
-			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform)) {
+			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform) || service.IsReversePlatform(platform)) {
 			return true
 		}
 	}

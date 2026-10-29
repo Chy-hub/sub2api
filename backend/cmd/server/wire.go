@@ -97,6 +97,7 @@ func provideCleanup(
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
 	accountExpiry *service.AccountExpiryService,
+	reverseCheckin *service.ReverseCheckinScheduler,
 	cnProviderBalanceCheck *service.CNProviderBalanceCheckService,
 	codexVersionSync *service.OpenAICodexVersionSyncService,
 	claudeCodeVersionSync *service.ClaudeCodeVersionSyncService,
@@ -270,6 +271,12 @@ func provideCleanup(
 			}},
 			{"AccountExpiryService", func() error {
 				accountExpiry.Stop()
+				return nil
+			}},
+			{"ReverseCheckinScheduler", func() error {
+				if reverseCheckin != nil {
+					reverseCheckin.Stop()
+				}
 				return nil
 			}},
 			{"CNProviderBalanceCheckService", func() error {

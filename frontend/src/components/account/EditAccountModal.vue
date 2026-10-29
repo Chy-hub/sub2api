@@ -26,6 +26,19 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <!-- 反代账号：机器参数 / 提示词 / 签到 / 重新登录 -->
+      <div v-if="isReverseAccount" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <ReverseAccountFields
+          v-model="reverseEditFormModel"
+          :platform="account.platform"
+          :account-id="account.id"
+          editing
+          :credentials-status="reverseCredentialsStatus"
+          :checkin="reverseCheckinState"
+          @relogin-success="reloadAccount"
+        />
+      </div>
+
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
@@ -3477,6 +3490,9 @@ import {
 import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiError'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { supportsAccountQuota } from '@/utils/accountQuota'
+import ReverseAccountFields, { type ReverseFormModel } from '@/components/account/ReverseAccountFields.vue'
+import { parseReverseTaskHours } from '@/utils/reverseAccount'
+import { isReversePlatform as isReversePlatformValue } from '@/constants/platformCatalog'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
@@ -4509,6 +4525,105 @@ const form = reactive({
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
+const isReverseAccount = computed(() => !!props.account && (props.account.type === 'reverse' || isReversePlatformValue(props.account.platform)))
+const reverseCredentialsStatus = computed(() => props.account?.credentials_status)
+const reverseCheckinState = computed(() => {
+  const extra = props.account?.extra as Record<string, unknown> | undefined
+  const state = extra?.reverse_checkin
+  return state && typeof state === 'object' ? (state as Record<string, unknown>) : undefined
+})
+
+function emptyReverseForm(): ReverseFormModel {
+  return {
+    desktop_version: '',
+    machine_salt: '',
+    clear_machine_identity: false,
+    user_agent: '',
+    client_version: '',
+    cli_version: '',
+    client_name: '',
+    sanitize_fingerprints: true,
+    passthrough_ip: false,
+    auto_tasks: false,
+    auto_refresh: false,
+    task_kinds: ['growth', 'travel', 'activity', 'keepalive', 'blackcat', 'school', 'streak', 'dailybonus'],
+    task_hours: {},
+    access_token: '',
+    refresh_token: '',
+    uid: '',
+    machine_id: '',
+    machine_token: '',
+    machine_type: '',
+    machine_code: '',
+    user_type: '',
+    device_token: '',
+    session_id: '',
+    enterprise_id: '',
+    nickname: '',
+    domain: '',
+    auto_checkin: false,
+    prompt_mode: 'passthrough',
+    prompt_text: ''
+  }
+}
+
+const reverseEditForm = reactive<ReverseFormModel>(emptyReverseForm())
+const reverseEditFormModel = computed({
+  get: () => reverseEditForm,
+  set: (value: ReverseFormModel) => Object.assign(reverseEditForm, value)
+})
+
+function stringCredential(credentials: Record<string, unknown>, key: string): string {
+  const value = credentials[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function loadReverseForm(account: Account) {
+  const credentials = (account.credentials as Record<string, unknown> | undefined) || {}
+  const extra = (account.extra as Record<string, unknown> | undefined) || {}
+  Object.assign(reverseEditForm, emptyReverseForm())
+  reverseEditForm.uid = stringCredential(credentials, 'uid') || stringCredential(credentials, 'qoder_account_id')
+  reverseEditForm.machine_id = stringCredential(credentials, 'machine_id')
+  reverseEditForm.machine_type = stringCredential(credentials, 'machine_type')
+  reverseEditForm.machine_code = stringCredential(credentials, 'machine_code')
+  reverseEditForm.user_type = stringCredential(credentials, 'user_type') || stringCredential(credentials, 'qoder_user_type')
+  reverseEditForm.session_id = stringCredential(credentials, 'session_id')
+  reverseEditForm.enterprise_id = stringCredential(credentials, 'enterprise_id')
+  reverseEditForm.nickname = stringCredential(credentials, 'nickname')
+  reverseEditForm.domain = stringCredential(credentials, 'domain')
+  for (const key of ['desktop_version', 'user_agent', 'client_version', 'cli_version', 'client_name'] as const) reverseEditForm[key] = stringCredential(credentials, key)
+  reverseEditForm.sanitize_fingerprints = extra.reverse_sanitize_fingerprints !== false
+  reverseEditForm.passthrough_ip = extra.reverse_passthrough_ip === true
+  reverseEditForm.auto_tasks = extra.reverse_auto_tasks === true
+  reverseEditForm.auto_refresh = extra.reverse_auto_refresh === true
+  if (Array.isArray(extra.reverse_task_kinds)) reverseEditForm.task_kinds = extra.reverse_task_kinds.filter((value): value is string => typeof value === 'string')
+  const taskHours = extra.reverse_task_hours as Record<string, unknown> | undefined
+  if (taskHours && typeof taskHours === 'object') reverseEditForm.task_hours = Object.fromEntries(Object.entries(taskHours).filter(([, value]) => Array.isArray(value)).map(([kind, value]) => [kind, (value as number[]).join(',')]))
+  reverseEditForm.auto_checkin = extra.auto_checkin === true
+  const promptMode = typeof extra.reverse_prompt_mode === 'string' ? extra.reverse_prompt_mode : 'passthrough'
+  reverseEditForm.prompt_mode = promptMode === 'custom' || promptMode === 'append' ? promptMode : 'passthrough'
+  reverseEditForm.prompt_text = typeof extra.reverse_prompt_text === 'string' ? extra.reverse_prompt_text : ''
+}
+
+async function reloadAccount() {
+  if (!props.account) return
+  try {
+    const updated = await adminAPI.accounts.getById(props.account.id)
+    loadReverseForm(updated)
+    emit('updated', updated)
+  } catch (error: any) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.accounts.failedToUpdate')))
+  }
+}
+
+watch(
+  () => props.account,
+  account => {
+    if (account) loadReverseForm(account)
+  },
+  { immediate: true }
+)
 
 const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
   upstreamBillingRateSyncEnabled.value = enabled
@@ -5667,6 +5782,61 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
+
+    if (isReverseAccount.value) {
+      try { parseReverseTaskHours(reverseEditForm.task_hours) } catch {
+        appStore.showError(t('admin.accounts.reverse.invalidTaskHours'))
+        return
+      }
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
+      const assignSecret = (key: string, value: string) => {
+        const trimmed = value.trim()
+        if (trimmed) newCredentials[key] = trimmed
+      }
+      const assignPlain = (key: string, value: string) => {
+        const trimmed = value.trim()
+        if (trimmed) newCredentials[key] = trimmed
+        else delete newCredentials[key]
+      }
+      assignSecret('access_token', reverseEditForm.access_token)
+      assignSecret('refresh_token', reverseEditForm.refresh_token)
+      assignSecret('machine_token', reverseEditForm.machine_token)
+      if (reverseEditForm.clear_machine_identity && !reverseEditForm.machine_token.trim()) newCredentials.machine_token = ''
+      assignSecret('device_token', reverseEditForm.device_token)
+      assignSecret('machine_salt', reverseEditForm.machine_salt)
+      for (const key of ['desktop_version', 'user_agent', 'client_version', 'cli_version', 'client_name'] as const) assignPlain(key, reverseEditForm[key])
+      assignPlain('uid', reverseEditForm.uid)
+      assignPlain('machine_id', reverseEditForm.machine_id)
+      assignPlain('machine_type', reverseEditForm.machine_type)
+      assignPlain('machine_code', reverseEditForm.machine_code)
+      assignPlain('user_type', reverseEditForm.user_type)
+      assignPlain('session_id', reverseEditForm.session_id)
+      assignPlain('enterprise_id', reverseEditForm.enterprise_id)
+      assignPlain('nickname', reverseEditForm.nickname)
+      assignPlain('domain', reverseEditForm.domain)
+      updatePayload.credentials = newCredentials
+
+      const currentExtra = (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      newExtra.auto_checkin = reverseEditForm.auto_checkin
+      newExtra.reverse_auto_refresh = reverseEditForm.auto_refresh
+      if (isReversePlatformValue(props.account.platform) && props.account.platform.startsWith('workbuddy_')) {
+        newExtra.reverse_prompt_mode = reverseEditForm.prompt_mode
+        newExtra.reverse_sanitize_fingerprints = reverseEditForm.sanitize_fingerprints
+        newExtra.reverse_passthrough_ip = reverseEditForm.passthrough_ip
+        newExtra.reverse_auto_tasks = reverseEditForm.auto_tasks
+        newExtra.reverse_task_kinds = [...reverseEditForm.task_kinds]
+        newExtra.reverse_task_hours = parseReverseTaskHours(reverseEditForm.task_hours)
+        const promptText = reverseEditForm.prompt_text.trim()
+        if (promptText) newExtra.reverse_prompt_text = promptText
+        else delete newExtra.reverse_prompt_text
+      }
+      updatePayload.extra = newExtra
+      await submitUpdateAccount(accountID, updatePayload)
+      return
+    }
+
     if (props.account.type === 'apikey') {
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value

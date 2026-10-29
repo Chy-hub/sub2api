@@ -1345,7 +1345,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 }
 
 func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
-	if account == nil || account.Type != AccountTypeAPIKey {
+	if account == nil {
+		return false
+	}
+	if account.IsReverse() {
+		return true
+	}
+	if account.Type != AccountTypeAPIKey {
 		return false
 	}
 	if account.routesByModel() {

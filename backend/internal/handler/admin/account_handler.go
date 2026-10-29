@@ -29,6 +29,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/reverse"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -70,6 +71,12 @@ type AccountHandler struct {
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
 	userInfoQuotaService    *service.UpstreamUserInfoQuotaService
+	reverseGateway          *service.ReverseGateway
+}
+
+// SetReverseGateway attaches the built-in reverse adapters (Qoder / WorkBuddy).
+func (h *AccountHandler) SetReverseGateway(gateway *service.ReverseGateway) {
+	h.reverseGateway = gateway
 }
 
 // SetUpstreamUserInfoQuotaService attaches the /key/info quota probe service.
@@ -130,7 +137,7 @@ type CreateAccountRequest struct {
 	Name                    string         `json:"name" binding:"required"`
 	Notes                   *string        `json:"notes"`
 	Platform                string         `json:"platform" binding:"required"`
-	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account"`
+	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account reverse"`
 	Credentials             map[string]any `json:"credentials" binding:"required"`
 	Extra                   map[string]any `json:"extra"`
 	ProxyID                 *int64         `json:"proxy_id"`
@@ -143,6 +150,7 @@ type CreateAccountRequest struct {
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	ReverseLoginTicket      string         `json:"reverse_login_ticket"`
 }
 
 // UpdateAccountRequest represents update account request
@@ -150,7 +158,7 @@ type CreateAccountRequest struct {
 type UpdateAccountRequest struct {
 	Name                    string         `json:"name"`
 	Notes                   *string        `json:"notes"`
-	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account"`
+	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account reverse"`
 	Credentials             map[string]any `json:"credentials"`
 	Extra                   map[string]any `json:"extra"`
 	ProxyID                 *int64         `json:"proxy_id"`
@@ -1066,12 +1074,35 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	var createdAccount *service.Account
 
 	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		credentials := req.Credentials
+		ticketCreated := false
+		if ticket := strings.TrimSpace(req.ReverseLoginTicket); ticket != "" {
+			if h.reverseGateway == nil {
+				return nil, service.ErrReverseGatewayUnavailable
+			}
+			platform, ticketCredentials, finish, ok := h.reverseGateway.AcquireLoginTicket(ticket)
+			if !ok {
+				return nil, service.ErrReverseLoginTicketInvalid
+			}
+			defer func() { finish(ticketCreated) }()
+			if platform != req.Platform {
+				return nil, service.ErrReverseLoginPlatformMismatch
+			}
+			merged := make(map[string]any, len(credentials)+len(ticketCredentials))
+			for key, value := range credentials {
+				merged[key] = value
+			}
+			for key, value := range ticketCredentials {
+				merged[key] = value
+			}
+			credentials = merged
+		}
 		account, execErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 			Name:                  req.Name,
 			Notes:                 req.Notes,
 			Platform:              req.Platform,
 			Type:                  req.Type,
-			Credentials:           req.Credentials,
+			Credentials:           credentials,
 			Extra:                 req.Extra,
 			ProxyID:               req.ProxyID,
 			Concurrency:           req.Concurrency,
@@ -1087,6 +1118,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		if execErr != nil {
 			return nil, execErr
 		}
+		ticketCreated = true
 		createdAccount = account
 		// Antigravity OAuth: 新账号直接设置隐私
 		h.adminService.ForceAntigravityPrivacy(ctx, account)
@@ -1589,6 +1621,19 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 		return
 	}
 
+	if account.IsReverse() {
+		if h.reverseGateway == nil {
+			response.ErrorFrom(c, service.ErrReverseGatewayUnavailable)
+			return
+		}
+		if _, err := h.reverseGateway.Refresh(c.Request.Context(), account); err != nil {
+			response.Error(c, http.StatusBadGateway, "Failed to refresh reverse credentials: "+err.Error())
+			return
+		}
+		response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+		return
+	}
+
 	updatedAccount, warning, err := h.refreshSingleAccount(c.Request.Context(), account)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -1605,6 +1650,122 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 	}
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), updatedAccount))
+}
+
+// ReverseLoginStart starts a browser login for a reverse platform/account.
+// POST /api/v1/admin/accounts/reverse/login/start
+func (h *AccountHandler) ReverseLoginStart(c *gin.Context) {
+	var req struct {
+		Platform  string `json:"platform"`
+		AccountID *int64 `json:"account_id"`
+		ProxyID   *int64 `json:"proxy_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if h.reverseGateway == nil {
+		response.ErrorFrom(c, service.ErrReverseGatewayUnavailable)
+		return
+	}
+	platform := strings.TrimSpace(req.Platform)
+	accountID := int64(0)
+	if req.AccountID != nil && *req.AccountID > 0 {
+		account, err := h.adminService.GetAccount(c.Request.Context(), *req.AccountID)
+		if err != nil {
+			response.NotFound(c, "Account not found")
+			return
+		}
+		if !account.IsReverse() {
+			response.BadRequest(c, "Account is not a reverse account")
+			return
+		}
+		platform = account.Platform
+		accountID = account.ID
+	}
+	if !service.IsReversePlatform(platform) {
+		response.BadRequest(c, "Invalid reverse platform")
+		return
+	}
+	options := &reverse.Account{}
+	if req.ProxyID != nil && *req.ProxyID > 0 {
+		proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID)
+		if err != nil {
+			response.BadRequest(c, "Invalid proxy")
+			return
+		}
+		options.ProxyURL = proxy.URL()
+	}
+	start, err := h.reverseGateway.StartLogin(c.Request.Context(), platform, accountID, options)
+	if err != nil {
+		response.Error(c, http.StatusBadGateway, "Failed to start reverse login: "+err.Error())
+		return
+	}
+	response.Success(c, start)
+}
+
+// ReverseLoginPoll advances a reverse browser login session.
+// GET /api/v1/admin/accounts/reverse/login/poll?session_id=...
+func (h *AccountHandler) ReverseLoginPoll(c *gin.Context) {
+	sessionID := strings.TrimSpace(c.Query("session_id"))
+	if sessionID == "" {
+		response.BadRequest(c, "session_id is required")
+		return
+	}
+	if h.reverseGateway == nil {
+		response.ErrorFrom(c, service.ErrReverseGatewayUnavailable)
+		return
+	}
+	result, err := h.reverseGateway.PollLogin(c.Request.Context(), sessionID)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if result.Pending {
+		response.Success(c, gin.H{"pending": true})
+		return
+	}
+	payload := gin.H{"pending": false, "profile": result.Profile}
+	if result.Account != nil {
+		payload["account"] = h.buildAccountResponseWithRuntime(c.Request.Context(), result.Account)
+	}
+	if result.LoginTicket != "" {
+		payload["login_ticket"] = result.LoginTicket
+	}
+	response.Success(c, payload)
+}
+
+// Checkin performs a manual reverse check-in.
+// POST /api/v1/admin/accounts/:id/checkin
+func (h *AccountHandler) Checkin(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.NotFound(c, "Account not found")
+		return
+	}
+	if !account.IsReverse() {
+		response.BadRequest(c, "Account is not a reverse account")
+		return
+	}
+	if h.reverseGateway == nil {
+		response.ErrorFrom(c, service.ErrReverseGatewayUnavailable)
+		return
+	}
+	result, state, checkinErr := h.reverseGateway.Checkin(c.Request.Context(), account)
+	if checkinErr != nil {
+		status := http.StatusBadGateway
+		if errors.Is(checkinErr, service.ErrReverseOperationBusy) {
+			status = http.StatusConflict
+		}
+		response.Error(c, status, checkinErr.Error())
+		return
+	}
+	response.Success(c, gin.H{"result": result, "checkin": state})
 }
 
 // ApplyOAuthCredentialsRequest is the payload for persisting re-authorized OAuth credentials.
@@ -2859,6 +3020,24 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 }
 
 func (h *AccountHandler) respondAvailableModels(c *gin.Context, account *service.Account) {
+	if account.IsReverse() {
+		var ids []string
+		if h.accountTestService != nil {
+			ids, _ = h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), account)
+		}
+		if len(ids) == 0 {
+			for requested := range account.GetModelMapping() {
+				ids = append(ids, requested)
+			}
+		}
+		models := make([]openai.Model, 0, len(ids))
+		for _, id := range ids {
+			models = append(models, openai.Model{ID: id, Object: "model", Type: "model", DisplayName: id})
+		}
+		response.Success(c, models)
+		return
+	}
+
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
 		// Prefer the shared, account-keyed upstream catalog. If discovery fails,
@@ -3150,8 +3329,9 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
 		BaseURL      string            `json:"base_url"`
-		APIKey       string            `json:"api_key" binding:"required"`
+		APIKey       string            `json:"api_key"`
 		ModelMapping map[string]string `json:"model_mapping"`
+		Credentials  map[string]any    `json:"credentials"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -3162,14 +3342,24 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		modelMapping[sourceModel] = upstreamModel
 	}
 
+	credentials := map[string]any{
+		"api_key":       req.APIKey,
+		"base_url":      req.BaseURL,
+		"model_mapping": modelMapping,
+	}
+	if len(req.Credentials) > 0 {
+		credentials = make(map[string]any, len(req.Credentials)+1)
+		for key, value := range req.Credentials {
+			credentials[key] = value
+		}
+		if _, ok := credentials["model_mapping"]; !ok && len(modelMapping) > 0 {
+			credentials["model_mapping"] = modelMapping
+		}
+	}
 	tempAccount := &service.Account{
-		Platform: req.Platform,
-		Type:     req.Type,
-		Credentials: map[string]any{
-			"api_key":       req.APIKey,
-			"base_url":      req.BaseURL,
-			"model_mapping": modelMapping,
-		},
+		Platform:    req.Platform,
+		Type:        req.Type,
+		Credentials: credentials,
 	}
 
 	if h.accountTestService == nil {

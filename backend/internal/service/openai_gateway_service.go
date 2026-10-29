@@ -480,6 +480,7 @@ type OpenAIGatewayService struct {
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
+	reverseGateway        *ReverseGateway
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
@@ -606,6 +607,13 @@ func (s *OpenAIGatewayService) SetRPMCache(cache RPMCache) {
 			s.rateLimitService.ustcCapacityCache, _ = cache.(USTCCapacityCache)
 			s.rateLimitService.ustcCapacityNotify = s.notifyUSTCCapacity
 		}
+	}
+}
+
+// SetReverseGateway wires the built-in reverse adapters (Qoder / WorkBuddy).
+func (s *OpenAIGatewayService) SetReverseGateway(gateway *ReverseGateway) {
+	if s != nil {
+		s.reverseGateway = gateway
 	}
 }
 
@@ -1293,6 +1301,12 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", errors.New("api_key not found in credentials")
 		}
 		return apiKey, "apikey", nil
+	case AccountTypeReverse:
+		accessToken := strings.TrimSpace(account.GetCredential("access_token"))
+		if accessToken == "" {
+			return "", "", errors.New("access_token not found in reverse credentials")
+		}
+		return accessToken, "access_token", nil
 	default:
 		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
 	}

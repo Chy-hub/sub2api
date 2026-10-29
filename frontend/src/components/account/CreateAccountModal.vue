@@ -264,6 +264,39 @@
             {{ spec.display_name }}
           </button>
         </div>
+
+        <!-- 反代平台：Qoder / WorkBuddy -->
+		<p class="mt-3 text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.accounts.reverse.title') }}</p>
+        <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-testid="platform-row-reverse">
+          <button
+            v-for="spec in reversePlatforms"
+            :key="spec.id"
+            type="button"
+            :data-testid="`platform-button-${spec.id}`"
+            @click="selectReversePlatform(spec.id)"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
+              form.platform === spec.id
+                ? 'bg-white text-teal-700 shadow-sm dark:bg-dark-600 dark:text-teal-300'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon :platform="spec.id" size="sm" />
+            {{ spec.display_name }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 反代账号：网页登录 / 手动凭证 + 每账号机器参数 -->
+      <div v-if="isReversePlatformValue(form.platform)" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <ReverseAccountFields
+		  :key="form.platform"
+          v-model="reverseFormModel"
+          :platform="form.platform"
+          :proxy-id="form.proxy_id"
+          @login-success="handleReverseLoginSuccess"
+          @login-reset="reverseLoginTicket = ''; reverseLoginProfile = null"
+        />
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
@@ -4161,6 +4194,8 @@ import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import ReverseAccountFields, { type ReverseFormModel } from '@/components/account/ReverseAccountFields.vue'
+import { parseReverseTaskHours } from '@/utils/reverseAccount'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
@@ -4203,7 +4238,7 @@ import {
   type OpenCodeAccountMode,
   type OpenCodeGoProtocolRule
 } from '@/components/account/credentialsBuilder'
-import { listPlatforms } from '@/constants/platformCatalog'
+import { isReversePlatform as isReversePlatformValue, listPlatforms, reverseProviderOf } from '@/constants/platformCatalog'
 import {
   formatDateTimeLocalInput,
   getBrowserTimeZone,
@@ -4398,7 +4433,7 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account' | 'reverse'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -4433,6 +4468,7 @@ const isGenericMultiProtocolPlatform = computed(
 const extraMultiProtocolPlatforms = computed(() =>
   listPlatforms().filter(spec => !!spec.multi_protocol && !isCNProviderPlatform(spec.id) && spec.id !== 'opencode_go')
 )
+const reversePlatforms = computed(() => listPlatforms().filter(spec => !!spec.reverse_provider))
 const genericAccountModes = computed(() => providerAccountModes(form.platform))
 // 按模型分流的供应商（OpenCode 等）：adaptive 账号携带 protocol_rules。
 const routesByModel = computed(() => providerRoutesByModel(form.platform))
@@ -5051,6 +5087,69 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+function emptyReverseForm(): ReverseFormModel {
+  return {
+    desktop_version: '',
+    machine_salt: '',
+    clear_machine_identity: false,
+    user_agent: '',
+    client_version: '',
+    cli_version: '',
+    client_name: '',
+    sanitize_fingerprints: true,
+    passthrough_ip: false,
+    auto_tasks: false,
+    auto_refresh: false,
+    task_kinds: ['growth', 'travel', 'activity', 'keepalive', 'blackcat', 'school', 'streak', 'dailybonus'],
+    task_hours: {},
+    access_token: '',
+    refresh_token: '',
+    uid: '',
+    machine_id: '',
+    machine_token: '',
+    machine_type: '',
+    machine_code: '',
+    user_type: '',
+    device_token: '',
+    session_id: '',
+    enterprise_id: '',
+    nickname: '',
+    domain: '',
+    auto_checkin: false,
+    prompt_mode: 'passthrough',
+    prompt_text: ''
+  }
+}
+
+const reverseForm = reactive<ReverseFormModel>(emptyReverseForm())
+const reverseFormModel = computed({
+  get: () => reverseForm,
+  set: (value: ReverseFormModel) => Object.assign(reverseForm, value)
+})
+const reverseLoginTicket = ref('')
+const reverseLoginProfile = ref<import('@/api/admin/accounts').ReverseLoginProfile | null>(null)
+
+function resetReverseForm() {
+  Object.assign(reverseForm, emptyReverseForm())
+  reverseLoginTicket.value = ''
+  reverseLoginProfile.value = null
+}
+
+function selectReversePlatform(platform: string) {
+  form.platform = platform as AccountPlatform
+  accountCategory.value = 'reverse'
+  form.type = 'reverse'
+  resetReverseForm()
+}
+
+function handleReverseLoginSuccess(payload: { ticket: string; profile?: import('@/api/admin/accounts').ReverseLoginProfile }) {
+  reverseLoginTicket.value = payload.ticket
+  reverseLoginProfile.value = payload.profile ?? null
+  if (!form.name.trim() && payload.profile) {
+    form.name = payload.profile.nickname || payload.profile.email || payload.profile.uid || form.name
+  }
+}
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -5127,6 +5226,10 @@ watch(
 watch(
   [accountCategory, addMethod, antigravityAccountType, () => form.platform],
   ([category, method, agType]) => {
+    if (isReversePlatformValue(form.platform)) {
+      form.type = 'reverse'
+      return
+    }
     // Antigravity upstream 类型（实际创建为 apikey）
     if (form.platform === 'antigravity' && agType === 'upstream') {
       form.type = 'apikey'
@@ -5152,6 +5255,9 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    if (!isReversePlatformValue(newPlatform) && accountCategory.value === 'reverse') {
+      accountCategory.value = 'oauth-based'
+    }
     // Reset base URL based on platform
     if (isMultiProtocolApiKeyPlatform(newPlatform)) {
       const mode = newPlatform === 'opencode_go' ? openCodeAccountMode.value : accountMode.value
@@ -5648,6 +5754,7 @@ const resetForm = () => {
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  resetReverseForm()
   upstreamRequestIdHeader.value = ''
   upstreamBillingAutoProbeEnabled.value = true
   editQuotaLimit.value = null
@@ -5956,6 +6063,59 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (isReversePlatformValue(form.platform)) {
+    try { parseReverseTaskHours(reverseForm.task_hours) } catch {
+      appStore.showError(t('admin.accounts.reverse.invalidTaskHours'))
+      return
+    }
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    const credentials: Record<string, unknown> = {}
+    const assignCredential = (key: string, value: string) => {
+      const trimmed = value.trim()
+      if (trimmed) credentials[key] = trimmed
+    }
+    if (!reverseLoginTicket.value) {
+      if (!reverseForm.access_token.trim()) {
+        appStore.showError(t('admin.accounts.reverse.accessTokenRequired'))
+        return
+      }
+      assignCredential('access_token', reverseForm.access_token)
+      assignCredential('refresh_token', reverseForm.refresh_token)
+    }
+    assignCredential('uid', reverseForm.uid)
+    assignCredential('machine_id', reverseForm.machine_id)
+    assignCredential('machine_token', reverseForm.machine_token)
+    assignCredential('machine_type', reverseForm.machine_type)
+    assignCredential('machine_code', reverseForm.machine_code)
+    assignCredential('user_type', reverseForm.user_type)
+    assignCredential('device_token', reverseForm.device_token)
+    assignCredential('session_id', reverseForm.session_id)
+    assignCredential('enterprise_id', reverseForm.enterprise_id)
+    assignCredential('nickname', reverseForm.nickname)
+    assignCredential('domain', reverseForm.domain)
+    for (const key of ['desktop_version', 'machine_salt', 'user_agent', 'client_version', 'cli_version', 'client_name'] as const) assignCredential(key, reverseForm[key])
+    const extra: Record<string, unknown> = {
+      auto_checkin: reverseForm.auto_checkin,
+      reverse_auto_refresh: reverseForm.auto_refresh
+    }
+    if (reverseProviderOf(form.platform) === 'workbuddy') {
+      extra.reverse_prompt_mode = reverseForm.prompt_mode
+      extra.reverse_sanitize_fingerprints = reverseForm.sanitize_fingerprints
+      extra.reverse_passthrough_ip = reverseForm.passthrough_ip
+      extra.reverse_auto_tasks = reverseForm.auto_tasks
+      extra.reverse_task_kinds = [...reverseForm.task_kinds]
+      extra.reverse_task_hours = parseReverseTaskHours(reverseForm.task_hours)
+      if (reverseForm.prompt_text.trim()) {
+        extra.reverse_prompt_text = reverseForm.prompt_text.trim()
+      }
+    }
+    await createAccountAndFinish(form.platform, 'reverse', credentials, extra, reverseLoginTicket.value)
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {
@@ -6295,7 +6455,8 @@ const createAccountAndFinish = async (
   platform: AccountPlatform,
   type: AccountType,
   credentials: Record<string, unknown>,
-  extra?: Record<string, unknown>
+  extra?: Record<string, unknown>,
+  reverseLoginTicket?: string
 ) => {
   if (!applyTempUnschedConfig(credentials)) {
     return
@@ -6386,9 +6547,10 @@ const createAccountAndFinish = async (
     group_ids: form.group_ids,
     expires_at: form.expires_at,
     // 上游倍率探测对全部 API-key 平台开放（antigravity upstream 走本 helper）；
-    // 非 apikey 类型（bedrock/oauth）不传，后端不动作。
+    // 非 apikey 类型（bedrock/oauth/reverse）不传，后端不动作。
     upstream_billing_probe_enabled: type === 'apikey' ? upstreamBillingAutoProbeEnabled.value : undefined,
-    auto_pause_on_expired: autoPauseOnExpired.value
+    auto_pause_on_expired: autoPauseOnExpired.value,
+    reverse_login_ticket: reverseLoginTicket || undefined
   })
 }
 

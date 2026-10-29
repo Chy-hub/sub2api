@@ -676,6 +676,31 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(labels('platform-row-aggregators')).toEqual(['OpenCode', 'Command Code', 'Cline'])
   })
 
+  it.each(['qoder_cn', 'qoder_global', 'workbuddy_cn', 'workbuddy_global'])('creates a %s reverse account with account-scoped parameters', async (platform) => {
+    const wrapper = mountModal()
+    await wrapper.get(`[data-testid="platform-button-${platform}"]`).trigger('click')
+    const fields = wrapper.findComponent({ name: 'ReverseAccountFields' })
+    expect(fields.exists()).toBe(true)
+    fields.vm.$emit('update:modelValue', {
+      ...fields.props('modelValue'),
+      access_token: 'account-access',
+      refresh_token: 'account-refresh',
+      machine_token: 'account-machine',
+      machine_type: 'account-type',
+      device_token: 'account-device',
+      desktop_version: '1.2.3'
+    })
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('reverse account')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload).toMatchObject({ platform, type: 'reverse', credentials: { access_token: 'account-access', refresh_token: 'account-refresh', machine_token: 'account-machine', machine_type: 'account-type', desktop_version: '1.2.3' }, extra: { auto_checkin: false, reverse_auto_refresh: false } })
+    if (platform.startsWith('workbuddy_')) {
+      expect(payload.extra).toMatchObject({ reverse_sanitize_fingerprints: true, reverse_auto_tasks: false, reverse_passthrough_ip: false })
+    }
+    wrapper.unmount()
+  })
+
   it('creates a Cline account without an account type and with only the Chat Completions endpoint', async () => {
     const wrapper = mountModal()
     await wrapper.get('[data-testid="platform-button-cline"]').trigger('click')

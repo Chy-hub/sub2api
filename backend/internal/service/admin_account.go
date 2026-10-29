@@ -411,6 +411,17 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	credentials, err := normalizeReverseCredentials(input.Platform, input.Credentials)
+	if err != nil {
+		return nil, err
+	}
+	input.Credentials = credentials
+	if salt, _ := credentials["machine_salt"].(string); IsReverseProvider(input.Platform, "workbuddy") && strings.TrimSpace(salt) == "" {
+		credentials["machine_salt"] = reverseRandomID()
+	}
+	if err := validateReverseExtra(input.Platform, accountExtra); err != nil {
+		return nil, err
+	}
 	if input.Platform == PlatformTypeSafe && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
@@ -436,6 +447,16 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Priority:    input.Priority,
 		Status:      StatusActive,
 		Schedulable: true,
+	}
+	if IsReversePlatform(input.Platform) {
+		if input.Type != AccountTypeReverse {
+			return nil, errors.New("reverse platforms only support reverse accounts")
+		}
+		if strings.TrimSpace(account.GetCredential("access_token")) == "" {
+			return nil, errors.New("reverse account requires access_token")
+		}
+	} else if input.Type == AccountTypeReverse {
+		return nil, errors.New("reverse account type requires a reverse platform")
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -584,8 +605,19 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if account.Platform == PlatformTypeSafe && input.Type != "" && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
+	if input.Type != "" {
+		if IsReversePlatform(account.Platform) && input.Type != AccountTypeReverse {
+			return nil, errors.New("reverse platforms only support reverse accounts")
+		}
+		if !IsReversePlatform(account.Platform) && input.Type == AccountTypeReverse {
+			return nil, errors.New("reverse account type requires a reverse platform")
+		}
+	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
+		if err := validateReverseExtra(account.Platform, input.Extra); err != nil {
+			return nil, err
+		}
 		normalizedExtra, err = normalizeOpenAILongContextBillingUpdateExtra(account, input)
 		if err != nil {
 			return nil, err
@@ -650,9 +682,22 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if account.IsCredentialShadow() && input.Credentials != nil {
 		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
 	} else if len(input.Credentials) > 0 {
+		if IsReversePlatform(account.Platform) {
+			account.Credentials, err = normalizeReverseCredentialFields(account.Platform, account.Credentials)
+			if err != nil {
+				return nil, err
+			}
+		}
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
 		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
+		account.Credentials, err = normalizeReverseCredentials(account.Platform, account.Credentials)
+		if err != nil {
+			return nil, err
+		}
+		if account.IsReverse() && strings.TrimSpace(account.GetCredential("access_token")) == "" {
+			return nil, fmt.Errorf("reverse account requires access_token")
+		}
 		// 校验并规范化请求头覆写配置（header 名小写化、格式检查）
 		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
 			return nil, err
@@ -709,6 +754,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OpenAIAutoResetCreditStateExtraKey,
 			OpenCodeGoUsageAutoRefreshExtraKey,
 			OpenCodeGoUsageSnapshotExtraKey,
+			ReverseCheckinExtraKey,
+			ReverseModelCatalogExtraKey,
+			ReverseQuotaExtraKey,
+			ReverseTasksExtraKey,
+			ReverseTaskScheduleExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v

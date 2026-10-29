@@ -152,6 +152,7 @@ type AccountTestService struct {
 	modelMetadataRegistryAt   time.Time
 	pluginManager             *PluginManager
 	openaiGatewayService      *OpenAIGatewayService
+	reverseGateway            *ReverseGateway
 	agentIdentityTaskMu       sync.Mutex
 	agentIdentityWS           agentIdentityWSConnectionInvalidator
 	// grokWSDialer is optional; realtime account tests use the default OpenAI-style
@@ -174,6 +175,14 @@ func (s *AccountTestService) SetPluginManager(pluginManager *PluginManager) {
 func (s *AccountTestService) SetOpenAIGatewayService(gateway *OpenAIGatewayService) {
 	if s != nil {
 		s.openaiGatewayService = gateway
+	}
+}
+
+// SetReverseGateway wires the built-in reverse adapters for account tests and
+// upstream model discovery.
+func (s *AccountTestService) SetReverseGateway(gateway *ReverseGateway) {
+	if s != nil {
+		s.reverseGateway = gateway
 	}
 }
 
@@ -385,6 +394,9 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	// Route to platform-specific test method
+	if account.IsReverse() {
+		return s.testReverseAccountConnection(c, account, modelID, prompt)
+	}
 	// 按入站协议分流的多协议供应商（国产厂商等）：按账号协议选测试路径。
 	if account.RoutesProtocolByInbound() {
 		switch account.GetAPIProtocol() {
@@ -435,6 +447,46 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 // overrides that catalog. Falling through to the generic Claude tester used
 // credentials.base_url + /v1/messages?beta=true, which 404s as HTML on
 // https://opencode.ai/zen/go/v1/v1/messages.
+// testReverseAccountConnection probes a reverse account through its built-in
+// adapter (Qoder / WorkBuddy) with a short non-stream request.
+func (s *AccountTestService) testReverseAccountConnection(c *gin.Context, account *Account, modelID, prompt string) error {
+	if s.reverseGateway == nil {
+		return s.sendErrorAndEnd(c, "Reverse gateway is not configured")
+	}
+	ctx := c.Request.Context()
+	model := strings.TrimSpace(modelID)
+	if model == "" {
+		if models, err := s.reverseGateway.ListModels(ctx, account); err == nil && len(models) > 0 {
+			model = models[0].ID
+		}
+	}
+	if model == "" {
+		model = "auto"
+	}
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "Reply with OK."
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: model})
+	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过反代适配器测试连接"})
+
+	result, err := s.reverseGateway.Test(ctx, account, model, prompt)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	if result != nil && strings.TrimSpace(result.Content) != "" {
+		s.sendEvent(c, TestEvent{Type: "content", Text: result.Content})
+	}
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
 func (s *AccountTestService) testModelRoutedAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
 	testModelID := strings.TrimSpace(modelID)
 	if testModelID == "" {
