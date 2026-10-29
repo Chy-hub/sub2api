@@ -130,6 +130,24 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it.each(['qoder_cn', 'qoder_global', 'workbuddy_cn', 'workbuddy_global'] as const)(
+    'routes %s reverse accounts to the upstream quota cell and forwards manual refresh',
+    async platform => {
+      const account = makeAccount({ id: 9100, platform, type: 'reverse' })
+      const wrapper = mount(AccountUsageCell, {
+        props: { account, manualRefreshToken: 1 },
+        global: { stubs: { ReverseQuotaUsageCell: { name: 'ReverseQuotaUsageCell', props: ['account', 'manualRefreshToken'], template: '<div data-test="reverse-usage" />' } } }
+      })
+      const cell = wrapper.getComponent({ name: 'ReverseQuotaUsageCell' })
+      expect(cell.props('account')).toEqual(account)
+      expect(cell.props('manualRefreshToken')).toBe(1)
+      await wrapper.setProps({ manualRefreshToken: 2 })
+      expect(cell.props('manualRefreshToken')).toBe(2)
+      expect(getUsage).not.toHaveBeenCalled()
+      wrapper.unmount()
+    }
+  )
+
   it('renders eligible Ollama Cloud state and forwards query updates', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {

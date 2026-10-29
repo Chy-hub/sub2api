@@ -1,5 +1,10 @@
 <template>
-  <div ref="rootRef" v-if="showUsageWindows">
+  <ReverseQuotaUsageCell
+    v-if="isReversePlatform(account.platform)"
+    :account="account"
+    :manual-refresh-token="manualRefreshToken"
+  />
+  <div ref="rootRef" v-else-if="showUsageWindows">
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
       v-if="
@@ -726,6 +731,8 @@ import {
   userInfoQuotaCellVisible
 } from './credentialsBuilder'
 import OpenCodeGoUsageCell from './OpenCodeGoUsageCell.vue'
+import ReverseQuotaUsageCell from './ReverseQuotaUsageCell.vue'
+import { isReversePlatform } from '@/constants/platformCatalog'
 
 // Module-level cache shared across all AccountUsageCell instances
 const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
