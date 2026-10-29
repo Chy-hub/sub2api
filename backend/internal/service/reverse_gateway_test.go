@@ -143,6 +143,9 @@ func TestReverseGatewayAllIngressProtocolsPreserveUsage(t *testing.T) {
 						require.Equal(t, platform, acc.Platform)
 						require.Equal(t, "test-model", gjson.GetBytes(body, "model").String())
 						require.Contains(t, string(body), "hello")
+						messages := gjson.GetBytes(body, "messages").Array()
+						require.Len(t, messages, 1, "the gateway must not add default instructions")
+						require.Equal(t, "user", messages[0].Get("role").String())
 						payload := `{"id":"chatcmpl-test","object":"chat.completion","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}`
 						contentType := "application/json"
 						if wantsStream {

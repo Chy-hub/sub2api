@@ -494,7 +494,9 @@ func buildEnvelope(template map[string]any, req *chatRequest, model, userType st
 		}
 	}
 
-	messages := buildQoderMessages(templateMessages(template), req.messages, extractLatestUserPrompt(req.messages), req.toolsEnabled)
+	// The desktop template supplies protocol fields only. Agent identity,
+	// environment and tool instructions belong to the calling client.
+	messages := buildQoderMessages(req.messages, extractLatestUserPrompt(req.messages), req.toolsEnabled)
 	prompt := lastUserText(messages)
 	if business, ok := body["business"].(map[string]any); ok {
 		business["id"] = newUUID()
@@ -525,13 +527,6 @@ func buildEnvelope(template map[string]any, req *chatRequest, model, userType st
 	return body
 }
 
-func templateMessages(template map[string]any) []any {
-	if messages, ok := template["messages"].([]any); ok {
-		return messages
-	}
-	return nil
-}
-
 func modelConfigSource(envelope map[string]any) string {
 	if config, ok := envelope["model_config"].(map[string]any); ok {
 		if source, ok := config["source"].(string); ok && source != "" {
@@ -557,23 +552,8 @@ func deepCopyMap(input map[string]any) map[string]any {
 // Message conversion
 // ---------------------------------------------------------------------------
 
-func buildQoderMessages(templateMsgs, incoming []any, prompt string, toolsEnabled bool) []any {
-	var rebuilt []any
-
-	hasIncomingSystem := false
-	for _, message := range incoming {
-		if item, ok := message.(map[string]any); ok && stringValue(item["role"]) == "system" {
-			hasIncomingSystem = true
-			break
-		}
-	}
-	if !hasIncomingSystem {
-		for _, message := range templateMsgs {
-			if item, ok := message.(map[string]any); ok && stringValue(item["role"]) == "system" {
-				rebuilt = append(rebuilt, deepCopyMap(item))
-			}
-		}
-	}
+func buildQoderMessages(incoming []any, prompt string, toolsEnabled bool) []any {
+	rebuilt := make([]any, 0, len(incoming))
 
 	for _, message := range incoming {
 		item, ok := message.(map[string]any)
