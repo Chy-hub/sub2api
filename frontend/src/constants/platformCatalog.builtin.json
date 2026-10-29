@@ -278,6 +278,38 @@
           }
         ]
       }
+    },
+    {
+      "id": "qoder_cn",
+      "display_name": "Qoder CN",
+      "gateway": "openai",
+      "cn_provider": false,
+      "reverse_provider": "qoder",
+      "reverse_region": "cn"
+    },
+    {
+      "id": "qoder_global",
+      "display_name": "Qoder Global",
+      "gateway": "openai",
+      "cn_provider": false,
+      "reverse_provider": "qoder",
+      "reverse_region": "global"
+    },
+    {
+      "id": "workbuddy_cn",
+      "display_name": "WorkBuddy CN",
+      "gateway": "openai",
+      "cn_provider": false,
+      "reverse_provider": "workbuddy",
+      "reverse_region": "cn"
+    },
+    {
+      "id": "workbuddy_global",
+      "display_name": "WorkBuddy Global",
+      "gateway": "openai",
+      "cn_provider": false,
+      "reverse_provider": "workbuddy",
+      "reverse_region": "global"
     }
   ],
   "composite_precedence": [
@@ -293,6 +325,10 @@
     "opencode_go",
     "typesafe",
     "command_code",
-    "cline"
+    "cline",
+    "qoder_cn",
+    "qoder_global",
+    "workbuddy_cn",
+    "workbuddy_global"
   ]
 }

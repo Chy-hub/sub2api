@@ -280,6 +280,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 }
 
 func (s *OpenAIGatewayService) rawChatCompletionsURL(account *Account) (string, error) {
+	if account.IsReverse() {
+		return "https://reverse.invalid/v1/chat/completions", nil
+	}
 	if account.Platform == PlatformGrok {
 		targetURL, err := buildGrokChatCompletionsURL(account, s.cfg, s.settingService)
 		if err != nil {

@@ -45,6 +45,8 @@ export interface PlatformSpec {
   cn_provider: boolean
   litellm_provider?: string
   multi_protocol?: ProviderProfileInfo
+  reverse_provider?: 'qoder' | 'workbuddy'
+  reverse_region?: 'cn' | 'global'
 }
 
 export interface PlatformCatalog {
@@ -89,7 +91,20 @@ export function isKnownPlatform(platform: string | null | undefined): boolean {
 export function supportsUpstreamModelSync(platform: string | null | undefined): boolean {
   const spec = getPlatformSpec(platform?.trim().toLowerCase())
   if (!spec) return false
-  return !!spec.multi_protocol || ['anthropic', 'openai', 'gemini', 'antigravity', 'grok'].includes(spec.id)
+  return !!spec.multi_protocol || !!spec.reverse_provider || ['anthropic', 'openai', 'gemini', 'antigravity', 'grok'].includes(spec.id)
+}
+
+/** 是否为内置反代平台（Qoder / WorkBuddy）。 */
+export function isReversePlatform(platform: string | null | undefined): boolean {
+  return !!getPlatformSpec(platform?.trim().toLowerCase())?.reverse_provider
+}
+
+export function reverseProviderOf(platform: string | null | undefined): 'qoder' | 'workbuddy' | undefined {
+  return getPlatformSpec(platform?.trim().toLowerCase())?.reverse_provider
+}
+
+export function reverseRegionOf(platform: string | null | undefined): 'cn' | 'global' | undefined {
+  return getPlatformSpec(platform?.trim().toLowerCase())?.reverse_region
 }
 
 /** 清单中声明了定价目录 provider 的平台才支持同步定价模型。 */
