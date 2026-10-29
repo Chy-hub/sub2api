@@ -26,6 +26,10 @@ const (
 	reverseLoginPollInterval = 2 * time.Second
 	reverseLoginTicketTTL    = 5 * time.Minute
 	reverseUpstreamTimeout   = 15 * time.Minute
+	// Streaming generations can legitimately run far longer than a short RPC.
+	// The stream is still bounded so an idle upstream cannot pin a connection
+	// forever; callers additionally cancel it when the client disconnects.
+	reverseStreamTimeout = 60 * time.Minute
 )
 
 type reverseLoginSession struct {
@@ -74,6 +78,10 @@ type ReverseGateway struct {
 	operationLocks sync.Map
 	lockCache      LeaderLockCache
 	lockDB         *sql.DB
+
+	// Per-request upstream bounds; zero falls back to the package defaults.
+	upstreamTimeout       time.Duration
+	streamUpstreamTimeout time.Duration
 }
 
 // NewReverseGateway builds the gateway and registers the built-in providers.
@@ -85,6 +93,9 @@ func NewReverseGateway(accountRepo AccountRepository) *ReverseGateway {
 		registry:    registry,
 		sessions:    map[string]*reverseLoginSession{},
 		tickets:     map[string]*reverseLoginTicket{},
+
+		upstreamTimeout:       reverseUpstreamTimeout,
+		streamUpstreamTimeout: reverseStreamTimeout,
 	}
 }
 
@@ -140,7 +151,17 @@ func (g *ReverseGateway) Forward(ctx context.Context, account *Account, body []b
 	if err != nil {
 		return nil, err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, reverseUpstreamTimeout)
+	timeout := g.upstreamTimeout
+	if timeout <= 0 {
+		timeout = reverseUpstreamTimeout
+	}
+	if stream {
+		timeout = g.streamUpstreamTimeout
+		if timeout <= 0 {
+			timeout = reverseStreamTimeout
+		}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 
 	resp, forwardErr := provider.Forward(callCtx, acc, body, stream)
 	if forwardErr == nil {
@@ -601,11 +622,13 @@ func (g *ReverseGateway) AcquireLoginTicket(ticket string) (string, map[string]a
 	return entry.Platform, credentials, finish, true
 }
 
-// CleanupLoginSessions drops expired login sessions and tickets.
+// CleanupLoginSessions drops expired login sessions and tickets, and lets the
+// providers evict stale per-account caches.
 func (g *ReverseGateway) CleanupLoginSessions(now time.Time) {
 	if g == nil {
 		return
 	}
+	g.registry.CleanupCaches(now)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for id, session := range g.sessions {

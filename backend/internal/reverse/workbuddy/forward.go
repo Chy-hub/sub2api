@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
 )
@@ -63,7 +64,7 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 	mode, promptText := promptSettings(acc)
 	promptKey := fmt.Sprintf("%s|%x", catalogKey(acc), sha256.Sum256([]byte(mode+"|"+promptText)))
 	p.mu.Lock()
-	degraded := p.degraded[acc.ID] == promptKey
+	degraded := p.degraded[acc.ID].key == promptKey
 	p.mu.Unlock()
 	if degraded && mode != "passthrough" {
 		promptText = "You are a helpful assistant. Respond in the user's language, follow the user's instructions, and be direct and concise."
@@ -120,9 +121,9 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 		if failure.Kind == string(reverse.FailureKindContentBlocked) && mode != "passthrough" {
 			p.mu.Lock()
 			if p.degraded == nil {
-				p.degraded = map[int64]string{}
+				p.degraded = map[int64]degradedPrompt{}
 			}
-			p.degraded[acc.ID] = promptKey
+			p.degraded[acc.ID] = degradedPrompt{key: promptKey, at: time.Now()}
 			p.mu.Unlock()
 		}
 		return nil, failure
