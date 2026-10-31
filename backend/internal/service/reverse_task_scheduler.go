@@ -13,12 +13,19 @@ func reverseTaskSlot(extra map[string]any, spec reverse.TaskSpec, now time.Time)
 	var slot time.Time
 	if spec.AfterCheckin {
 		state, _ := extra[ReverseCheckinExtraKey].(map[string]any)
-		last, _ := state["last_success_at"].(string)
-		successAt, err := time.Parse(time.RFC3339, last)
-		if err != nil || state["status"] != "success" || successAt.In(now.Location()).Format("2006-01-02") != now.Format("2006-01-02") {
-			return time.Time{}
+		status, _ := state["status"].(string)
+		if status == "unsupported" {
+			// Enterprise accounts have no check-in flow; AfterCheckin tasks may
+			// run without waiting for a success that can never happen.
+			slot = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		} else {
+			last, _ := state["last_success_at"].(string)
+			successAt, err := time.Parse(time.RFC3339, last)
+			if err != nil || status != "success" || successAt.In(now.Location()).Format("2006-01-02") != now.Format("2006-01-02") {
+				return time.Time{}
+			}
+			slot = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		}
-		slot = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	} else {
 		for _, hour := range spec.DefaultHours {
 			candidate := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
