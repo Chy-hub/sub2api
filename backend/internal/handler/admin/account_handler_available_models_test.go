@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -532,6 +533,9 @@ func TestAccountHandlerReverseModelPreviewValidatesCredentialsAndProxy(t *testin
 			handler := NewAccountHandler(&reversePreviewProxyAdminService{newStubAdminService()}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			handler.SetReverseGateway(service.NewReverseGateway(nil))
 			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1})
+			})
 			router.POST("/preview", handler.SyncUpstreamModelsPreview)
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/preview", strings.NewReader(payload))

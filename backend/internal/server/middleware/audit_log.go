@@ -118,6 +118,11 @@ var auditSensitiveReads = map[string]string{
 	"GET /api/v1/admin/groups/:id/api-keys":       "admin.groups.api_keys.read",
 	"GET /api/v1/admin/backups/s3-config":         "admin.backups.s3_config.read",
 	"GET /api/v1/admin/data-management/s3/config": "admin.data_management.s3_config.read",
+	// 反代账户读取会携带账号凭据触发上游请求；登录轮询会返回一次性 ticket。
+	"GET /api/v1/admin/accounts/reverse/login/poll": "admin.accounts.reverse_login.poll",
+	"GET /api/v1/admin/accounts/:id/reverse/quota":  "admin.accounts.reverse_quota.read",
+	"GET /api/v1/admin/accounts/:id/reverse/tasks":  "admin.accounts.reverse_tasks.read",
+	"GET /api/v1/admin/accounts/:id/userinfo-quota": "admin.accounts.userinfo_quota.read",
 }
 
 // auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
