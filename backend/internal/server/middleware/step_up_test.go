@@ -66,6 +66,7 @@ func TestEnforceStepUpRejectsAdminAPIKey(t *testing.T) {
 func TestEnforceStepUpRejectsMachineCredentialsEvenWithUserGrant(t *testing.T) {
 	for method, reason := range map[string]string{
 		service.AuditAuthMethodMCPOAuth: "STEP_UP_MCP_OAUTH_FORBIDDEN",
+		service.AuditAuthMethodPasskey:  "STEP_UP_MACHINE_CREDENTIAL_FORBIDDEN",
 		// Unknown credential types are denied by default, not silently allowed.
 		"future_machine_token": "STEP_UP_MACHINE_CREDENTIAL_FORBIDDEN",
 	} {
@@ -82,7 +83,8 @@ func TestEnforceStepUpRejectsMachineCredentialsEvenWithUserGrant(t *testing.T) {
 func TestMachineCredentialReasonAllowlistsBrowserSessions(t *testing.T) {
 	for method, want := range map[string]bool{
 		"": false, service.AuditAuthMethodJWT: false,
-		service.AuditAuthMethodAdminAPIKey: true, service.AuditAuthMethodMCPOAuth: true, "unknown": true,
+		service.AuditAuthMethodAdminAPIKey: true, service.AuditAuthMethodMCPOAuth: true,
+		service.AuditAuthMethodPasskey: true, "unknown": true,
 	} {
 		c, _ := newStepUpTestContext(t)
 		c.Set("auth_method", method)

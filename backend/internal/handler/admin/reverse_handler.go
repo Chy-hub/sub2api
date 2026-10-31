@@ -6,9 +6,21 @@ import (
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+// reverseLoginActorID returns the authenticated administrator that will own a
+// reverse browser-login session or ticket.
+func reverseLoginActorID(c *gin.Context) (int64, bool) {
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Error(c, http.StatusUnauthorized, "Authentication required")
+		return 0, false
+	}
+	return subject.UserID, true
+}
 
 func (h *AccountHandler) reverseOperationAccount(c *gin.Context) (*service.Account, bool) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
