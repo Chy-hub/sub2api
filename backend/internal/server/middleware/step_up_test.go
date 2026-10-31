@@ -33,10 +33,11 @@ func (s stubStepUpUserReader) GetByID(ctx context.Context, id int64) (*service.U
 
 type stubStepUpSettingReader struct {
 	enabled bool
+	err     error
 }
 
-func (s stubStepUpSettingReader) IsStepUpEnabled(ctx context.Context) bool {
-	return s.enabled
+func (s stubStepUpSettingReader) IsStepUpEnabled(ctx context.Context) (bool, error) {
+	return s.enabled, s.err
 }
 
 // stepUpEnabled 功能开关开启的设置桩，供既有门控分支测试使用。
@@ -49,6 +50,20 @@ func newStepUpTestContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorde
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/sensitive", nil)
 	return c, rec
+}
+
+func TestEnforceStepUpFailsClosedWhenSettingReadFails(t *testing.T) {
+	c, rec := newStepUpTestContext(t)
+	c.Set("auth_method", service.AuditAuthMethodJWT)
+	c.Set(string(ContextKeyUser), AuthSubject{UserID: 1})
+
+	ok := enforceStepUp(c, stubStepUpGrantChecker{granted: true}, stubStepUpUserReader{user: &service.User{TotpEnabled: true}},
+		stubStepUpSettingReader{enabled: true, err: errors.New("setting store unavailable")})
+
+	require.False(t, ok)
+	require.True(t, c.IsAborted())
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "STEP_UP_UNAVAILABLE")
 }
 
 func TestEnforceStepUpRejectsAdminAPIKey(t *testing.T) {

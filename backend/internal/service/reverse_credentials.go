@@ -75,6 +75,26 @@ func normalizeReverseCredentialFields(platform string, credentials map[string]an
 			}
 		}
 	}
+	// Fold case-variant aliases (AccessToken, ACCESS_TOKEN, …) into their
+	// canonical key before redaction; otherwise such keys are neither used by
+	// the adapter nor recognized as sensitive and would be echoed verbatim.
+	for canonical, aliases := range reverse.CredentialAliases {
+		for key, value := range out {
+			if key == canonical {
+				continue
+			}
+			for _, alias := range aliases {
+				if !strings.EqualFold(key, alias) {
+					continue
+				}
+				if _, exists := out[canonical]; !exists {
+					out[canonical] = value
+				}
+				delete(out, key)
+				break
+			}
+		}
+	}
 	acc := &reverse.Account{Credentials: out}
 	for canonical, aliases := range reverse.CredentialAliases {
 		if value := acc.CredentialString(canonical); value != "" {
