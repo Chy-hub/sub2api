@@ -594,6 +594,23 @@ func (r *ustcSpeedRepository) DeleteTask(ctx context.Context, id int64) error {
 	}
 	return nil
 }
+// ReleaseOrphanTasks clears leases left behind by a killed process. Without
+// this, a restarted service waits for the full lease ttl (up to ~76 minutes
+// for a 20-model task) before the task can run again.
+func (r *ustcSpeedRepository) ReleaseOrphanTasks(ctx context.Context) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks
+SET lease_owner=NULL, lease_until=NULL, lease_revision=NULL, lease_schedule=NULL,
+    last_status='cancelled',
+    last_detail='interrupted: service restarted while the task was running',
+    progress=jsonb_set(COALESCE(progress,'{}'::jsonb), '{state}', '"cancelled"', true),
+    updated_at=NOW()
+WHERE last_status='running'`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (r *ustcSpeedRepository) ClaimTask(ctx context.Context, id int64, owner string, ttl time.Duration, force bool, revision int64) (bool, error) {
 	result, err := r.db.ExecContext(ctx, `UPDATE ustc_speed_tasks SET lease_owner=$2,lease_until=NOW()+$3*INTERVAL '1 second',lease_revision=revision,lease_schedule=jsonb_build_array(enabled,config->'interval_seconds',config->'jitter_seconds',config->'cron_expression',config->'timezone'),last_run_at=NOW(),last_status='running',config=config-'last_detail',progress=jsonb_build_object('run_id',$2::text,'state','preparing','started_at',NOW(),'updated_at',NOW(),'total',0,'completed',0,'successful',0,'failed',0,'skipped',0,'cancelled',0,'active','[]'::jsonb) WHERE id=$1 AND revision=$5 AND(lease_until IS NULL OR lease_until<NOW()) AND($4 OR(enabled AND next_run_at<=NOW()))`, id, owner, ttl.Seconds(), force, revision)
 	if err != nil {

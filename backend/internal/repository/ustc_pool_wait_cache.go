@@ -14,8 +14,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const ustcPoolWaitKeyPrefix = "ustc:pool_wait:"
-const ustcPoolWaitActiveKey = "ustc:pool_wait:active"
+// Both keys must share a hash tag: the Lua script touches them in one call, so
+// they have to live in the same Redis Cluster slot.
+const ustcPoolWaitKeyPrefix = "ustc:pool_wait:{ustc_pool_wait}:"
+const ustcPoolWaitActiveKey = "ustc:pool_wait:{ustc_pool_wait}:active"
 
 const ustcPoolWaitReleaseTimeout = 2 * time.Second
 

@@ -137,7 +137,15 @@ if rpm_arg >= 0 and parallel_arg >= 0 then
     if learned_cap > 0 then next_cap = math.min(next_cap, learned_cap) end
     redis.call('HSET', meta, 'epoch', epoch, 'used', used, 'state', state, 'waited', waited, 'active', active, 'deadline', deadline, 'cap', next_cap)
   end
-  redis.call('HSET', meta, 'rpm', rpm_arg, 'parallel', parallel_arg)
+  -- Parallel may only tighten here. Duplicate rows for the same physical key
+  -- can carry a stale (larger) limit; overwriting with it would over-admit.
+  -- A real upstream increase is applied when the state is rebuilt.
+  local old_parallel = tonumber(redis.call('HGET', meta, 'parallel') or '-1')
+  local next_parallel = parallel_arg
+  if old_parallel > 0 and parallel_arg > 0 then
+    next_parallel = math.min(old_parallel, parallel_arg)
+  end
+  redis.call('HSET', meta, 'rpm', rpm_arg, 'parallel', next_parallel)
 elseif not state then
   state = 'verify_one'
   epoch = math.max(epoch, 1)
@@ -247,7 +255,9 @@ elseif state == 'verify_one' and active == 1 and deadline > 0 and now >= deadlin
     waited = 0
     active = 0
     cap = effective_cap(rpm)
-    redis.call('HSET', meta, 'r:' .. probe_id, epoch, 'rollover_from', prior_epoch, 'epoch', epoch, 'state', state, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'cap', cap)
+    -- Keep the pre-rollover epoch so a retried commit carrying the old ticket
+    -- epoch stays idempotent after the reservation row was rewritten.
+    redis.call('HSET', meta, 'r:' .. probe_id, epoch, 'ro:' .. probe_id, prior_epoch, 'rollover_from', prior_epoch, 'epoch', epoch, 'state', state, 'used', used, 'deadline', deadline, 'waited', waited, 'active', active, 'cap', cap)
     redis.call('ZREMRANGEBYSCORE', commits, '-inf', '+inf')
   else
     -- A committed probe still has no response. Keep its accounting until its
@@ -362,8 +372,9 @@ elseif op == 'commit' then
   local committed_epoch = tonumber(redis.call('HGET', meta, 'c:' .. id) or '-1')
   local saved_probe = tonumber(redis.call('HGET', meta, 'p:' .. id) or '-1')
   local reserved_epoch = tonumber(redis.call('HGET', meta, 'r:' .. id) or '-1')
+  local rollover_epoch = tonumber(redis.call('HGET', meta, 'ro:' .. id) or '-1')
   local refunded = redis.call('HGET', meta, 'refunded:' .. id) == '1'
-  if held and committed_epoch >= 0 and not refunded and saved_probe == ticket_probe and (ticket_epoch == committed_epoch or ticket_epoch == reserved_epoch) then
+  if held and committed_epoch >= 0 and not refunded and saved_probe == ticket_probe and (ticket_epoch == committed_epoch or ticket_epoch == reserved_epoch or ticket_epoch == rollover_epoch) then
     local result = reply(1, ticket_probe, seq)
     result[2] = committed_epoch
     result[13] = tonumber(redis.call('HGET', meta, 'cold:' .. id) or tostring(result[13]))
@@ -395,6 +406,10 @@ elseif op == 'commit' then
       end
     end
     redis.call('HSET', meta, 'used', used, 'active', active, 'deadline', deadline, 'c:' .. id, epoch, 'cs:' .. id, commit_seq, 'seen', '1')
+    if ticket_probe == 1 then
+      -- Timestamp for the unanswered-probe guard in renew.
+      redis.call('HSET', meta, 'pa:' .. id, now)
+    end
     redis.call('HSET', meta, 'state', state)
     return reply(1, ticket_probe, seq)
   end
@@ -415,6 +430,18 @@ elseif op == 'release' then
   end
   redis.call('HDEL', meta, 'c:' .. id, 'seq:' .. id, 'r:' .. id, 'p:' .. id, 'cold:' .. id, 'cs:' .. id, 'first:' .. id, 'refunded:' .. id, 'o:' .. id)
 elseif op == 'renew' then
+  -- An unanswered probe must not hold the whole key forever: the renewer would
+  -- otherwise extend its lease indefinitely while available_count() stays 0.
+  -- After five minutes without a response header, drop the probe and enter a
+  -- conservative wait; the lease then expires normally.
+  if redis.call('HGET', meta, 'probe') == id then
+    local committed_at = tonumber(redis.call('HGET', meta, 'pa:' .. id) or '0')
+    if committed_at > 0 and now - committed_at > 300000 then
+      redis.call('HDEL', meta, 'probe', 'pa:' .. id)
+      redis.call('HSET', meta, 'state', 'sync_wait', 'deadline', now + 60000)
+      return reply(0, 0, 0)
+    end
+  end
   if redis.call('ZSCORE', leases, id) then
     redis.call('ZADD', leases, now + lease_ms, id)
     return reply(1, 0, 0)
@@ -556,14 +583,24 @@ return reply(0, 0, 0)
 const ustcRenewScript = `
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local meta = KEYS[1]
+local leases = KEYS[2]
 local id = ARGV[1]
 local lease_ms = tonumber(ARGV[2]) or 120000
-local score = redis.call('ZSCORE', KEYS[1], id)
+if redis.call('HGET', meta, 'probe') == id then
+  local committed_at = tonumber(redis.call('HGET', meta, 'pa:' .. id) or '0')
+  if committed_at > 0 and now - committed_at > 300000 then
+    redis.call('HDEL', meta, 'probe', 'pa:' .. id)
+    redis.call('HSET', meta, 'state', 'sync_wait', 'deadline', now + 60000)
+    return 0
+  end
+end
+local score = redis.call('ZSCORE', leases, id)
 if not score or tonumber(score) <= now then
   return 0
 end
-redis.call('ZADD', KEYS[1], now + lease_ms, id)
-redis.call('PEXPIRE', KEYS[1], 86400000)
+redis.call('ZADD', leases, now + lease_ms, id)
+redis.call('PEXPIRE', leases, 86400000)
 return 1
 `
 
@@ -867,6 +904,7 @@ func (c *RPMCacheImpl) USTCRenew(ctx context.Context, ticket *service.USTCTicket
 // ignored and can never be recreated by renewal.
 func (c *RPMCacheImpl) USTCRenewBatch(ctx context.Context, tickets []*service.USTCTicket) error {
 	type renewal struct {
+		metaKey  string
 		leaseKey string
 		id       string
 	}
@@ -881,7 +919,7 @@ func (c *RPMCacheImpl) USTCRenewBatch(ctx context.Context, tickets []*service.US
 		if err != nil {
 			return err
 		}
-		item := renewal{leaseKey: keys[1], id: ticket.ID}
+		item := renewal{metaKey: keys[0], leaseKey: keys[1], id: ticket.ID}
 		if _, exists := seen[item]; exists {
 			continue
 		}
@@ -895,7 +933,7 @@ func (c *RPMCacheImpl) USTCRenewBatch(ctx context.Context, tickets []*service.US
 	commands := make([]*redis.Cmd, len(items))
 	_, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		for i, item := range items {
-			commands[i] = pipe.Eval(ctx, ustcRenewScript, []string{item.leaseKey}, item.id, ustcCapacityLease.Milliseconds())
+			commands[i] = pipe.Eval(ctx, ustcRenewScript, []string{item.metaKey, item.leaseKey}, item.id, ustcCapacityLease.Milliseconds())
 		}
 		return nil
 	})

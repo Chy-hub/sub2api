@@ -32,6 +32,9 @@ func (s *OpenAIGatewayService) selectUSTCPreviousResponse(ctx context.Context, g
 	}
 	id, err := store.GetResponseAccount(ctx, derefGroupID(groupID), strings.TrimSpace(responseID))
 	if err != nil || id <= 0 {
+		// The state store cannot distinguish "not bound" from a read failure
+		// (both degrade to a miss), so a continuation may fall back to normal
+		// selection. Preserving the physical Key binding is best-effort here.
 		return nil, false, nil
 	}
 	account, err := s.loadResponseBindingAccount(ctx, id)

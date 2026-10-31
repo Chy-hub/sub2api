@@ -178,6 +178,16 @@ func (s *USTCSpeedService) Start() {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	s.refreshSettings(ctx)
 	cancel()
+	// Clear tasks left in "running" by a previous process. Otherwise their
+	// lease blocks manual and scheduled runs until it expires (up to the full
+	// task ttl, which can exceed an hour).
+	cleanupCtx, cleanupCancel := context.WithTimeout(s.ctx, 5*time.Second)
+	if released, err := s.repo.ReleaseOrphanTasks(cleanupCtx); err != nil {
+		slog.Warn("ustc_speed_release_orphan_tasks_failed", "error", err)
+	} else if released > 0 {
+		slog.Warn("ustc_speed_released_orphan_tasks", "count", released)
+	}
+	cleanupCancel()
 	s.wg.Add(1)
 	go s.schedulerLoop()
 }
