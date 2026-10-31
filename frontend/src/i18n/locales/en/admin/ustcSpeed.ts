@@ -161,7 +161,7 @@ export default {
         cronOverridesInterval: 'Cron schedule takes precedence over the interval when set.',
         zeroUnlimited: 'An active-request limit of 0 adds no task-specific limit. RPM reserve may be 0; at least one concurrency slot must be reserved.'
       },
-      validation: { range: '{field} must be a valid value from {min} to {max}.', days: 'Select at least one day; keep all selected to run daily.', request: 'Prompt or request parameters exceed their limits.', timezone: 'Enter a valid timezone.', name: 'Enter a task name.', models: 'Select at least one model.', accounts: 'Select accounts or enable automatic account inclusion.', numbers: 'Enter valid numeric settings.' },
+      validation: { range: '{field} must be a valid value from {min} to {max}.', days: 'Select at least one day; keep all selected to run daily.', request: 'Prompt or request parameters exceed their limits.', timezone: 'Enter a valid timezone.', name: 'Enter a task name.', nameLength: 'Task name must not exceed 200 bytes (about 66 CJK characters).', models: 'Select at least one model.', accounts: 'Select accounts or enable automatic account inclusion.', numbers: 'Enter valid numeric settings.' },
       defaultPrompt: 'Briefly explain a scientific concept you know well.',
       apis: { chat: 'Chat Completions', responses: 'Responses' },
       thinking: { off: 'Off', on: 'On', auto: 'Automatic (no extra setting)' },

@@ -148,10 +148,10 @@ describe('PricingEntryCard request multipliers', () => {
     vi.mocked(channelsAPI.getModelDefaultPricing).mockResolvedValue({
       found: true, input_price: 3e-6, output_price: 15e-6,
     })
-    const wrapper = shallowMount(PricingEntryCard, {
-      props: { entry: { ...createEntry(), reasoning_effort_multipliers: { high: 0.5 } } },
-    })
+    const entry = { ...createEntry(), reasoning_effort_multipliers: { high: 0.5 } }
+    const wrapper = shallowMount(PricingEntryCard, { props: { entry } })
     wrapper.findComponent({ name: 'ModelTagInput' }).vm.$emit('update:models', ['example-model'])
+    await wrapper.setProps({ entry: { ...entry, models: ['example-model'] } })
     await flushPromises()
     expect(wrapper.emitted('update')!.at(-1)![0]).toMatchObject({
       models: ['example-model'], input_price: 3, output_price: 15,
