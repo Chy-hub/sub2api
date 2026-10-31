@@ -529,7 +529,7 @@ func TestBuildEnvelopeNeverInjectsDesktopPrompt(t *testing.T) {
 	}{
 		{"user only", `[{"role":"user","content":"hello"}]`, []string{"user"}, []string{"hello"}},
 		{"system", `[{"role":"system","content":"You are my agent."},{"role":"user","content":"hello"}]`, []string{"system", "user"}, []string{"You are my agent.", "hello"}},
-		{"developer", `[{"role":"developer","content":"Follow my agent's instructions."},{"role":"user","content":"hello"}]`, []string{"developer", "user"}, []string{"Follow my agent's instructions.", "hello"}},
+		{"developer", `[{"role":"developer","content":"Follow my agent's instructions."},{"role":"user","content":"hello"}]`, []string{"system", "user"}, []string{"Follow my agent's instructions.", "hello"}},
 		{"empty system", `[{"role":"system","content":""},{"role":"user","content":"hello"}]`, []string{"user"}, []string{"hello"}},
 		{"empty messages", `[]`, nil, nil},
 	} {

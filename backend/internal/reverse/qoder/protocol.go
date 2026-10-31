@@ -592,6 +592,12 @@ func buildQoderMessages(incoming []any, prompt string, toolsEnabled bool) []any 
 
 func convertIncomingMessage(message map[string]any, toolsEnabled bool) map[string]any {
 	role := stringValue(message["role"])
+	// Qoder 上游的 role 白名单只有 system/user/assistant/tool/latest_reminder，
+	// OpenAI 客户端发来的 developer（system 的别名）会被上游拒绝：
+	// "unknown variant `developer`, expected one of ..."。
+	if role == "developer" {
+		role = "system"
+	}
 	content := message["content"]
 
 	if blocks, ok := content.([]any); ok && len(blocks) > 0 {
