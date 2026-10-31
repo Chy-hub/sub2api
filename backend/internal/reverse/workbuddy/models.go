@@ -318,12 +318,15 @@ func (p *Provider) probeV3Config(ctx context.Context, client *http.Client, cred 
 	if errReq != nil {
 		return nil, fmt.Errorf("workbuddy build v3 config request: %w", errReq)
 	}
-	applyConfigHeaders(req, cred, codeBuddyIDEUA)
-	if len(agents) > 0 {
-		applyConfigHeaders(req, cred, agents[0])
+	// One header pass: an explicit agent overrides the IDE user agent instead
+	// of setting the same headers twice.
+	userAgent := codeBuddyIDEUA
+	if len(agents) > 0 && strings.TrimSpace(agents[0]) != "" {
+		userAgent = agents[0]
 	}
+	applyConfigHeaders(req, cred, userAgent)
 
-	raw, errCall := apiCall(client, req, configBodyLimit)
+	raw, errCall := apiCall(client, req, configBodyLimit, credentialSecrets(*cred)...)
 	if errCall != nil {
 		return nil, errCall
 	}
@@ -371,7 +374,7 @@ func (p *Provider) probeEnterpriseModels(ctx context.Context, client *http.Clien
 		}
 		applyConfigHeaders(req, cred, codeBuddyIDEUA)
 
-		raw, errCall := apiCall(client, req, configBodyLimit)
+		raw, errCall := apiCall(client, req, configBodyLimit, credentialSecrets(*cred)...)
 		if errCall != nil {
 			lastErr = errCall
 			// Only a 404 justifies trying the next path.

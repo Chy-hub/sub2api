@@ -375,10 +375,10 @@ func (c *Client) desktopChatInternal(ctx context.Context, cred *Credential, expe
 	defer closeBody(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, apiBodyLimit))
-		return "", enrichClassifyError(resp.StatusCode, string(raw), resp.Header)
+		return "", enrichClassifyError(resp.StatusCode, string(raw), resp.Header, credentialSecrets(*cred)...)
 	}
 
-	requestID, errRead := scanServerRequestID(resp.Body)
+	requestID, errRead := scanServerRequestID(resp.Body, credentialSecrets(*cred)...)
 	if errRead != nil && (needRequestID || !errors.Is(errRead, errNoServerRequestID)) {
 		return "", errRead
 	}
@@ -417,7 +417,7 @@ func (c *Client) applyDesktopChatHeaders(req *http.Request, cred *Credential, ex
 // 抓不到返回错误——调用方需要它来构造被计分的事件链。
 var errNoServerRequestID = errors.New("no server request id found in chat stream (self-generated ids are not scored)")
 
-func scanServerRequestID(reader io.Reader) (string, error) {
+func scanServerRequestID(reader io.Reader, secrets ...string) (string, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 8*1024), 1<<20)
 	deadline := time.Now().Add(30 * time.Second)
@@ -428,7 +428,7 @@ func scanServerRequestID(reader io.Reader) (string, error) {
 		}
 		line := scanner.Text()
 		if payload, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok && isErrorFrame(strings.TrimSpace(payload)) {
-			return "", upstreamError(http.StatusBadGateway, strings.TrimSpace(payload), nil)
+			return "", upstreamError(http.StatusBadGateway, strings.TrimSpace(payload), nil, secrets...)
 		}
 		index := strings.Index(line, `"id":"`)
 		if index < 0 {
@@ -1081,8 +1081,11 @@ func (c *Client) postReport(ctx context.Context, cred *Credential, url string, e
 			break
 		}
 	}
-	if resp.StatusCode >= 400 {
-		return enrichClassifyError(resp.StatusCode, string(body), resp.Header)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Redirects are not followed (CheckRedirect = ErrUseLastResponse); a 3xx
+		// here means the report did not reach the endpoint and must not count
+		// as success.
+		return enrichClassifyError(resp.StatusCode, string(body), resp.Header, credentialSecrets(*cred)...)
 	}
 	// 上报接口对「已上报过」也返回成功，因此不检查业务码。
 	return nil
@@ -1151,6 +1154,12 @@ func nowMs() int64 { return time.Now().UnixMilli() }
 
 // randomHexForExport 生成随机 hex（供包内构造事件 id 使用）。
 func randomHexForExport(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n > sha256.Size {
+		n = sha256.Size
+	}
 	buffer := make([]byte, n)
 	if _, errRand := rand.Read(buffer); errRand != nil {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("fallback-%d", time.Now().UnixNano())))
@@ -1542,7 +1551,7 @@ func waitGrowthClaimable(ctx context.Context, client *Client, credential *Creden
 	if mp {
 		attempts = 2
 	}
-	for attempt := 1; attempt < attempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if !reverse.SleepContext(ctx, 3*time.Second) {
 			return false
 		}
@@ -1641,7 +1650,9 @@ func acceptPendingTasks(ctx context.Context, client *Client, credential *Credent
 
 func (v *taskAdapter) TaskStatus(ctx context.Context, cred *reverse.Account) reverse.TaskStatusResult {
 	if v.region.IsGlobal() {
-		return reverse.TaskStatusResult{Error: "global realm（无开学季活动）"}
+		// Global accounts simply have no school-season activity; an empty
+		// status is normal, not an error to show in the admin UI.
+		return reverse.TaskStatusResult{}
 	}
 	native, err := v.Native(cred)
 	if err != nil {
@@ -2444,7 +2455,7 @@ func runSchoolTask(ctx context.Context, client *Client, credential *Credential, 
 		// 3 条小程序对话埋点（无需真实会话）。
 		for index := 0; index < 3; index++ {
 			conversationID := fmt.Sprintf("wb2api-chat-%d-%d", nowUnixMs(), index)
-			if errReport := client.ReportMPEvents(ctx, credential, SchoolChatTimesEvents(conversationID, "")); errReport != nil {
+			if errReport := client.ReportMPEvents(ctx, credential, SchoolChatTimesEvents(conversationID, SchoolSeasonActivityID)); errReport != nil {
 				return errReport
 			}
 			if !reverse.SleepContext(ctx, mpActionGap) {

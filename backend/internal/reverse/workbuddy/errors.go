@@ -15,14 +15,44 @@ const retryAfterCap = 2 * time.Hour
 
 // upstreamError converts an upstream failure into *reverse.UpstreamError.
 //
+// redactSecrets removes credential material from anything that may be surfaced
+// to a client or persisted in a log. Short values are skipped because replacing
+// them would corrupt ordinary words.
+func redactSecrets(message string, secrets ...string) string {
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if len(secret) < 8 {
+			continue
+		}
+		message = strings.ReplaceAll(message, secret, "[redacted]")
+	}
+	return message
+}
+
+// credentialSecrets returns the token material that must never be echoed in an
+// upstream error.
+func credentialSecrets(cred credential) []string {
+	values := []string{cred.accessToken, cred.refreshToken, cred.deviceToken, cred.machineSalt}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 // The body is preserved as the message (with the business code and requestId
 // surfaced explicitly) because the reference protocol encodes most failures as
 // HTTP status + business code + natural language; rewriting them into a
 // generic sentence destroys the only evidence users can forward upstream.
-func upstreamError(status int, body string, header http.Header) *reverse.UpstreamError {
+func upstreamError(status int, body string, header http.Header, secrets ...string) *reverse.UpstreamError {
 	out := reverse.NewUpstreamError(status, "", "")
 	raw := strings.TrimSpace(body)
 	defer func() { classifyResponse(out, status, raw) }()
+	// Runs after classifyResponse: classification uses the raw body, while the
+	// message handed to clients and logs must never echo credential material.
+	defer func() { out.Message = redactSecrets(out.Message, secrets...) }()
 	if raw == "" {
 		out.Message = "empty upstream response"
 		out.RetryAfter = parseRetryAfter(header, time.Now())

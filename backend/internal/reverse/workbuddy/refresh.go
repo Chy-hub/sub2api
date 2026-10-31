@@ -63,10 +63,10 @@ func (p *Provider) Refresh(ctx context.Context, acc *reverse.Account) (map[strin
 		return nil, errors.New("workbuddy refresh response exceeds the size limit")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, upstreamError(resp.StatusCode, string(body), resp.Header)
+		return nil, upstreamError(resp.StatusCode, string(body), resp.Header, credentialSecrets(*cred)...)
 	}
 
-	token, errToken := parseRefreshResponse(body)
+	token, errToken := parseRefreshResponse(body, credentialSecrets(*cred)...)
 	if errToken != nil {
 		return nil, errToken
 	}
@@ -93,7 +93,7 @@ func (p *Provider) Refresh(ctx context.Context, acc *reverse.Account) (map[strin
 //
 //	{"code":0,"data":{"accessToken":...}}
 //	{"accessToken":...}
-func parseRefreshResponse(body []byte) (refreshTokenPayload, error) {
+func parseRefreshResponse(body []byte, secrets ...string) (refreshTokenPayload, error) {
 	var envelope struct {
 		Code json.RawMessage `json:"code"`
 		Msg  string          `json:"msg"`
@@ -106,7 +106,7 @@ func parseRefreshResponse(body []byte) (refreshTokenPayload, error) {
 			if message == "" {
 				message = truncate(strings.TrimSpace(string(body)), 512)
 			}
-			return refreshTokenPayload{}, upstreamError(0, string(body), nil)
+			return refreshTokenPayload{}, upstreamError(0, string(body), nil, secrets...)
 		}
 		if len(envelope.Data) > 0 && strings.TrimSpace(string(envelope.Data)) != "null" {
 			var token refreshTokenPayload

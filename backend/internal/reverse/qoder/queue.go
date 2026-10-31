@@ -73,8 +73,11 @@ var (
 	queueIntPattern    = regexp.MustCompile(quoted + `(?:retryAfterSeconds|waitTime)` + quoted + `\s*:\s*\\?"?\s*(\d+)`)
 	queueStringPattern = regexp.MustCompile(quoted + `(?:modelKey|queueType)` + quoted + `\s*:\s*\\?"?\s*([A-Za-z0-9_.\-]+)`)
 	queueBoolPattern   = regexp.MustCompile(quoted + `(?:isQueued|serviceAvailable)` + quoted + `\s*:\s*(true|false)`)
-	queueQueuedPattern = regexp.MustCompile(quoted + `isQueued` + quoted + `\s*:\s*(true|false)`)
-	queueAvailPattern  = regexp.MustCompile(quoted + `serviceAvailable` + quoted + `\s*:\s*(true|false)`)
+	// Require a JSON key boundary before the field name: free-form model output
+	// that merely mentions "isQueued: true" must not be mistaken for a queue
+	// signal when the payload is not valid JSON.
+	queueQueuedPattern = regexp.MustCompile(`(?:^|[{,\[])\s*` + quoted + `isQueued` + quoted + `\s*:\s*(true|false)`)
+	queueAvailPattern  = regexp.MustCompile(`(?:^|[{,\[])\s*` + quoted + `serviceAvailable` + quoted + `\s*:\s*(true|false)`)
 )
 
 // ParseQueueSignal 从上游响应正文里识别排队信号。

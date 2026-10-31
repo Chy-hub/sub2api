@@ -117,7 +117,7 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, apiBodyLimit))
 		_ = resp.Body.Close()
-		failure := upstreamError(resp.StatusCode, string(body), resp.Header)
+		failure := upstreamError(resp.StatusCode, string(body), resp.Header, credentialSecrets(*cred)...)
 		if failure.Kind == string(reverse.FailureKindContentBlocked) && mode != "passthrough" {
 			p.mu.Lock()
 			if p.degraded == nil {
@@ -131,7 +131,7 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 
 	if !stream {
 		defer func() { _ = resp.Body.Close() }()
-		aggregated, errAggregate := aggregateChatCompletion(resp.Body)
+		aggregated, errAggregate := aggregateChatCompletion(resp.Body, credentialSecrets(*cred)...)
 		if errAggregate != nil {
 			return nil, errAggregate
 		}
@@ -166,6 +166,13 @@ func streamResponse(ctx context.Context, upstream *http.Response) *http.Response
 	header.Set("Cache-Control", "no-cache")
 	header.Set("X-Accel-Buffering", "no")
 
+	// A stalled consumer blocks the producer inside io.Pipe.Write, where a
+	// request-context cancellation cannot reach it. Close the read side on
+	// cancellation so the producer unblocks and releases the upstream body.
+	go func() {
+		<-ctx.Done()
+		_ = reader.CloseWithError(ctx.Err())
+	}()
 	go func() {
 		defer func() { _ = upstream.Body.Close() }()
 		errStream := streamChatCompletion(ctx, upstream.Body, writer)

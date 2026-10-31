@@ -22,11 +22,9 @@ import (
 //	10. effort normalization         — illegal efforts are rejected with 400
 //	10.5 reasoning_summary default   — mirror the genuine protocol shape
 //	11. reasoning_content backfill   — some tenants require non-empty reasoning
-//	12. fingerprint sanitization is deliberately NOT ported (see package docs).
-//
-// Step 12 of the reference implementation removes Claude Code / Codex
-// fingerprints so that upstream content moderation does not recognize them. It
-// exists to evade upstream detection and is out of scope here.
+//	12. fingerprint sanitization    — enabled by default; see sanitize.go and
+//	   reverse_sanitize_fingerprints. It rewrites matching literals in message
+//	   content, reasoning and tool arguments, so it can alter user-provided text.
 
 // prepareOptions is the pipeline input.
 type prepareOptions struct {
@@ -122,10 +120,10 @@ func prepareBody(body []byte, opts prepareOptions) []byte {
 	}
 
 	// prompt_cache_key: injected last because no earlier step depends on it.
+	// Always override a client-supplied key: the injected value carries the
+	// account UID prefix that isolates cache prefixes between accounts.
 	if cacheKey := strings.TrimSpace(opts.cacheKey); cacheKey != "" {
-		if _, okKey := payload["prompt_cache_key"]; !okKey {
-			payload["prompt_cache_key"] = cacheKey
-		}
+		payload["prompt_cache_key"] = cacheKey
 	}
 
 	// Run last: prompt handling and tool normalization can introduce text.
@@ -378,11 +376,13 @@ func injectThinking(payload map[string]any, defaultEffort string) {
 }
 
 func ensureDeepSeekEffort(payload map[string]any, defaultEffort string) {
-	if _, okSnake := payload["reasoning_effort"]; okSnake {
-		return
-	}
-	if _, okCamel := payload["reasoningEffort"]; okCamel {
-		return
+	// An explicitly empty effort is equivalent to not setting it; forwarding ""
+	// would be rejected upstream.
+	for _, key := range []string{"reasoning_effort", "reasoningEffort"} {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return
+		}
+		delete(payload, key)
 	}
 	effort := strings.TrimSpace(defaultEffort)
 	if effort == "" {
