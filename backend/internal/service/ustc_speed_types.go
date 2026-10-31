@@ -316,6 +316,9 @@ type USTCSpeedRepository interface {
 	SaveTask(context.Context, *USTCSpeedTask) error
 	DeleteTask(context.Context, int64) error
 	ClaimTask(context.Context, int64, string, time.Duration, bool, int64) (bool, error)
+	// ReleaseOrphanTasks clears tasks left in "running" by a previous process.
+	// Single-instance deployments only; a live multi-instance run is cancelled.
+	ReleaseOrphanTasks(context.Context) (int64, error)
 	FinishTask(context.Context, int64, string, time.Time, string, string) error
 	UpdateTaskProgress(context.Context, int64, string, *USTCSpeedTaskProgress) error
 	AcquireKey(context.Context, string, string, time.Duration, int) (bool, error)

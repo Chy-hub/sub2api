@@ -102,14 +102,22 @@ func USTCSpeedAnalysisWindow(q USTCSpeedQuery, now time.Time) USTCSpeedAnalysis 
 	if out.Comparison == "week" || out.Comparison == "month" || out.Comparison == "year" {
 		if q.LastHours > 0 {
 			previousEnd = previousStart.Add(end.Sub(start))
-		} else {
-			// Shift the start date, then preserve the current window's calendar
-			// length. Shifting both ends independently could collapse March
-			// 30–31 into February 28–28 (or February 28–29 in a leap year).
+		} else if out.Comparison == "week" {
+			// Both ends already shifted by seven days; preserve the current
+			// window's calendar length for DST-safe boundaries.
 			a := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 			b := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC)
 			day := previousStart.AddDate(0, 0, int(b.Sub(a)/(24*time.Hour)))
 			previousEnd = time.Date(day.Year(), day.Month(), day.Day(), end.Hour(), end.Minute(), end.Second(), end.Nanosecond(), zone)
+		} else if !previousEnd.After(previousStart) {
+			// month/year: the calendar-shifted end is authoritative. Only when
+			// it collapses (e.g. March 30–31 → February 28–28) fall back to a
+			// length-preserving window, clamped so the previous period never
+			// overlaps the current one (which double-counts those days).
+			previousEnd = previousStart.Add(end.Sub(start))
+			if previousEnd.After(start) {
+				previousEnd = start
+			}
 		}
 	}
 	out.PreviousStart, out.PreviousEnd = &previousStart, &previousEnd
