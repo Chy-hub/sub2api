@@ -2244,7 +2244,19 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 			continue
 		}
 		g.Go(func() error {
-			_, warning, err := h.refreshSingleAccount(gctx, acc)
+			var warning string
+			var err error
+			if acc.IsReverse() {
+				// Reverse accounts refresh through their provider adapter; the
+				// generic OAuth refresh path rejects them.
+				if h.reverseGateway == nil {
+					err = service.ErrReverseGatewayUnavailable
+				} else {
+					_, err = h.reverseGateway.Refresh(gctx, acc)
+				}
+			} else {
+				_, warning, err = h.refreshSingleAccount(gctx, acc)
+			}
 			mu.Lock()
 			if err != nil {
 				failedCount++

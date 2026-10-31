@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
 )
 
@@ -73,8 +74,12 @@ func (g *ReverseGateway) Quota(ctx context.Context, account *Account) (*reverse.
 	if err != nil {
 		return nil, err
 	}
-	if err = g.storeReverseExtra(ctx, account, ReverseQuotaExtraKey, map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339), "quota": result}); err != nil {
-		return nil, err
+	// The quota was fetched successfully; a cancelled client request must not
+	// turn a successful read into a 502. Persist with a detached, bounded ctx.
+	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer storeCancel()
+	if err = g.storeReverseExtra(storeCtx, account, ReverseQuotaExtraKey, map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339), "quota": result}); err != nil {
+		logger.LegacyPrintf("service.reverse", "reverse quota state update failed: account=%d err=%v", account.ID, err)
 	}
 	return result, nil
 }
