@@ -673,6 +673,9 @@ func (s *USTCSpeedService) runProbeAttempt(parent context.Context, task USTCSpee
 	}
 	ctx = context.WithValue(ctx, ustcSpeedProbeKey{}, probe)
 	ctx = ContextWithUSTCAdmission(ctx, selection)
+	// The probe target is pinned to the USTC host; a redirect would otherwise
+	// carry the synthetic request (and body on 307/308) to an arbitrary host.
+	ctx = WithHTTPUpstreamRedirectsDisabled(ctx)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return skip("invalid_request")
