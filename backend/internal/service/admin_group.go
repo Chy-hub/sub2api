@@ -303,6 +303,11 @@ func defaultModelsListCandidateIDs(platform string) []string {
 	case PlatformComposite:
 		return compositeDefaultModelsListCandidateIDs()
 	default:
+		// Reverse platforms have no static model catalog; their candidates come
+		// from the schedulable accounts' model mappings.
+		if domain.IsReversePlatform(platform) {
+			return nil
+		}
 		ids := make([]string, 0, len(claude.DefaultModels))
 		for _, model := range claude.DefaultModels {
 			ids = append(ids, model.ID)
