@@ -317,3 +317,63 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
 }
+
+func TestValidateDataAccountAcceptsAllSupportedTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		platform    string
+		accountType string
+	}{
+		{"oauth", service.PlatformOpenAI, service.AccountTypeOAuth},
+		{"setup-token", service.PlatformOpenAI, service.AccountTypeSetupToken},
+		{"apikey", service.PlatformOpenAI, service.AccountTypeAPIKey},
+		{"upstream", service.PlatformOpenAI, service.AccountTypeUpstream},
+		{"bedrock", service.PlatformOpenAI, service.AccountTypeBedrock},
+		{"service-account", service.PlatformOpenAI, service.AccountTypeServiceAccount},
+		{"reverse", service.PlatformQoderCN, service.AccountTypeReverse},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDataAccount(DataAccount{
+				Name:        "acc",
+				Platform:    tt.platform,
+				Type:        tt.accountType,
+				Credentials: map[string]any{"access_token": "token"},
+			})
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestImportDataAcceptsReverseAccount(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "qoder-reverse",
+					"platform":    service.PlatformQoderCN,
+					"type":        service.AccountTypeReverse,
+					"credentials": map[string]any{"access_token": "token"},
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.Equal(t, service.AccountTypeReverse, adminSvc.createdAccounts[0].Type)
+	require.Equal(t, service.PlatformQoderCN, adminSvc.createdAccounts[0].Platform)
+}
