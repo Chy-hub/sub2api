@@ -38,9 +38,12 @@ function createEntry(models: string[] = []): PricingFormEntry {
   }
 }
 
-function addModels(entry: PricingFormEntry, models: string[]) {
+async function addModels(entry: PricingFormEntry, models: string[]) {
   const wrapper = shallowMount(PricingEntryCard, { props: { entry } })
   wrapper.findComponent({ name: 'ModelTagInput' }).vm.$emit('update:models', models)
+  // The parent applies the emitted model list before the async price lookup
+  // resolves; mirror that so the component observes the latest props.
+  await wrapper.setProps({ entry: { ...entry, models } })
   return wrapper
 }
 
@@ -54,7 +57,7 @@ describe('PricingEntryCard default price auto-fill', () => {
   })
 
   it('auto-fills the default price when a model is added to an empty entry', async () => {
-    const wrapper = addModels(createEntry(), ['claude-opus-4-8'])
+    const wrapper = await addModels(createEntry(), ['claude-opus-4-8'])
     await flushPromises()
 
     expect(getModelDefaultPricing).toHaveBeenCalledTimes(1)
@@ -68,7 +71,7 @@ describe('PricingEntryCard default price auto-fill', () => {
 
   it('does not overwrite prices when appending a model to an entry that already has one', async () => {
     const entry = createEntry(['claude-opus-4-7'])
-    const wrapper = addModels(entry, ['claude-opus-4-7', 'claude-opus-4-8'])
+    const wrapper = await addModels(entry, ['claude-opus-4-7', 'claude-opus-4-8'])
     await flushPromises()
 
     expect(getModelDefaultPricing).not.toHaveBeenCalled()
@@ -84,7 +87,7 @@ describe('PricingEntryCard default price auto-fill', () => {
   })
 
   it('does not auto-fill a shared price when several models are added to an empty entry at once', async () => {
-    const wrapper = addModels(createEntry(), ['claude-opus-4-7', 'claude-opus-4-8'])
+    const wrapper = await addModels(createEntry(), ['claude-opus-4-7', 'claude-opus-4-8'])
     await flushPromises()
 
     expect(getModelDefaultPricing).not.toHaveBeenCalled()
@@ -101,7 +104,7 @@ describe('PricingEntryCard default price auto-fill', () => {
       () => new Promise(resolve => { resolveLookup = resolve }) as never,
     )
     const entry = createEntry()
-    const wrapper = addModels(entry, ['gpt-4o'])
+    const wrapper = await addModels(entry, ['gpt-4o'])
 
     // Simulate a second selection landing before the first lookup resolves.
     await wrapper.setProps({ entry: { ...entry, models: ['gpt-4o', 'o3'] } })
@@ -117,7 +120,7 @@ describe('PricingEntryCard default price auto-fill', () => {
 
   it('keeps manual prices untouched when a model is appended', async () => {
     const entry = { ...createEntry(['claude-opus-4-7']), input_price: '1.5' }
-    const wrapper = addModels(entry, ['claude-opus-4-7', 'claude-opus-4-8'])
+    const wrapper = await addModels(entry, ['claude-opus-4-7', 'claude-opus-4-8'])
     await flushPromises()
 
     expect(getModelDefaultPricing).not.toHaveBeenCalled()

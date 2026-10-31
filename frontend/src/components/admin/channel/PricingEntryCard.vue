@@ -433,10 +433,14 @@ async function onModelsUpdate(newModels: string[]) {
   try {
     const result = await channelsAPI.getModelDefaultPricing(addedModels[0])
     if (result.found) {
+      // Use the latest models, not the snapshot captured when the lookup
+      // started: a model deleted while the request was in flight must stay
+      // deleted instead of being unioned back in.
+      const currentModels = [...(props.entry.models ?? [])]
+      if (!currentModels.includes(addedModels[0])) return
       emit('update', {
         ...props.entry,
-        // Union with the latest models: another add may have landed while the price lookup was in flight.
-        models: [...new Set([...props.entry.models, ...newModels])],
+        models: currentModels,
         input_price: perTokenToMTok(result.input_price ?? null),
         output_price: perTokenToMTok(result.output_price ?? null),
         cache_write_price: perTokenToMTok(result.cache_write_price ?? null),

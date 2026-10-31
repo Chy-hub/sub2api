@@ -5129,6 +5129,16 @@ const reverseFormModel = computed({
 const reverseLoginTicket = ref('')
 const reverseLoginProfile = ref<import('@/api/admin/accounts').ReverseLoginProfile | null>(null)
 
+// Switching away from a reverse platform must drop the browser-login ticket:
+// the backend binds a ticket to its platform and rejects creation with a
+// platform mismatch, and the ticket cannot be reused after that rejection.
+watch(() => form.platform, (next) => {
+  if (!isReversePlatformValue(next)) {
+    reverseLoginTicket.value = ''
+    reverseLoginProfile.value = null
+  }
+})
+
 function buildReverseCredentials(): Record<string, unknown> {
   const credentials: Record<string, unknown> = {}
   for (const key of ['access_token', 'refresh_token', 'uid', 'machine_id', 'machine_token', 'machine_type', 'machine_code', 'user_type', 'device_token', 'session_id', 'enterprise_id', 'nickname', 'domain', 'desktop_version', 'machine_salt', 'user_agent', 'client_version', 'cli_version', 'client_name'] as const) {
@@ -6558,7 +6568,7 @@ const createAccountAndFinish = async (
     // 非 apikey 类型（bedrock/oauth/reverse）不传，后端不动作。
     upstream_billing_probe_enabled: type === 'apikey' ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value,
-    reverse_login_ticket: reverseLoginTicket || undefined
+    reverse_login_ticket: type === 'reverse' ? (reverseLoginTicket || undefined) : undefined
   })
 }
 

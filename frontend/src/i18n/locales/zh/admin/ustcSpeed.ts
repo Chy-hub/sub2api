@@ -161,7 +161,7 @@ export default {
         cronOverridesInterval: 'Cron 有值时按 Cron 调度，并替代检测间隔。',
         zeroUnlimited: '活动请求上限填 0 表示不增加任务级限制；RPM 预留可为 0，并发至少预留 1 个。'
       },
-      validation: { range: '{field} 必须为 {min}–{max} 范围内的有效数值。', days: '至少选择一天；每天运行请保留全选。', request: '提示词或请求参数超出限制。', timezone: '请填写有效时区。', name: '请填写任务名称。', models: '至少选择一个模型。', accounts: '请选择账号或开启自动包含账号。', numbers: '请填写有效的数值配置。' },
+      validation: { range: '{field} 必须为 {min}–{max} 范围内的有效数值。', days: '至少选择一天；每天运行请保留全选。', request: '提示词或请求参数超出限制。', timezone: '请填写有效时区。', name: '请填写任务名称。', nameLength: '任务名称不能超过 200 字节（中文约 66 个字符）。', models: '至少选择一个模型。', accounts: '请选择账号或开启自动包含账号。', numbers: '请填写有效的数值配置。' },
       defaultPrompt: '请用简洁文字介绍一个你熟悉的科学概念。',
       apis: { chat: 'Chat Completions', responses: 'Responses' },
       thinking: { off: '关闭', on: '开启', auto: '自动（不额外指定）' },
