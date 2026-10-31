@@ -449,7 +449,7 @@
                   :entry="entry"
                   :platform="section.platform"
                   :model-suggestions="modelSuggestionsFor(section.platform)"
-                  @request-model-suggestions="ensurePricingModelCandidates(section.platform)"
+                  @request-model-suggestions="ensurePricingModelCandidates(section.platform, section.group_ids)"
                   enable-time-pricing
                   enable-tier-multipliers
                   @update="updatePricingEntry(sIdx, idx, $event)"
@@ -583,7 +583,7 @@
                       :entry="entry"
                       :platform="section.platform"
                       :model-suggestions="modelSuggestionsFor(section.platform)"
-                      @request-model-suggestions="ensurePricingModelCandidates(section.platform)"
+                      @request-model-suggestions="ensurePricingModelCandidates(section.platform, section.group_ids)"
                       @update="rule.pricing.splice(pIdx, 1, $event)"
                       @remove="removeRulePricingEntry(sIdx, ruleIndex, pIdx)"
                     />
@@ -872,6 +872,11 @@ function toggleGroupInSection(sectionIdx: number, groupId: number) {
   } else {
     section.group_ids.push(groupId)
   }
+  // Reverse platforms derive candidates from their group's accounts, so retry
+  // once a group is linked.
+  if (!supportsPricingModelSync(section.platform)) {
+    void ensurePricingModelCandidates(section.platform, section.group_ids)
+  }
 }
 
 // ── Pricing helpers ──
@@ -907,9 +912,32 @@ function modelSuggestionsFor(platform: GroupPlatform): string[] {
   return pricingModelCandidates[platform] ?? EMPTY_MODEL_SUGGESTIONS
 }
 
-async function ensurePricingModelCandidates(platform: GroupPlatform) {
-  if (!supportsPricingModelSync(platform) || platform in pricingModelCandidates) return
+async function ensurePricingModelCandidates(platform: GroupPlatform, groupIDs: number[] = []) {
+  if (platform in pricingModelCandidates) return
   if (pricingModelCandidatesLoading.has(platform)) return
+
+  // Platforms without a LiteLLM pricing catalog (reverse platforms such as
+  // Qoder/WorkBuddy) expose their models through the group's schedulable
+  // accounts, so fall back to the group allowlist candidates.
+  if (!supportsPricingModelSync(platform)) {
+    const groupID = groupIDs.find(id => id > 0)
+    if (!groupID) return
+    pricingModelCandidatesLoading.add(platform)
+    try {
+      const models = await adminAPI.groups.getModelAllowlistCandidates(groupID, platform)
+      if (models.length) {
+        pricingModelCandidates[platform] = models
+      } else {
+        delete pricingModelCandidates[platform]
+      }
+    } catch {
+      delete pricingModelCandidates[platform]
+    } finally {
+      pricingModelCandidatesLoading.delete(platform)
+    }
+    return
+  }
+
   pricingModelCandidatesLoading.add(platform)
   try {
     const result = await adminAPI.channels.syncPricingModels(platform)
