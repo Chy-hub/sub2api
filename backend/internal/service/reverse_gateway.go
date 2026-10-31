@@ -33,20 +33,22 @@ const (
 )
 
 type reverseLoginSession struct {
-	ID        string
-	Platform  string
-	Provider  string
-	Region    string
-	AccountID int64
-	State     any
-	ExpiresAt time.Time
-	LastPoll  time.Time
-	Polling   bool
+	ID          string
+	Platform    string
+	Provider    string
+	Region      string
+	AccountID   int64
+	ActorUserID int64
+	State       any
+	ExpiresAt   time.Time
+	LastPoll    time.Time
+	Polling     bool
 }
 
 type reverseLoginTicket struct {
 	Platform    string
 	Credentials map[string]any
+	ActorUserID int64
 	ExpiresAt   time.Time
 }
 
@@ -414,7 +416,9 @@ func (g *ReverseGateway) Test(ctx context.Context, account *Account, model, prom
 }
 
 // StartLogin begins a browser login session for a platform or account.
-func (g *ReverseGateway) StartLogin(ctx context.Context, platform string, accountID int64, options ...*reverse.Account) (*ReverseLoginStart, error) {
+// The session is bound to the requesting administrator so another admin
+// cannot poll it even if the opaque ID leaks.
+func (g *ReverseGateway) StartLogin(ctx context.Context, platform string, accountID, actorUserID int64, options ...*reverse.Account) (*ReverseLoginStart, error) {
 	providerName, region, ok := domain.ReverseProviderOf(platform)
 	if !ok {
 		return nil, fmt.Errorf("platform %s is not a reverse platform", platform)
@@ -454,13 +458,14 @@ func (g *ReverseGateway) StartLogin(ctx context.Context, platform string, accoun
 		}
 	}
 	session := &reverseLoginSession{
-		ID:        reverseRandomID(),
-		Platform:  platform,
-		Provider:  providerName,
-		Region:    region,
-		AccountID: accountID,
-		State:     start.State,
-		ExpiresAt: time.Now().Add(ttl),
+		ID:          reverseRandomID(),
+		Platform:    platform,
+		Provider:    providerName,
+		Region:      region,
+		AccountID:   accountID,
+		ActorUserID: actorUserID,
+		State:       start.State,
+		ExpiresAt:   time.Now().Add(ttl),
 	}
 	g.mu.Lock()
 	g.sessions[session.ID] = session
@@ -468,13 +473,19 @@ func (g *ReverseGateway) StartLogin(ctx context.Context, platform string, accoun
 	return &ReverseLoginStart{SessionID: session.ID, LoginURL: start.URL, ExpiresAt: session.ExpiresAt}, nil
 }
 
-// PollLogin advances a browser login session.
-func (g *ReverseGateway) PollLogin(ctx context.Context, sessionID string) (*ReverseLoginPoll, error) {
+// PollLogin advances a browser login session owned by the requesting admin.
+func (g *ReverseGateway) PollLogin(ctx context.Context, sessionID string, actorUserID int64) (*ReverseLoginPoll, error) {
 	now := time.Now()
 	g.mu.Lock()
 	session := g.sessions[sessionID]
 	if session == nil || now.After(session.ExpiresAt) {
 		delete(g.sessions, sessionID)
+		g.mu.Unlock()
+		return nil, errors.New("login session expired or not found")
+	}
+	// A mismatched owner must not be able to consume or delete another admin's
+	// session, so report the same error without touching the session.
+	if session.ActorUserID != actorUserID {
 		g.mu.Unlock()
 		return nil, errors.New("login session expired or not found")
 	}
@@ -547,6 +558,7 @@ func (g *ReverseGateway) PollLogin(ctx context.Context, sessionID string) (*Reve
 	g.tickets[ticket] = &reverseLoginTicket{
 		Platform:    session.Platform,
 		Credentials: credentials,
+		ActorUserID: session.ActorUserID,
 		ExpiresAt:   time.Now().Add(reverseLoginTicketTTL),
 	}
 	g.mu.Unlock()
@@ -554,8 +566,9 @@ func (g *ReverseGateway) PollLogin(ctx context.Context, sessionID string) (*Reve
 }
 
 // PreviewAccount resolves browser-login credentials server-side without
-// consuming the ticket or exposing tokens to the create-account page.
-func (g *ReverseGateway) PreviewAccount(platform string, credentials map[string]any, ticket string) (*Account, error) {
+// consuming the ticket or exposing tokens to the create-account page. The
+// ticket must belong to the requesting administrator.
+func (g *ReverseGateway) PreviewAccount(platform string, credentials map[string]any, ticket string, actorUserID int64) (*Account, error) {
 	if !IsReversePlatform(platform) {
 		return nil, ErrReverseLoginPlatformMismatch
 	}
@@ -566,7 +579,7 @@ func (g *ReverseGateway) PreviewAccount(platform string, credentials map[string]
 	if ticket = strings.TrimSpace(ticket); ticket != "" {
 		g.mu.Lock()
 		entry := g.tickets[ticket]
-		if entry == nil || time.Now().After(entry.ExpiresAt) {
+		if entry == nil || entry.ActorUserID != actorUserID || time.Now().After(entry.ExpiresAt) {
 			g.mu.Unlock()
 			return nil, ErrReverseLoginTicketInvalid
 		}
@@ -591,14 +604,23 @@ func (g *ReverseGateway) PreviewAccount(platform string, credentials map[string]
 
 // AcquireLoginTicket reserves a one-time ticket while an account is created.
 // finish(false) returns an unexpired ticket so validation and database errors
-// do not force the administrator to repeat the browser login.
-func (g *ReverseGateway) AcquireLoginTicket(ticket string) (string, map[string]any, func(bool), bool) {
+// do not force the administrator to repeat the browser login. Only the admin
+// who completed the browser login may redeem the ticket.
+func (g *ReverseGateway) AcquireLoginTicket(ticket string, actorUserID int64) (string, map[string]any, func(bool), bool) {
 	ticket = strings.TrimSpace(ticket)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	entry := g.tickets[ticket]
-	if entry == nil || time.Now().After(entry.ExpiresAt) {
+	if entry == nil {
+		return "", nil, nil, false
+	}
+	if time.Now().After(entry.ExpiresAt) {
 		delete(g.tickets, ticket)
+		return "", nil, nil, false
+	}
+	// A mismatched owner must not be able to consume or invalidate another
+	// administrator's ticket.
+	if entry.ActorUserID != actorUserID {
 		return "", nil, nil, false
 	}
 	delete(g.tickets, ticket)

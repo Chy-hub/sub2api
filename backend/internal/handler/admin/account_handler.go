@@ -30,6 +30,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -1072,6 +1073,17 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	// 捕获闭包内创建的账号引用，用于创建成功后触发异步探测。
 	// 幂等重放时闭包不会执行 → createdAccount 为 nil → 不重复调度。
 	var createdAccount *service.Account
+	// 浏览器登录 ticket 绑定发起登录的管理员；在进入幂等闭包前解析，避免在
+	// 回调里访问 gin.Context。
+	ticketActorID := int64(0)
+	if strings.TrimSpace(req.ReverseLoginTicket) != "" {
+		subject, ok := middleware.GetAuthSubjectFromContext(c)
+		if !ok || subject.UserID <= 0 {
+			response.Error(c, http.StatusUnauthorized, "Authentication required")
+			return
+		}
+		ticketActorID = subject.UserID
+	}
 
 	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		credentials := req.Credentials
@@ -1080,7 +1092,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 			if h.reverseGateway == nil {
 				return nil, service.ErrReverseGatewayUnavailable
 			}
-			platform, ticketCredentials, finish, ok := h.reverseGateway.AcquireLoginTicket(ticket)
+			platform, ticketCredentials, finish, ok := h.reverseGateway.AcquireLoginTicket(ticket, ticketActorID)
 			if !ok {
 				return nil, service.ErrReverseLoginTicketInvalid
 			}
@@ -1696,7 +1708,11 @@ func (h *AccountHandler) ReverseLoginStart(c *gin.Context) {
 		}
 		options.ProxyURL = proxy.URL()
 	}
-	start, err := h.reverseGateway.StartLogin(c.Request.Context(), platform, accountID, options)
+	actorUserID, ok := reverseLoginActorID(c)
+	if !ok {
+		return
+	}
+	start, err := h.reverseGateway.StartLogin(c.Request.Context(), platform, accountID, actorUserID, options)
 	if err != nil {
 		response.Error(c, http.StatusBadGateway, "Failed to start reverse login: "+err.Error())
 		return
@@ -1716,7 +1732,11 @@ func (h *AccountHandler) ReverseLoginPoll(c *gin.Context) {
 		response.ErrorFrom(c, service.ErrReverseGatewayUnavailable)
 		return
 	}
-	result, err := h.reverseGateway.PollLogin(c.Request.Context(), sessionID)
+	actorUserID, ok := reverseLoginActorID(c)
+	if !ok {
+		return
+	}
+	result, err := h.reverseGateway.PollLogin(c.Request.Context(), sessionID, actorUserID)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -3372,7 +3392,11 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 			return
 		}
 		var err error
-		tempAccount, err = h.reverseGateway.PreviewAccount(req.Platform, credentials, req.ReverseLoginTicket)
+		actorUserID, ok := reverseLoginActorID(c)
+		if !ok {
+			return
+		}
+		tempAccount, err = h.reverseGateway.PreviewAccount(req.Platform, credentials, req.ReverseLoginTicket, actorUserID)
 		if err != nil {
 			response.BadRequest(c, err.Error())
 			return

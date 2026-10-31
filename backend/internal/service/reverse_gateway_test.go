@@ -341,29 +341,48 @@ func TestReverseAccountOperationsSerializeAcrossGatewayInstances(t *testing.T) {
 
 func TestReverseLoginTicketCanRetryFailedCreationAndRemainsSingleUse(t *testing.T) {
 	g, _, _, _ := newReverseFixture()
-	g.tickets["ticket"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, Credentials: map[string]any{"access_token": "access"}, ExpiresAt: time.Now().Add(time.Minute)}
-	platform, creds, finish, ok := g.AcquireLoginTicket(" ticket ")
+	g.tickets["ticket"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, Credentials: map[string]any{"access_token": "access"}, ActorUserID: 7, ExpiresAt: time.Now().Add(time.Minute)}
+	platform, creds, finish, ok := g.AcquireLoginTicket(" ticket ", 7)
 	require.True(t, ok)
 	require.Equal(t, PlatformQoderGlobal, platform)
 	require.Equal(t, "access", creds["access_token"])
 	creds["access_token"] = "local edit"
-	_, _, _, ok = g.AcquireLoginTicket("ticket")
+	_, _, _, ok = g.AcquireLoginTicket("ticket", 7)
 	require.False(t, ok, "a reserved ticket cannot create two accounts concurrently")
 	finish(false)
-	_, creds, commit, ok := g.AcquireLoginTicket("ticket")
+	_, creds, commit, ok := g.AcquireLoginTicket("ticket", 7)
 	require.True(t, ok)
 	require.Equal(t, "access", creds["access_token"])
 	commit(true)
 	finish(false)
-	_, _, _, ok = g.AcquireLoginTicket("ticket")
+	_, _, _, ok = g.AcquireLoginTicket("ticket", 7)
 	require.False(t, ok, "successful creation must consume the ticket permanently")
+}
+
+func TestReverseLoginTicketRejectsOtherAdministrators(t *testing.T) {
+	g, _, _, _ := newReverseFixture()
+	g.tickets["ticket"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, Credentials: map[string]any{"access_token": "access"}, ActorUserID: 7, ExpiresAt: time.Now().Add(time.Minute)}
+	_, _, _, ok := g.AcquireLoginTicket("ticket", 8)
+	require.False(t, ok, "another admin must not redeem the ticket")
+	_, err := g.PreviewAccount(PlatformQoderGlobal, nil, "ticket", 8)
+	require.ErrorIs(t, err, ErrReverseLoginTicketInvalid)
+	_, _, _, ok = g.AcquireLoginTicket("ticket", 7)
+	require.True(t, ok, "the owner must still be able to redeem it")
+}
+
+func TestReversePollLoginRejectsOtherAdministrators(t *testing.T) {
+	g, _, _, _ := newReverseFixture()
+	g.sessions["session"] = &reverseLoginSession{ID: "session", Provider: "qoder", ActorUserID: 7, ExpiresAt: time.Now().Add(time.Minute)}
+	_, err := g.PollLogin(context.Background(), "session", 8)
+	require.ErrorContains(t, err, "not found")
+	require.Contains(t, g.sessions, "session", "a mismatched owner must not delete the session")
 }
 
 func TestReverseModelPreviewDoesNotConsumeTicketOrPersistTemporaryCatalog(t *testing.T) {
 	g, _, saved, _ := newReverseFixture()
-	g.tickets["ticket"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, Credentials: map[string]any{"access_token": "dt-browser-access", "uid": "browser-user"}, ExpiresAt: time.Now().Add(time.Minute)}
+	g.tickets["ticket"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, Credentials: map[string]any{"access_token": "dt-browser-access", "uid": "browser-user"}, ActorUserID: 7, ExpiresAt: time.Now().Add(time.Minute)}
 	credentials := map[string]any{"machine_token": "account-machine", "machine_type": "account-type", "model_mapping": map[string]any{"client-alias": "test-model"}}
-	preview, err := g.PreviewAccount(PlatformQoderGlobal, credentials, "ticket")
+	preview, err := g.PreviewAccount(PlatformQoderGlobal, credentials, "ticket", 7)
 	require.NoError(t, err)
 	require.Zero(t, preview.ID)
 	require.Equal(t, "dt-browser-access", preview.GetCredential("access_token"))
@@ -373,22 +392,22 @@ func TestReverseModelPreviewDoesNotConsumeTicketOrPersistTemporaryCatalog(t *tes
 	require.NoError(t, err)
 	require.Empty(t, saved.Extra, "a temporary preview must not write a catalog to a stored account")
 	require.NotContains(t, credentials, "access_token", "preview must not mutate the form credentials")
-	_, _, finish, ok := g.AcquireLoginTicket("ticket")
+	_, _, finish, ok := g.AcquireLoginTicket("ticket", 7)
 	require.True(t, ok, "the same ticket must still be usable to create an account")
 	finish(true)
 }
 
 func TestReverseModelPreviewRejectsMissingExpiredOrMismatchedCredentials(t *testing.T) {
 	g, _, _, _ := newReverseFixture()
-	g.tickets["expired"] = &reverseLoginTicket{Platform: PlatformQoderCN, ExpiresAt: time.Now().Add(-time.Minute)}
-	g.tickets["other-region"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, ExpiresAt: time.Now().Add(time.Minute)}
-	_, err := g.PreviewAccount(PlatformQoderCN, nil, "expired")
+	g.tickets["expired"] = &reverseLoginTicket{Platform: PlatformQoderCN, ActorUserID: 7, ExpiresAt: time.Now().Add(-time.Minute)}
+	g.tickets["other-region"] = &reverseLoginTicket{Platform: PlatformQoderGlobal, ActorUserID: 7, ExpiresAt: time.Now().Add(time.Minute)}
+	_, err := g.PreviewAccount(PlatformQoderCN, nil, "expired", 7)
 	require.ErrorIs(t, err, ErrReverseLoginTicketInvalid)
-	_, err = g.PreviewAccount(PlatformQoderCN, nil, "other-region")
+	_, err = g.PreviewAccount(PlatformQoderCN, nil, "other-region", 7)
 	require.ErrorIs(t, err, ErrReverseLoginPlatformMismatch)
-	_, err = g.PreviewAccount(PlatformQoderCN, nil, "")
+	_, err = g.PreviewAccount(PlatformQoderCN, nil, "", 7)
 	require.ErrorContains(t, err, "access_token")
-	preview, err := g.PreviewAccount(PlatformWorkbuddyCN, map[string]any{"auth": map[string]any{"accessToken": "manual-access"}}, "")
+	preview, err := g.PreviewAccount(PlatformWorkbuddyCN, map[string]any{"auth": map[string]any{"accessToken": "manual-access"}}, "", 7)
 	require.NoError(t, err)
 	require.Equal(t, "manual-access", preview.GetCredential("access_token"))
 }
