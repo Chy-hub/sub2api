@@ -124,6 +124,7 @@ export default {
         models: '模型列表',
         modelsPlaceholder: '输入完整模型名后按回车添加',
         modelInputHint: '按回车添加，支持粘贴批量导入',
+        modelInputHintSelectable: '按回车添加，支持粘贴批量导入，也可从下方列表选择',
         billingMode: '计费模式',
         defaultPrices: '默认价格（未命中区间时使用）',
         inputPrice: '输入',

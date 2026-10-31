@@ -66,7 +66,7 @@
       class="collapsible-content"
       :class="{ 'collapsible-content--collapsed': collapsed }"
     >
-      <div class="collapsible-inner">
+      <div class="collapsible-inner" :inert="collapsed" :aria-hidden="collapsed">
         <!-- Header: Models + Billing Mode -->
         <div class="mt-3 flex items-start gap-2">
           <div class="flex-1">
@@ -76,7 +76,9 @@
             <ModelTagInput
               :models="entry.models"
               :platform="props.platform"
+              :suggestions="props.modelSuggestions"
               @update:models="onModelsUpdate($event)"
+              @request-suggestions="emit('requestModelSuggestions')"
               :placeholder="t('admin.channels.form.modelsPlaceholder')"
               class="mt-1"
             />
@@ -320,15 +322,19 @@ const props = withDefaults(defineProps<{
   hideTokenIntervals?: boolean
   enableTimePricing?: boolean
   enableTierMultipliers?: boolean
+  /** Optional candidate models offered by the model name input. */
+  modelSuggestions?: string[]
 }>(), {
   hideTokenIntervals: false,
   enableTimePricing: false,
   enableTierMultipliers: false,
+  modelSuggestions: () => [],
 })
 
 const emit = defineEmits<{
   update: [entry: PricingFormEntry]
   remove: []
+  requestModelSuggestions: []
 }>()
 
 // Collapse state: entries with existing models default to collapsed
@@ -429,7 +435,8 @@ async function onModelsUpdate(newModels: string[]) {
     if (result.found) {
       emit('update', {
         ...props.entry,
-        models: newModels,
+        // Union with the latest models: another add may have landed while the price lookup was in flight.
+        models: [...new Set([...props.entry.models, ...newModels])],
         input_price: perTokenToMTok(result.input_price ?? null),
         output_price: perTokenToMTok(result.output_price ?? null),
         cache_write_price: perTokenToMTok(result.cache_write_price ?? null),
