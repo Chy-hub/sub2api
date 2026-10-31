@@ -450,6 +450,10 @@ func TestUserInfoKeyNode(t *testing.T) {
 		`{"key": "hash"}`,
 		`{"info": {}}`,
 		`{"info": {"foo": 1}}`,
+		// Identity/limit fields alone must not be mistaken for a budget
+		// snapshot: writing one would clear the previous exhausted state.
+		`{"info": {"key_alias": "x"}}`,
+		`{"info": {"rpm_limit": 100}}`,
 		`[]`,
 		`"just a string"`,
 	} {
