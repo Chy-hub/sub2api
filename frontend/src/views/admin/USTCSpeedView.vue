@@ -1186,19 +1186,24 @@ async function loadSettings(force = false) {
   }
 }
 
+let runtimeSeq = 0
 async function loadRuntime(silent = false) {
+  const seq = ++runtimeSeq
   if (!silent) runtimeLoading.value = true
   try {
     const result = await adminUSTCSpeedAPI.getRuntime()
+    // A manual refresh can overlap the 10s poll; only the latest response may
+    // replace the runtime list.
+    if (seq !== runtimeSeq) return
     runtimeRefreshedAt = Date.now()
     runtime.value = result.items ?? []
   } catch {
-    if (!silent) {
+    if (seq === runtimeSeq && !silent) {
       runtime.value = []
       toastError(t('admin.ustcSpeed.error.loadRuntime'))
     }
   } finally {
-    if (!silent) runtimeLoading.value = false
+    if (seq === runtimeSeq && !silent) runtimeLoading.value = false
   }
 }
 
@@ -1425,17 +1430,23 @@ async function saveGlobalSettings() {
   }
 }
 
+let sampleSeq = 0
 async function openSample(id: number) {
+  const seq = ++sampleSeq
   sampleDialogOpen.value = true
   sampleDetailLoading.value = true
   selectedSample.value = null
   try {
-    selectedSample.value = await adminUSTCSpeedAPI.getSample(id)
+    const detail = await adminUSTCSpeedAPI.getSample(id)
+    // Rapid clicks on two points must not let the earlier response win.
+    if (seq !== sampleSeq) return
+    selectedSample.value = detail
   } catch {
+    if (seq !== sampleSeq) return
     toastError(t('admin.ustcSpeed.error.loadSample'))
     sampleDialogOpen.value = false
   } finally {
-    sampleDetailLoading.value = false
+    if (seq === sampleSeq) sampleDetailLoading.value = false
   }
 }
 
@@ -1494,6 +1505,7 @@ function csvFor(items: USTCSpeedSample[]): string {
     [t('admin.ustcSpeed.samples.startedAt'), (item) => item.started_at],
     [t('admin.ustcSpeed.samples.reasoning'), (item) => item.reasoning],
     [t('admin.ustcSpeed.samples.stream'), (item) => item.stream],
+    [t('admin.ustcSpeed.samples.overallTps'), (item) => item.overall_tps ?? (item.token_count_known && item.output_tokens >= 2 && item.total_ms != null && item.total_ms > 0 ? item.output_tokens * 1000 / item.total_ms : null)],
     [t('admin.ustcSpeed.samples.generationTps'), (item) => item.generation_tps],
     [t('admin.ustcSpeed.samples.ttft'), (item) => item.ttft_ms],
     [t('admin.ustcSpeed.samples.duration'), (item) => item.total_ms],

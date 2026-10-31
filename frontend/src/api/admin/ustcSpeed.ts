@@ -293,7 +293,7 @@ export interface USTCSpeedTaskProgress {
   cancelled: number
   current_model?: string
   reason?: string
-  active: Array<{ account_id: number; account_name: string; model: string; phase: 'checking' | 'requesting'; started_at: string }>
+  active: Array<{ account_id: number; account_name: string; model: string; phase: 'checking' | 'waiting_capacity' | 'requesting'; started_at: string }>
 }
 
 export type USTCSpeedTaskInput = Omit<

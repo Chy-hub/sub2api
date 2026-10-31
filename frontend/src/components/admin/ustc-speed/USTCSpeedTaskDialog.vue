@@ -403,6 +403,12 @@ function addManualModel() {
 
 function submit() {
   validationError.value = ''
+  // The backend limit is 200 bytes, not characters; maxlength="120" alone
+  // would accept 120 CJK characters (360 bytes) and fail on the server.
+  if (new TextEncoder().encode(form.value.name.trim()).length > 200) {
+    validationError.value = t('admin.ustcSpeed.task.validation.nameLength')
+    return
+  }
   const requiredNumbers = [
     form.value.interval_seconds,
     form.value.jitter_seconds,
