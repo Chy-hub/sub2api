@@ -109,9 +109,10 @@ const selected = computed(() => subjects.value.find((row) => keyOf(row) === sele
 // (plus JSON.stringify per predicate evaluation) for every chart bucket, which
 // is quadratic on long ranges with many models.
 const analysisIndex = computed(() => {
+  type DistributionRow = USTCSpeedAnalysis['distribution'][number]
   const groups = new Map<string, USTCSpeedAnalysisStats>()
   const trend = new Map<string, USTCSpeedAnalysisStats>()
-  const distribution = new Map<string, USTCSpeedAnalysisStats>()
+  const distribution = new Map<string, DistributionRow>()
   for (const row of props.analysis?.groups ?? []) groups.set(`${keyOf(row)}|${row.period}`, row)
   for (const row of props.analysis?.trend ?? []) trend.set(`${keyOf(row)}|${row.period}|${row.bucket}`, row)
   for (const row of props.analysis?.distribution ?? []) distribution.set(`${keyOf(row)}|${row.period}|${row.bin}`, row)
