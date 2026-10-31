@@ -43,7 +43,7 @@ func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *S
 type AssignSubscriptionRequest struct {
 	UserID       int64  `json:"user_id" binding:"required"`
 	GroupID      int64  `json:"group_id" binding:"required"`
-	ValidityDays int    `json:"validity_days" binding:"omitempty,max=36500"` // max 100 years
+	ValidityDays int    `json:"validity_days" binding:"omitempty,min=1,max=36500"` // 1..36500 days; 0 means default
 	Notes        string `json:"notes"`
 }
 
@@ -51,7 +51,7 @@ type AssignSubscriptionRequest struct {
 type BulkAssignSubscriptionRequest struct {
 	UserIDs      []int64 `json:"user_ids" binding:"required,min=1,max=100,dive,gt=0"`
 	GroupID      int64   `json:"group_id" binding:"required"`
-	ValidityDays int     `json:"validity_days" binding:"omitempty,max=36500"` // max 100 years
+	ValidityDays int     `json:"validity_days" binding:"omitempty,min=1,max=36500"` // 1..36500 days; 0 means default
 	Notes        string  `json:"notes"`
 }
 

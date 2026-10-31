@@ -788,9 +788,12 @@ func userInfoKeyNode(root gjson.Result) gjson.Result {
 		// 必须用 IsObject 判定）。
 		node = root
 	}
+	// Only budget-bearing fields identify a quota snapshot. key_alias/rpm_limit
+	// alone do not prove the budget shape; accepting them would write
+	// max_budget=0/windows=null and overwrite a previously exhausted snapshot,
+	// silently lifting the scheduling block.
 	if node.Get("spend").Exists() || node.Get("max_budget").Exists() ||
-		node.Get("key_alias").Exists() || node.Get("budget_duration").Exists() ||
-		node.Get("budget_limits").Exists() || node.Get("rpm_limit").Exists() {
+		node.Get("budget_duration").Exists() || node.Get("budget_limits").Exists() {
 		return node
 	}
 	return gjson.Result{}
