@@ -158,6 +158,8 @@ var auditBodySensitiveSubstrings = []string{
 	"apikey", "accesskey", "privatekey",
 	"otp", "credentialvalue",
 	"sessionkey", "serviceaccount",
+	// reverse 浏览器登录的一次性票据：可在短时间内兑换上游 token。
+	"ticket",
 }
 
 func isAuditSensitiveBodyKey(key string) bool {
@@ -256,5 +258,5 @@ func RedactAuditQuery(rawQuery string) string {
 	if rawQuery == "" {
 		return ""
 	}
-	return logredact.RedactText(rawQuery, "api_key", "apikey", "token", "secret", "key")
+	return logredact.RedactText(rawQuery, "api_key", "apikey", "token", "secret", "key", "session_id", "ticket")
 }

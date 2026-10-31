@@ -434,6 +434,14 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, OllamaCloudUsageSnapshotExtraKey)
 	delete(accountExtra, OpenCodeGoUsageAutoRefreshExtraKey)
 	delete(accountExtra, OpenCodeGoUsageSnapshotExtraKey)
+	// Reverse runtime state must not survive an export/import round-trip:
+	// a restored "checked in today" or "task already scheduled" marker would
+	// suppress the first real run after import.
+	delete(accountExtra, ReverseCheckinExtraKey)
+	delete(accountExtra, ReverseTaskScheduleExtraKey)
+	delete(accountExtra, ReverseQuotaExtraKey)
+	delete(accountExtra, ReverseTasksExtraKey)
+	delete(accountExtra, ReverseModelCatalogExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	account := &Account{
 		Name:        input.Name,
@@ -688,9 +696,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				return nil, err
 			}
 		}
+		// Normalize the incoming payload before the merge so an alias-only
+		// rotation ({"token":"NEW"}, {"secret":"{...}"}) becomes a canonical
+		// key and actually replaces the stored value. Merging first would let
+		// the old canonical token win and silently drop the new one.
+		incomingCredentials, err := normalizeReverseCredentialFields(account.Platform, input.Credentials)
+		if err != nil {
+			return nil, err
+		}
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
-		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
+		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, incomingCredentials)
 		account.Credentials, err = normalizeReverseCredentials(account.Platform, account.Credentials)
 		if err != nil {
 			return nil, err
@@ -1095,6 +1111,13 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			if acc != nil && acc.IsCredentialShadow() {
 				return nil, infraerrors.Newf(http.StatusBadRequest, "SPARK_SHADOW_NO_CREDENTIALS",
 					"spark shadow account %d cannot hold credentials; manage credentials on the parent account", acc.ID)
+			}
+			// Bulk merges credentials as a raw JSONB top-level key set, which
+			// bypasses reverse alias normalization, machine-pair validation and
+			// CRLF rejection. Require the single-account update path instead.
+			if acc != nil && IsReversePlatform(acc.Platform) {
+				return nil, infraerrors.Newf(http.StatusBadRequest, "REVERSE_BULK_CREDENTIALS_UNSUPPORTED",
+					"reverse account %d credentials must be updated one account at a time", acc.ID)
 			}
 		}
 	}
