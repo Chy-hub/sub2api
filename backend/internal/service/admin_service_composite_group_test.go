@@ -217,3 +217,10 @@ func TestAdminService_CNProviderModelsListCandidatesKeepClaudeDefaults(t *testin
 		require.Equal(t, want, defaultModelsListCandidateIDs(platform), "platform=%s", platform)
 	}
 }
+
+// 反代平台没有静态模型目录，候选只来自账号的模型映射。
+func TestAdminService_ReversePlatformsHaveNoStaticModelsListCandidates(t *testing.T) {
+	for _, platform := range []string{PlatformQoderCN, PlatformQoderGlobal, PlatformWorkbuddyCN, PlatformWorkbuddyGlobal} {
+		require.Empty(t, defaultModelsListCandidateIDs(platform), "platform=%s", platform)
+	}
+}
