@@ -692,8 +692,16 @@ func validateDataAccount(item DataAccount) error {
 	if len(item.Credentials) == 0 {
 		return errors.New("account credentials is required")
 	}
+	// 与 domain 的账号类型保持同步：此前只接受 oauth/setup-token/apikey/upstream，
+	// 导致导出的反代（reverse）、bedrock、service_account 账号在导入时被误判为非法。
 	switch item.Type {
-	case service.AccountTypeOAuth, service.AccountTypeSetupToken, service.AccountTypeAPIKey, service.AccountTypeUpstream:
+	case service.AccountTypeOAuth,
+		service.AccountTypeSetupToken,
+		service.AccountTypeAPIKey,
+		service.AccountTypeUpstream,
+		service.AccountTypeBedrock,
+		service.AccountTypeServiceAccount,
+		service.AccountTypeReverse:
 	default:
 		return fmt.Errorf("account type is invalid: %s", item.Type)
 	}
