@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,6 +23,9 @@ const (
 	ustcSpeedDefaultLimit    = 50
 	ustcSpeedMaxLimit        = 200
 	ustcSpeedMaxAccounts     = 100
+	// The HTTP server has no WriteTimeout; bound each admin query so a slow
+	// COUNT/scan cannot pin a database connection indefinitely.
+	ustcSpeedQueryTimeout = 20 * time.Second
 )
 
 // USTCSpeedHandler serves the admin API for USTC speed observations.
@@ -37,7 +41,9 @@ func (h *USTCSpeedHandler) Dimensions(c *gin.Context) {
 	if !h.requireService(c) {
 		return
 	}
-	out, err := h.speedService.Dimensions(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ustcSpeedQueryTimeout)
+	defer cancel()
+	out, err := h.speedService.Dimensions(ctx)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -152,7 +158,9 @@ func (h *USTCSpeedHandler) Samples(c *gin.Context) {
 		return
 	}
 	query.Source = "probe"
-	items, total, err := h.speedService.ListSamples(c.Request.Context(), query)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ustcSpeedQueryTimeout)
+	defer cancel()
+	items, total, err := h.speedService.ListSamples(ctx, query)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -171,7 +179,9 @@ func (h *USTCSpeedHandler) Sample(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := h.speedService.GetSample(c.Request.Context(), id)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ustcSpeedQueryTimeout)
+	defer cancel()
+	item, err := h.speedService.GetSample(ctx, id)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -183,7 +193,9 @@ func (h *USTCSpeedHandler) ListTasks(c *gin.Context) {
 	if !h.requireService(c) {
 		return
 	}
-	items, err := h.speedService.ListTasks(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ustcSpeedQueryTimeout)
+	defer cancel()
+	items, err := h.speedService.ListTasks(ctx)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -318,7 +330,9 @@ func (h *USTCSpeedHandler) Runtime(c *gin.Context) {
 	if !h.requireService(c) {
 		return
 	}
-	items, err := h.speedService.Runtime(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ustcSpeedQueryTimeout)
+	defer cancel()
+	items, err := h.speedService.Runtime(ctx)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
