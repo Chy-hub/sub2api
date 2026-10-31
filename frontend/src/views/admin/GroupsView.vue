@@ -1509,7 +1509,7 @@
             <span><span class="block text-sm text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.longContext") }}</span><span class="block text-xs text-gray-500">{{ t("admin.groups.modelPricing.longContextHint") }}</span></span>
           </label>
           <div class="mt-3 space-y-2">
-            <PricingEntryCard v-for="(entry, index) in createForm.model_pricing" :key="index" :entry="entry" :platform="createForm.platform" hide-token-intervals @update="createForm.model_pricing[index] = $event" @remove="createForm.model_pricing.splice(index, 1)" />
+            <PricingEntryCard v-for="(entry, index) in createForm.model_pricing" :key="index" :entry="entry" :platform="createForm.platform" :model-suggestions="createPricingModelCandidates" @request-model-suggestions="requestCreatePricingModelCandidates" hide-token-intervals @update="createForm.model_pricing[index] = $event" @remove="createForm.model_pricing.splice(index, 1)" />
           </div>
         </div>
 
@@ -3173,7 +3173,7 @@
             <span><span class="block text-sm text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.longContext") }}</span><span class="block text-xs text-gray-500">{{ t("admin.groups.modelPricing.longContextHint") }}</span></span>
           </label>
           <div class="mt-3 space-y-2">
-            <PricingEntryCard v-for="(entry, index) in editForm.model_pricing" :key="index" :entry="entry" :platform="editForm.platform" hide-token-intervals @update="editForm.model_pricing[index] = $event" @remove="editForm.model_pricing.splice(index, 1)" />
+            <PricingEntryCard v-for="(entry, index) in editForm.model_pricing" :key="index" :entry="entry" :platform="editForm.platform" :model-suggestions="editPricingModelCandidates" @request-model-suggestions="requestEditPricingModelCandidates" hide-token-intervals @update="editForm.model_pricing[index] = $event" @remove="editForm.model_pricing.splice(index, 1)" />
           </div>
         </div>
 
@@ -4924,6 +4924,11 @@ const createModelAllowlistState = reactive(createInitialModelAllowlistState());
 const editModelAllowlistState = reactive(createInitialModelAllowlistState());
 const createModelAllowlistLoading = ref(false);
 const editModelAllowlistLoading = ref(false);
+// 定价输入框的可选模型列表，复用 allowlist 候选接口的返回结果。
+const createPricingModelCandidates = ref<string[]>([]);
+const editPricingModelCandidates = ref<string[]>([]);
+// 已发起过候选请求的 mode:groupID:platform，用于失败后允许聚焦重试。
+const pricingCandidatesRequested = new Set<string>();
 type ReasoningEffortPolicyFieldsExpose = {
   validate: () => boolean;
   resetValidation: () => void;
@@ -5273,6 +5278,12 @@ const loadModelAllowlistCandidates = async (
   const requestID = modelAllowlistCandidatesTracker.next(request);
   const state = mode === "create" ? createModelAllowlistState : editModelAllowlistState;
   const loadingRef = mode === "create" ? createModelAllowlistLoading : editModelAllowlistLoading;
+  const pricingCandidatesRef =
+    mode === "create" ? createPricingModelCandidates : editPricingModelCandidates;
+  const candidatesKey = `${mode}:${groupID}:${platform}`;
+  pricingCandidatesRequested.add(candidatesKey);
+  // 切换分组/平台后先清空，避免旧候选在新请求返回前被误用。
+  pricingCandidatesRef.value = [];
   loadingRef.value = true;
   try {
     const models = await adminAPI.groups.getModelAllowlistCandidates(groupID, platform);
@@ -5280,15 +5291,33 @@ const loadModelAllowlistCandidates = async (
       return;
     }
     setModelAllowlistCandidates(state, models);
+    pricingCandidatesRef.value = models;
   } catch (error) {
     if (!modelAllowlistCandidatesTracker.isCurrent(requestID, request)) {
       return;
     }
+    pricingCandidatesRef.value = [];
+    pricingCandidatesRequested.delete(candidatesKey);
     console.error("Error loading group models list candidates:", error);
   } finally {
     if (modelAllowlistCandidatesTracker.isCurrent(requestID, request)) {
       loadingRef.value = false;
     }
+  }
+};
+
+const requestCreatePricingModelCandidates = () => {
+  const key = `create:0:${createForm.platform}`;
+  if (!pricingCandidatesRequested.has(key)) {
+    loadModelAllowlistCandidates("create", 0, createForm.platform);
+  }
+};
+
+const requestEditPricingModelCandidates = () => {
+  if (!editingGroup.value) return;
+  const key = `edit:${editingGroup.value.id}:${editForm.platform}`;
+  if (!pricingCandidatesRequested.has(key)) {
+    loadModelAllowlistCandidates("edit", editingGroup.value.id, editForm.platform);
   }
 };
 

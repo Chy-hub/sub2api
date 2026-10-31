@@ -448,6 +448,8 @@
                   :key="idx"
                   :entry="entry"
                   :platform="section.platform"
+                  :model-suggestions="modelSuggestionsFor(section.platform)"
+                  @request-model-suggestions="ensurePricingModelCandidates(section.platform)"
                   enable-time-pricing
                   enable-tier-multipliers
                   @update="updatePricingEntry(sIdx, idx, $event)"
@@ -580,6 +582,8 @@
                       :key="pIdx"
                       :entry="entry"
                       :platform="section.platform"
+                      :model-suggestions="modelSuggestionsFor(section.platform)"
+                      @request-model-suggestions="ensurePricingModelCandidates(section.platform)"
                       @update="rule.pricing.splice(pIdx, 1, $event)"
                       @remove="removeRulePricingEntry(sIdx, ruleIndex, pIdx)"
                     />
@@ -893,6 +897,35 @@ function addPricingEntry(sectionIdx: number) {
 }
 
 const syncingPlatform = ref<string | null>(null)
+
+// 定价输入框的可选模型：按平台缓存 LiteLLM 定价目录中的模型名。
+const pricingModelCandidates = reactive<Record<string, string[]>>({})
+const pricingModelCandidatesLoading = new Set<string>()
+const EMPTY_MODEL_SUGGESTIONS: string[] = []
+
+function modelSuggestionsFor(platform: GroupPlatform): string[] {
+  return pricingModelCandidates[platform] ?? EMPTY_MODEL_SUGGESTIONS
+}
+
+async function ensurePricingModelCandidates(platform: GroupPlatform) {
+  if (!supportsPricingModelSync(platform) || platform in pricingModelCandidates) return
+  if (pricingModelCandidatesLoading.has(platform)) return
+  pricingModelCandidatesLoading.add(platform)
+  try {
+    const result = await adminAPI.channels.syncPricingModels(platform)
+    // An empty catalog may just mean it is not loaded yet; do not cache it.
+    if (result.models?.length) {
+      pricingModelCandidates[platform] = result.models
+    } else {
+      delete pricingModelCandidates[platform]
+    }
+  } catch {
+    // Allow a later focus to retry after a transient failure.
+    delete pricingModelCandidates[platform]
+  } finally {
+    pricingModelCandidatesLoading.delete(platform)
+  }
+}
 
 async function syncLatestModels(sectionIdx: number) {
   const section = form.platforms[sectionIdx]

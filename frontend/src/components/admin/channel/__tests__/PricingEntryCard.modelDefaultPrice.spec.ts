@@ -95,6 +95,26 @@ describe('PricingEntryCard default price auto-fill', () => {
     })
   })
 
+  it('keeps models added while the default price lookup is in flight', async () => {
+    let resolveLookup!: (value: unknown) => void
+    getModelDefaultPricing.mockImplementation(
+      () => new Promise(resolve => { resolveLookup = resolve }) as never,
+    )
+    const entry = createEntry()
+    const wrapper = addModels(entry, ['gpt-4o'])
+
+    // Simulate a second selection landing before the first lookup resolves.
+    await wrapper.setProps({ entry: { ...entry, models: ['gpt-4o', 'o3'] } })
+    resolveLookup({ found: true, input_price: 3e-6, output_price: 15e-6 })
+    await flushPromises()
+
+    expect(emittedEntries(wrapper).at(-1)).toMatchObject({
+      models: ['gpt-4o', 'o3'],
+      input_price: 3,
+      output_price: 15,
+    })
+  })
+
   it('keeps manual prices untouched when a model is appended', async () => {
     const entry = { ...createEntry(['claude-opus-4-7']), input_price: '1.5' }
     const wrapper = addModels(entry, ['claude-opus-4-7', 'claude-opus-4-8'])
