@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -292,6 +293,12 @@ func (g *ReverseGateway) refreshAccount(ctx context.Context, account *Account) e
 		return err
 	}
 	merged := mergeReverseCredentials(account.Credentials, updated)
+	// Upstream-provided token/domain values bypass the admin import validator;
+	// normalize (and reject CRLF/length violations) at the persistence boundary.
+	merged, err = normalizeReverseCredentials(account.Platform, merged)
+	if err != nil {
+		return err
+	}
 	if err := persistAccountCredentials(ctx, g.accountRepo, account, merged); err != nil {
 		return err
 	}
@@ -355,6 +362,10 @@ func (g *ReverseGateway) Checkin(ctx context.Context, account *Account) (*revers
 		if result.Success && checkinErr == nil {
 			state["status"] = "success"
 			state["last_success_at"] = time.Now().UTC().Format(time.RFC3339)
+		} else if checkinErr == nil && result.Details != nil && result.Details["status"] == "unsupported" {
+			// Enterprise accounts have no check-in flow; this is not a failure
+			// and must not block AfterCheckin tasks for the whole day.
+			state["status"] = "unsupported"
 		}
 		state["message"] = result.Message
 		state["reward"] = result.Reward
@@ -446,6 +457,12 @@ func (g *ReverseGateway) StartLogin(ctx context.Context, platform string, accoun
 	start, err := login.StartLogin(ctx, region)
 	if err != nil {
 		return nil, err
+	}
+	// The URL comes from upstream JSON and is opened in the admin browser.
+	// Reject anything that is not http(s) (e.g. javascript:) before exposing it.
+	if parsed, parseErr := url.Parse(strings.TrimSpace(start.URL)); parseErr != nil ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return nil, errors.New("reverse login URL must be an absolute http(s) URL")
 	}
 	ttl := reverseLoginSessionTTL
 	if providerName == "qoder" {
@@ -543,6 +560,10 @@ func (g *ReverseGateway) PollLogin(ctx context.Context, sessionID string, actorU
 			return nil, errors.New("login platform does not match account platform")
 		}
 		merged := mergeReverseCredentials(account.Credentials, credentials)
+		merged, err = normalizeReverseCredentials(account.Platform, merged)
+		if err != nil {
+			return nil, err
+		}
 		if err := persistAccountCredentials(ctx, g.accountRepo, account, merged); err != nil {
 			return nil, err
 		}
