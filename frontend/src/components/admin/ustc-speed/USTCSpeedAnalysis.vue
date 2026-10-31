@@ -105,8 +105,20 @@ watch(subjects, (rows) => {
   if (!rows.some((row) => keyOf(row) === selectedKey.value)) selectedKey.value = rows[0] ? keyOf(rows[0]) : ''
 }, { immediate: true })
 const selected = computed(() => subjects.value.find((row) => keyOf(row) === selectedKey.value))
+// Index every analysis row once. The compare view used to run a linear find
+// (plus JSON.stringify per predicate evaluation) for every chart bucket, which
+// is quadratic on long ranges with many models.
+const analysisIndex = computed(() => {
+  const groups = new Map<string, USTCSpeedAnalysisStats>()
+  const trend = new Map<string, USTCSpeedAnalysisStats>()
+  const distribution = new Map<string, USTCSpeedAnalysisStats>()
+  for (const row of props.analysis?.groups ?? []) groups.set(`${keyOf(row)}|${row.period}`, row)
+  for (const row of props.analysis?.trend ?? []) trend.set(`${keyOf(row)}|${row.period}|${row.bucket}`, row)
+  for (const row of props.analysis?.distribution ?? []) distribution.set(`${keyOf(row)}|${row.period}|${row.bin}`, row)
+  return { groups, trend, distribution }
+})
 function findStats(subject: Pick<USTCSpeedAnalysisStats, 'model' | 'source'> | undefined, period: string) {
-  return subject && props.analysis?.groups.find((row) => row.model === subject.model && row.source === subject.source && row.period === period)
+  return subject ? analysisIndex.value.groups.get(`${keyOf(subject)}|${period}`) : undefined
 }
 const current = computed(() => findStats(selected.value, 'current'))
 const previous = computed(() => findStats(selected.value, 'previous'))
@@ -157,7 +169,7 @@ const bins = computed(() => {
 })
 const trendLength = computed(() => Math.max(1, ...(props.analysis?.trend.filter((row) => keyOf(row) === selectedKey.value).map((row) => row.bucket + 1) ?? [])))
 function chartPoint(period: string, index: number): USTCSpeedAnalysisStats | undefined {
-  return props.analysis?.trend.find((row) => keyOf(row) === selectedKey.value && row.period === period && row.bucket === index)
+  return analysisIndex.value.trend.get(`${selectedKey.value}|${period}|${index}`)
 }
 const chartData = computed<any>(() => ({
   labels: props.view === 'distribution'
@@ -169,7 +181,7 @@ const chartData = computed<any>(() => ({
   datasets: periods.value.map((period, index) => ({
     label: t(`admin.ustcSpeed.analysis.${period}`),
     data: props.view === 'distribution' ? bins.value.map((_bin, binIndex) => {
-      const bin = props.analysis?.distribution.find((row) => keyOf(row) === selectedKey.value && row.period === period && row.bin === binIndex)
+      const bin = analysisIndex.value.distribution.get(`${selectedKey.value}|${period}|${binIndex}`)
       const total = findStats(selected.value, period)?.valid_count ?? 0
       return total ? (bin?.count ?? 0) * 100 / total : null
     }) : Array.from({ length: trendLength.value }, (_, bucket) => statistic(chartPoint(period, bucket))),
