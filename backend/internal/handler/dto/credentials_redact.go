@@ -2,6 +2,8 @@
 package dto
 
 import (
+	"strings"
+
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -49,6 +51,36 @@ func redactCredentialValue(value any) (any, map[string]bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		return RedactCredentials(typed)
+	case map[string]string:
+		// Non-JSON-decoded containers (e.g. a hand-built map) must not bypass
+		// redaction and echo credential material.
+		out := make(map[string]string, len(typed))
+		var status map[string]bool
+		for key, item := range typed {
+			if service.IsSensitiveCredentialKey(key) {
+				if status == nil {
+					status = map[string]bool{}
+				}
+				status["has_"+key] = strings.TrimSpace(item) != ""
+				continue
+			}
+			out[key] = item
+		}
+		return out, status
+	case []map[string]any:
+		clean := make([]any, len(typed))
+		var status map[string]bool
+		for i, item := range typed {
+			var flags map[string]bool
+			clean[i], flags = RedactCredentials(item)
+			for key, present := range flags {
+				if status == nil {
+					status = map[string]bool{}
+				}
+				status[key] = present
+			}
+		}
+		return clean, status
 	case []any:
 		clean := make([]any, len(typed))
 		var status map[string]bool
