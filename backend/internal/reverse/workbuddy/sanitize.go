@@ -137,7 +137,8 @@ func sanitizeContent(content any, rules sanitizeRules, regexes map[string]*regex
 	return content, false
 }
 
-// sanitizeToolCalls 净化工具调用的参数与名称。
+// sanitizeToolCalls 净化工具调用的 arguments。函数名属于调用契约，保持原样，
+// 否则客户端会收到上游无法识别的工具名。
 func sanitizeToolCalls(calls []any, rules sanitizeRules, regexes map[string]*regexp.Regexp) bool {
 	changed := false
 	for _, item := range calls {
@@ -263,5 +264,5 @@ func sanitizeText(text string, rules sanitizeRules, regexes map[string]*regexp.R
 			return match
 		})
 	}
-	return strings.TrimSpace(text)
+	return text
 }

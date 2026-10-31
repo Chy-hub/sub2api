@@ -276,6 +276,13 @@ func decodeBodyMap(body []byte) map[string]any {
 // randomHex returns n random bytes as hex. A failed CSPRNG falls back to a
 // time-derived value so request IDs stay unique.
 func randomHex(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n > sha256.Size {
+		// The fallback path slices sum[:n]; cap it to avoid a panic.
+		n = sha256.Size
+	}
 	buffer := make([]byte, n)
 	if _, errRand := rand.Read(buffer); errRand == nil {
 		return hex.EncodeToString(buffer)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -145,10 +146,21 @@ func deviceTokenFromSecret(secret string) string {
 	return secret
 }
 
+// checkinHTTPFailure formats a check-in failure. A zero status means the
+// transport failed (DNS/proxy/timeout); presenting it as "HTTP 0" hides the
+// difference between a network problem and an upstream business response.
+func checkinHTTPFailure(prefix string, status int, raw string, secrets ...string) string {
+	detail := redactSecrets(truncateRunes(raw, 300), secrets...)
+	if status == 0 {
+		return prefix + "（网络错误）: " + detail
+	}
+	return fmt.Sprintf("%s HTTP %d: %s", prefix, status, detail)
+}
+
 func campaignsCheckin(ctx context.Context, client *http.Client, r region, bearer string, identity checkinIdentity) *reverse.CheckinResult {
 	status, body, raw := doSashRequest(ctx, client, r, http.MethodGet, "/sash/api/v1/me/campaigns", bearer, identity, nil)
 	if status != http.StatusOK {
-		result := checkinFailure(checkinError, fmt.Sprintf("查询活动失败 HTTP %d: %s", status, redactSecrets(truncateRunes(raw, 300), bearer, identity.Token)))
+		result := checkinFailure(checkinError, checkinHTTPFailure("查询活动失败", status, raw, bearer, identity.Token))
 		result.Details["http_status"] = status
 		return result
 	}
@@ -250,10 +262,10 @@ func claimCampaign(ctx context.Context, client *http.Client, r region, bearer st
 	quotaBefore, quotaErr := readAddonQuotaTotal(ctx, client, r, bearer)
 	hadQuotaBefore := quotaErr == nil
 
-	path := fmt.Sprintf("/sash/api/v1/me/campaigns/%s/claim", target.CampaignID)
+	path := fmt.Sprintf("/sash/api/v1/me/campaigns/%s/claim", url.PathEscape(target.CampaignID))
 	status, body, raw := doSashRequest(ctx, client, r, http.MethodPost, path, bearer, identity, nil)
 	if status != http.StatusOK {
-		result := checkinFailureWithDate(checkinError, fmt.Sprintf("领取失败 HTTP %d: %s", status, redactSecrets(truncateRunes(raw, 300), bearer, identity.Token)), windowDate)
+		result := checkinFailureWithDate(checkinError, checkinHTTPFailure("领取失败", status, raw, bearer, identity.Token), windowDate)
 		result.Details["http_status"] = status
 		return result
 	}
@@ -324,7 +336,7 @@ func claimFailureSuffix(claim claimResult) string {
 }
 
 func readCampaignReward(ctx context.Context, client *http.Client, r region, bearer string, identity checkinIdentity, campaignID string) (bool, int) {
-	path := fmt.Sprintf("/sash/api/v1/me/campaigns/%s/reward", campaignID)
+	path := fmt.Sprintf("/sash/api/v1/me/campaigns/%s/reward", url.PathEscape(campaignID))
 	status, body, _ := doSashRequest(ctx, client, r, http.MethodGet, path, bearer, identity, nil)
 	if status != http.StatusOK {
 		return false, 0

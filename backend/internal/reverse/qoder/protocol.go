@@ -503,6 +503,7 @@ func buildEnvelope(template map[string]any, req *chatRequest, model, userType st
 		business["begin_at"] = unixMs()
 		business["name"] = truncateRunes(prompt, 30)
 	}
+	imageURLs := collectImageURLs(req.messages)
 	if context, ok := body["chat_context"].(map[string]any); ok {
 		if text, ok := context["text"].(map[string]any); ok {
 			text["text"] = prompt
@@ -512,6 +513,12 @@ func buildEnvelope(template map[string]any, req *chatRequest, model, userType st
 				original["text"] = prompt
 			}
 		}
+		if len(imageURLs) > 0 {
+			context["imageUrls"] = imageURLs
+		}
+	}
+	if len(imageURLs) > 0 {
+		body["image_urls"] = imageURLs
 	}
 
 	body["messages"] = messages
@@ -769,16 +776,66 @@ func normalizeMessageContent(message map[string]any) string {
 	}
 	var out string
 	for _, block := range blocks {
-		if item, ok := block.(map[string]any); ok {
-			if text := rawStringValue(item["text"]); text != "" {
-				if out != "" {
-					out += "\n\n"
-				}
-				out += text
+		item, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text := rawStringValue(item["text"]); text != "" {
+			if out != "" {
+				out += "\n\n"
 			}
+			out += text
+		}
+		if stringValue(item["type"]) == "image_url" && out == "" {
+			// Keep an image-only message from collapsing to an empty turn. The
+			// actual URL is forwarded through chat_context.imageUrls.
+			out = "[image]"
 		}
 	}
 	return out
+}
+
+// collectImageURLs extracts image URLs from OpenAI-style content blocks so
+// they can be forwarded in the template's image fields instead of being
+// silently dropped.
+func collectImageURLs(messages []any) []string {
+	var urls []string
+	seen := map[string]struct{}{}
+	appendURL := func(url string) {
+		url = strings.TrimSpace(url)
+		if url == "" {
+			return
+		}
+		if _, ok := seen[url]; ok {
+			return
+		}
+		seen[url] = struct{}{}
+		urls = append(urls, url)
+	}
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawBlock := range blocks {
+			block, ok := rawBlock.(map[string]any)
+			if !ok || stringValue(block["type"]) != "image_url" {
+				continue
+			}
+			switch image := block["image_url"].(type) {
+			case string:
+				appendURL(image)
+			case map[string]any:
+				appendURL(stringValue(image["url"]))
+			}
+			appendURL(stringValue(block["url"]))
+		}
+	}
+	return urls
 }
 
 func extractLatestUserPrompt(messages []any) string {
