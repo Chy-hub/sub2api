@@ -245,6 +245,16 @@
             <button
               v-if="selectedCount > 0"
               class="btn btn-secondary flex-1 md:flex-initial"
+              data-test="bulk-assign-subscription"
+              @click="showBulkAssignModal = true"
+            >
+              <Icon name="plus" size="md" class="mr-2" />
+              {{ t('admin.users.bulkAssign.action', { count: selectedCount }) }}
+            </button>
+
+            <button
+              v-if="selectedCount > 0"
+              class="btn btn-secondary flex-1 md:flex-initial"
               data-test="bulk-edit-limits"
               @click="showBulkEditModal = true"
             >
@@ -787,6 +797,13 @@
     <UserBalanceModal :show="showBalanceModal" :user="balanceUser" :operation="balanceOperation" @close="closeBalanceModal" @success="loadUsers" />
     <UserBalanceHistoryModal :show="showBalanceHistoryModal" :user="balanceHistoryUser" @close="closeBalanceHistoryModal" @deposit="handleDepositFromHistory" @withdraw="handleWithdrawFromHistory" />
     <GroupReplaceModal :show="showGroupReplaceModal" :user="groupReplaceUser" :old-group="groupReplaceOldGroup" :all-groups="allGroups" @close="closeGroupReplaceModal" @success="loadUsers" />
+    <BulkAssignSubscriptionModal
+      :show="showBulkAssignModal"
+      :selected-ids="selectedIds"
+      :groups="allGroups"
+      @close="showBulkAssignModal = false"
+      @success="handleBulkAssignSuccess"
+    />
     <UserAttributesConfigModal :show="showAttributesModal" @close="handleAttributesModalClose" />
   </AppLayout>
 </template>
@@ -824,6 +841,7 @@ import UserPlatformQuotaCell from '@/components/user/UserPlatformQuotaCell.vue'
 import UserCreateModal from '@/components/admin/user/UserCreateModal.vue'
 import UserEditModal from '@/components/admin/user/UserEditModal.vue'
 import BulkEditUserModal from '@/components/admin/user/BulkEditUserModal.vue'
+import BulkAssignSubscriptionModal from '@/components/admin/user/BulkAssignSubscriptionModal.vue'
 import UserPlatformQuotaModal from '@/components/admin/user/UserPlatformQuotaModal.vue'
 import UserApiKeysModal from '@/components/admin/user/UserApiKeysModal.vue'
 import UserAllowedGroupsModal from '@/components/admin/user/UserAllowedGroupsModal.vue'
@@ -1342,6 +1360,7 @@ const pagination = reactive({
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const showBulkEditModal = ref(false)
+const showBulkAssignModal = ref(false)
 const showDeleteDialog = ref(false)
 const bulkDeleteIds = ref<number[]>([])
 const bulkDeleting = ref(false)
@@ -1649,6 +1668,11 @@ const loadUsers = async () => {
 }
 
 const handleBulkLimitsSuccess = async () => {
+  clearSelection()
+  await loadUsers()
+}
+
+const handleBulkAssignSuccess = async () => {
   clearSelection()
   await loadUsers()
 }
