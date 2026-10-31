@@ -205,7 +205,7 @@ func (p *Provider) CleanupCaches(now time.Time) {
 // {code,msg,data} envelope. HTTP failures and non-zero business codes become
 // *reverse.UpstreamError; endpoints that answer with a bare object pass
 // through untouched.
-func apiCall(client *http.Client, req *http.Request, limit int64) (json.RawMessage, error) {
+func apiCall(client *http.Client, req *http.Request, limit int64, secrets ...string) (json.RawMessage, error) {
 	resp, errDo := client.Do(req)
 	if errDo != nil {
 		return nil, fmt.Errorf("workbuddy %s request: %w", req.URL.Path, errDo)
@@ -220,14 +220,14 @@ func apiCall(client *http.Client, req *http.Request, limit int64) (json.RawMessa
 		return nil, fmt.Errorf("workbuddy %s response exceeds %d bytes", req.URL.Path, limit)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, upstreamError(resp.StatusCode, string(body), resp.Header)
+		return nil, upstreamError(resp.StatusCode, string(body), resp.Header, secrets...)
 	}
-	return unwrapData(body)
+	return unwrapData(body, secrets...)
 }
 
 // unwrapData returns the envelope payload, or the body itself when the
 // response is not enveloped.
-func unwrapData(body []byte) (json.RawMessage, error) {
+func unwrapData(body []byte, secrets ...string) (json.RawMessage, error) {
 	var probe struct {
 		Code json.RawMessage `json:"code"`
 		Msg  string          `json:"msg"`
@@ -241,11 +241,10 @@ func unwrapData(body []byte) (json.RawMessage, error) {
 		return body, nil
 	}
 	if code := strings.Trim(strings.TrimSpace(string(probe.Code)), `"`); code != "" && code != "0" && code != "null" {
-		message := strings.TrimSpace(probe.Msg)
-		if message == "" {
-			message = truncate(strings.TrimSpace(string(body)), 512)
-		}
-		return nil, upstreamError(0, string(body), nil)
+		// A business error inside an HTTP 200 envelope is a request-level
+		// failure. Synthesize 400 so Classify() can map bad params/content
+		// instead of falling through to a 502 server error.
+		return nil, upstreamError(http.StatusBadRequest, string(body), nil, secrets...)
 	}
 	if len(probe.Data) > 0 && strings.TrimSpace(string(probe.Data)) != "null" {
 		return probe.Data, nil

@@ -254,8 +254,11 @@ func TestPrepareBodyCacheKey(t *testing.T) {
 	if payload["prompt_cache_key"] != "wb2a-test" {
 		t.Fatalf("prompt_cache_key = %v", payload["prompt_cache_key"])
 	}
+	// The injected key is derived from the client key plus the account UID
+	// (see buildCacheKey); passing the client value through verbatim would let
+	// different accounts share an upstream cache prefix.
 	explicit := prepareForTest(t, `{"model":"m","prompt_cache_key":"client","messages":[]}`, prepareOptions{cacheKey: "wb2a-test"})
-	if explicit["prompt_cache_key"] != "client" {
-		t.Fatal("client-provided prompt_cache_key must win")
+	if explicit["prompt_cache_key"] != "wb2a-test" {
+		t.Fatalf("client-provided prompt_cache_key must be replaced by the account-scoped key, got %v", explicit["prompt_cache_key"])
 	}
 }

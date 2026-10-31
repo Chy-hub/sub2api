@@ -122,6 +122,31 @@ func (p *Provider) invalidateOnAuthError(accountID int64, err error) {
 
 // Forward adapts one Chat Completions request to the Qoder agent stream and
 // returns a synthetic OpenAI response.
+// credentialSecrets returns every non-empty credential that must never appear
+// in an upstream error surfaced to clients or logs.
+func credentialSecrets(acc *reverse.Account) []string {
+	if acc == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, 8)
+	var out []string
+	for _, key := range []string{
+		"access_token", "refresh_token", "machine_token", "device_token",
+		"personal_token", "security_oauth_token", "pat", "secret",
+	} {
+		value := strings.TrimSpace(acc.CredentialString(key))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []byte, stream bool) (*http.Response, error) {
 	if acc == nil {
 		return nil, reverse.NewUpstreamError(http.StatusBadRequest, "missing_account", "qoder account is nil")
@@ -138,7 +163,11 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 	// A public model slug must be resolved from this account's regional catalog.
 	// Raw upstream keys remain usable if discovery is temporarily unavailable.
 	if p.cachedModels(acc) == nil && !strings.HasSuffix(strings.ToLower(request.model), "model") {
-		_, _ = p.ListModels(ctx, acc)
+		// Catalog discovery is best-effort; never let it consume the chat
+		// request's budget (the signed GET has no timeout of its own).
+		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		_, _ = p.ListModels(listCtx, acc)
+		cancel()
 	}
 	model := p.resolveModel(acc, request.model)
 	envelope := buildEnvelope(br.template, request, model, br.session.Identity.UserType)
@@ -151,12 +180,13 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 
 	id := "chatcmpl-" + newRequestID()
 	created := time.Now().Unix()
+	secrets := credentialSecrets(acc)
 
 	if stream {
 		reader, writer := io.Pipe()
 		go func() {
 			defer func() { _ = upstream.Body.Close() }()
-			streamErr := pumpStream(ctx, upstream.Body, writer, id, created, request.model, request.includeUsage)
+			streamErr := pumpStream(ctx, upstream.Body, writer, id, created, request.model, request.includeUsage, secrets...)
 			p.invalidateOnAuthError(acc.ID, streamErr)
 			_ = writer.CloseWithError(streamErr)
 		}()
@@ -173,7 +203,7 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 		}, nil
 	}
 
-	state, err := consumeStream(upstream.Body)
+	state, err := consumeStream(upstream.Body, secrets...)
 	_ = upstream.Body.Close()
 	if err != nil {
 		p.invalidateOnAuthError(acc.ID, err)
@@ -410,7 +440,9 @@ func lookupDefaultModel(model string) string {
 	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
 	lower := strings.ToLower(model)
 	for _, key := range keys {
-		if strings.Contains(lower, key) || strings.Contains(key, lower) {
+		// The reverse direction needs a minimum length: a one-letter model
+		// name would otherwise match "haiku" and silently pick a mapping.
+		if strings.Contains(lower, key) || (len(lower) >= 4 && strings.Contains(key, lower)) {
 			return defaultModelMapping[key]
 		}
 	}

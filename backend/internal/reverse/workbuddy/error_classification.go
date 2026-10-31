@@ -92,6 +92,24 @@ var (
 	retryAfterSanityCap = 2 * time.Hour
 )
 
+// upstreamMessageText returns the human-readable message fields of an upstream
+// error envelope. Falls back to the whole body when the envelope is not JSON.
+func upstreamMessageText(body string) string {
+	var payload map[string]any
+	if json.Unmarshal([]byte(body), &payload) != nil {
+		return body
+	}
+	parts := []string{stringField(payload, "msg"), stringField(payload, "message")}
+	if nested := nestedObject(payload, "error"); nested != nil {
+		parts = append(parts, stringField(nested, "message"), stringField(nested, "msg"))
+	}
+	joined := strings.TrimSpace(strings.Join(parts, " "))
+	if joined == "" {
+		return body
+	}
+	return joined
+}
+
 // Classify 按状态码与响应体判定错误类别。
 //
 // 判定顺序是关键，尤其这几条：
@@ -138,12 +156,15 @@ func Classify(status int, body string) *reverse.Failure {
 	if status == http.StatusTooManyRequests {
 		return &reverse.Failure{Kind: reverse.FailureKindSoftRate, Status: status, Msg: body}
 	}
-	// 6) 余额关键词（在 429 之后）。
-	if reverse.ContainsAny(lower, hardMarkers) {
+	// 6) 余额关键词（在 429 之后）。只扫描上游的 message 字段：整个 body
+	// 可能回显客户端 prompt/tool 文本，客户端可控的 "insufficient credit"
+	// 不应把账号冷却到次日。
+	messageLower := strings.ToLower(upstreamMessageText(body))
+	if reverse.ContainsAny(messageLower, hardMarkers) {
 		return &reverse.Failure{Kind: reverse.FailureKindHardCredit, Status: status, Msg: body}
 	}
 	// 7) 限流关键词。
-	if reverse.ContainsAny(lower, softRateMarkers) {
+	if reverse.ContainsAny(messageLower, softRateMarkers) {
 		return &reverse.Failure{Kind: reverse.FailureKindSoftRate, Status: status, Msg: body}
 	}
 	// 8) 上下文超限（请求级）。

@@ -74,9 +74,17 @@ func (c *Client) shortClient() *http.Client {
 	client.Timeout = shortCallTimeout
 	return &client
 }
-func (c *Client) chatClient(time.Duration) *http.Client { return c.provider.client(c.acc) }
+func (c *Client) chatClient(timeout time.Duration) *http.Client {
+	client := c.provider.client(c.acc)
+	if timeout <= 0 {
+		return client
+	}
+	copied := *client
+	copied.Timeout = timeout
+	return &copied
+}
 func (c *Client) doJSON(req *http.Request) ([]byte, error) {
-	return apiCall(c.shortClient(), req, apiBodyLimit)
+	return apiCall(c.shortClient(), req, apiBodyLimit, credentialSecrets(*newCredential(c.acc))...)
 }
 func (c *Client) applyBillingHeaders(req *http.Request, cred *Credential) {
 	applyBillingHeaders(req, cred)
@@ -137,6 +145,6 @@ func (p *Provider) Quota(ctx context.Context, acc *reverse.Account) (*reverse.Qu
 }
 
 func transientError(err error) error { return fmt.Errorf("workbuddy transport: %w", err) }
-func enrichClassifyError(status int, body string, header http.Header) *reverse.UpstreamError {
-	return upstreamError(status, body, header)
+func enrichClassifyError(status int, body string, header http.Header, secrets ...string) *reverse.UpstreamError {
+	return upstreamError(status, body, header, secrets...)
 }

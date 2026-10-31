@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Error classifications ported from CLIProxyAPI-freetier2api-plugin (MIT).
@@ -141,8 +142,14 @@ func ContainsAny(value string, markers []string) bool {
 	return false
 }
 func Truncate(value string, limit int) string {
-	if limit > 0 && len(value) > limit {
-		return value[:limit]
+	if limit <= 0 || len(value) <= limit {
+		return value
 	}
-	return value
+	// Keep the byte limit but never cut through a multi-byte rune: the result
+	// is written to errors and logs and must remain valid UTF-8.
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
 }

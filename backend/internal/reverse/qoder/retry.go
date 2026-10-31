@@ -14,6 +14,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
 )
 
+// upstreamStreamFrameLimit bounds a single upstream SSE line. The first-frame
+// inspector and the streaming readers must share the same limit; otherwise a
+// frame accepted by inspection fails inside the reader and the client sees an
+// empty 200 stream.
+const upstreamStreamFrameLimit = 8 * 1024 * 1024
+
 type replayBody struct {
 	io.Reader
 	io.Closer
@@ -22,7 +28,7 @@ type replayBody struct {
 // Inspect the first meaningful frame before exposing a 200 response. This lets
 // both streaming and aggregated requests recover from early envelope failures
 // without replaying any content that a client has already received.
-func inspectStream(resp *http.Response) error {
+func inspectStream(resp *http.Response, secrets ...string) error {
 	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 	var prefix bytes.Buffer
 	var pending bytes.Buffer
@@ -30,7 +36,7 @@ func inspectStream(resp *http.Response) error {
 		chunk, err := reader.ReadSlice('\n')
 		pending.Write(chunk)
 		prefix.Write(chunk)
-		if prefix.Len() > 8*1024*1024 {
+		if prefix.Len() > upstreamStreamFrameLimit {
 			return reverse.NewUpstreamError(502, "upstream_frame_too_large", "qoder initial stream frame exceeds 8 MiB")
 		}
 		if errors.Is(err, bufio.ErrBufferFull) {
@@ -47,7 +53,7 @@ func inspectStream(resp *http.Response) error {
 			if signal, queued := ParseQueueSignal(payload); queued {
 				return queueSignalError(signal)
 			}
-			delta := extractDelta(payload)
+			delta := extractDelta(payload, secrets...)
 			if delta.Err != nil {
 				return delta.Err
 			}
@@ -113,7 +119,7 @@ func (p *Provider) openReadyChatStream(ctx context.Context, acc *reverse.Account
 	for {
 		resp, err := p.openChatStream(ctx, acc, br, envelope, model)
 		if err == nil {
-			err = inspectStream(resp)
+			err = inspectStream(resp, credentialSecrets(acc)...)
 			if err == nil {
 				return resp, nil
 			}
