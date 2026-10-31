@@ -22,6 +22,13 @@ import (
 // errEmptyStream reports an upstream stream without any data event.
 var errEmptyStream = errors.New("workbuddy: upstream stream contained no data")
 
+// maxAggregateBytes bounds the memory a single non-streaming aggregation can
+// accumulate. The upstream can stream for many minutes; without a cap one
+// request could hold hundreds of megabytes of content/tool arguments.
+const maxAggregateBytes = 32 << 20
+
+var errAggregateTooLarge = errors.New("workbuddy: upstream stream exceeds the aggregation limit")
+
 // writeSSE writes one `data: <payload>` frame.
 func writeSSE(writer io.Writer, payload []byte) error {
 	frame := make([]byte, 0, len(payload)+8)
@@ -194,11 +201,18 @@ func normalizeChoices(choices []any) []any {
 		if index, okIndex := choice["index"]; okIndex {
 			normalized["index"] = index
 		}
+		// The upstream occasionally puts a whole message under "message"
+		// instead of "delta". Normalize both shapes so streaming clients see
+		// the same content the non-streaming aggregator already handles.
 		if delta, okDelta := choice["delta"].(map[string]any); okDelta {
 			normalized["delta"] = normalizeDelta(delta)
+		} else if message, okMessage := choice["message"].(map[string]any); okMessage {
+			normalized["delta"] = normalizeDelta(message)
 		}
 		if reason := stringField(choice, "finish_reason"); reason != "" {
 			normalized["finish_reason"] = reason
+		} else if message, okMessage := choice["message"].(map[string]any); okMessage && stringField(message, "finish_reason") != "" {
+			normalized["finish_reason"] = stringField(message, "finish_reason")
 		} else {
 			normalized["finish_reason"] = nil
 		}
@@ -305,7 +319,7 @@ func toInt64(value any) (int64, bool) {
 
 // aggregateChatCompletion folds an upstream SSE stream into a single
 // chat.completion JSON document (non-stream clients).
-func aggregateChatCompletion(src io.Reader) ([]byte, error) {
+func aggregateChatCompletion(src io.Reader, secrets ...string) ([]byte, error) {
 	if src == nil {
 		return nil, errEmptyStream
 	}
@@ -345,7 +359,7 @@ func aggregateChatCompletion(src io.Reader) ([]byte, error) {
 			continue
 		}
 		if isErrorFrame(payload) {
-			return nil, upstreamError(http.StatusBadGateway, payload, nil)
+			return nil, upstreamError(http.StatusBadGateway, payload, nil, secrets...)
 		}
 		validEvents++
 
@@ -394,6 +408,9 @@ func aggregateChatCompletion(src io.Reader) ([]byte, error) {
 		}
 		if content.Len() > 0 {
 			gotContent = true
+		}
+		if content.Len()+reasoning.Len() > maxAggregateBytes {
+			return nil, errAggregateTooLarge
 		}
 	}
 	if errScan := scanner.Err(); errScan != nil {

@@ -113,7 +113,7 @@ func (p *Provider) PollLogin(ctx context.Context, state any) (*reverse.LoginPoll
 	applyLoginHeaders(accountReq, reg)
 	accountReq.Header.Set("Authorization", "Bearer "+accessToken)
 
-	accountRaw, errAccount := doLoginCall(accountReq)
+	accountRaw, errAccount := doLoginCall(accountReq, accessToken)
 	if errAccount != nil {
 		if isLoginPending(errAccount) {
 			return &reverse.LoginPollResult{Pending: true}, nil
@@ -160,10 +160,10 @@ func (p *Provider) PollLogin(ctx context.Context, state any) (*reverse.LoginPoll
 
 // doLoginCall performs one login RPC. Login HTTP has no account scope, hence
 // the empty proxy (environment proxy only).
-func doLoginCall(req *http.Request) (json.RawMessage, error) {
+func doLoginCall(req *http.Request, secrets ...string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), loginTimeout)
 	defer cancel()
-	return apiCall(reverse.HTTPClient(reverse.LoginProxyURL(ctx)), req.WithContext(ctx), apiBodyLimit)
+	return apiCall(reverse.HTTPClient(reverse.LoginProxyURL(ctx)), req.WithContext(ctx), apiBodyLimit, secrets...)
 }
 
 // isLoginPending reports whether an error means "the user has not finished
@@ -182,7 +182,10 @@ func isLoginPending(err error) bool {
 		}
 	}
 	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"11217", "login ing", "pending", "not authorized", "waiting", "authorizing"} {
+	// Keep this list to phrases the authorization endpoint actually uses. Broad
+	// words like "waiting" or "pending" would swallow real 5xx/auth failures
+	// and leave the admin UI polling until the session expires.
+	for _, marker := range []string{"11217", "login ing", "not authorized"} {
 		if strings.Contains(message, marker) {
 			return true
 		}

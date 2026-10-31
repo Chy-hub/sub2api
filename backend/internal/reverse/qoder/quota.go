@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
 )
@@ -48,7 +51,7 @@ func (p *Provider) Quota(ctx context.Context, acc *reverse.Account) (*reverse.Qu
 	if err != nil {
 		return nil, err
 	}
-	quota := &Quota{Plan: fetchPlanName(ctx, reverse.HTTPClient(acc.ProxyURL), ep.plan, token), UserQuota: extractQuotaBucket(raw, "userQuota"), AddonQuota: extractQuotaBucket(raw, "addOnQuota"), IsQuotaExceeded: raw["isQuotaExceeded"] == true, ExpiresAt: int64(toFloat(raw, "expiresAt"))}
+	quota := &Quota{Plan: fetchPlanName(ctx, reverse.HTTPClient(acc.ProxyURL), ep.plan, token), UserQuota: extractQuotaBucket(raw, "userQuota"), AddonQuota: extractQuotaBucket(raw, "addOnQuota"), IsQuotaExceeded: raw["isQuotaExceeded"] == true, ExpiresAt: parseQuotaExpiresAt(raw["expiresAt"])}
 	result := BuildQuotaResponse(quota)
 	return &result, nil
 }
@@ -138,6 +141,28 @@ func quotaGroup(displayName string, bucket *QuotaBucket) *reverse.QuotaGroup {
 			Description:       description,
 		}},
 	}
+}
+
+// parseQuotaExpiresAt accepts epoch seconds, numeric strings and RFC3339
+// timestamps; otherwise a string-valued field silently became 0 and the expiry
+// was omitted from the UI.
+func parseQuotaExpiresAt(value any) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return parsed
+	case string:
+		text := strings.TrimSpace(typed)
+		if parsed, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return parsed
+		}
+		if at, err := time.Parse(time.RFC3339, text); err == nil {
+			return at.Unix()
+		}
+	}
+	return 0
 }
 
 // toFloat 把 JSON 里的数值字段读成 float64（兼容多种数字形态）。

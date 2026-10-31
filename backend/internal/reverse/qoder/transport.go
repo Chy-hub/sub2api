@@ -63,7 +63,9 @@ func upstreamError(status int, header http.Header, body []byte, secrets ...strin
 			code = "upstream_error"
 		}
 	}
-	message = redactSecrets(truncateRunes(message, 500), secrets...)
+	// Redact before truncating: a secret crossing the truncation boundary would
+	// otherwise keep only its prefix and escape replacement.
+	message = truncateRunes(redactSecrets(message, secrets...), 500)
 	err := reverse.NewUpstreamError(status, code, message)
 	classifyQoderRequestError(err)
 	if err.RetryAfter == 0 && header != nil {
@@ -93,11 +95,11 @@ func classifyQoderRequestError(err *reverse.UpstreamError) {
 	}
 }
 
-func streamBusinessError(code, message, payload string) *reverse.UpstreamError {
+func streamBusinessError(code, message, payload string, secrets ...string) *reverse.UpstreamError {
 	if signal, queued := ParseQueueSignal(payload); queued {
 		return queueSignalError(signal)
 	}
-	err := reverse.NewUpstreamError(http.StatusBadGateway, code, message)
+	err := reverse.NewUpstreamError(http.StatusBadGateway, code, truncateRunes(redactSecrets(message, secrets...), 500))
 	err.Kind = string(reverse.FailureKindClient)
 	classifyQoderRequestError(err)
 	return err

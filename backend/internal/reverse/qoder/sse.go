@@ -37,14 +37,14 @@ func (d streamDelta) empty() bool {
 // frame is {"headers":{...},"body":"<inner CC chunk>","statusCodeValue":200};
 // statusCodeValue may carry a provider failure (418/5xx) after a 200 stream
 // open, and the inner document may carry a business error code.
-func extractDelta(payload string) streamDelta {
+func extractDelta(payload string, secrets ...string) streamDelta {
 	var wrapper map[string]any
 	if err := json.Unmarshal([]byte(payload), &wrapper); err != nil {
 		return streamDelta{}
 	}
 	if raw, ok := wrapper["statusCodeValue"]; ok {
 		if status := envelopeStatus(raw); status != http.StatusOK {
-			return streamDelta{Err: upstreamError(status, nil, []byte(envelopeDetail(wrapper)))}
+			return streamDelta{Err: upstreamError(status, nil, []byte(envelopeDetail(wrapper)), secrets...)}
 		}
 	}
 	inner, _ := wrapper["body"].(string)
@@ -56,12 +56,12 @@ func extractDelta(payload string) streamDelta {
 		return streamDelta{}
 	}
 
-	if value, ok := chunk["error"]; ok && value != nil {
+	if value, ok := chunk["error"]; ok && upstreamErrorPresent(value) {
 		code, message := parseUpstreamErrorMessage([]byte(inner))
 		if message == "" {
 			message = "upstream error"
 		}
-		return streamDelta{Err: streamBusinessError(firstNonEmpty(code, "upstream_error"), message, inner)}
+		return streamDelta{Err: streamBusinessError(firstNonEmpty(code, "upstream_error"), message, inner, secrets...)}
 	}
 
 	result := streamDelta{}
@@ -103,7 +103,7 @@ func extractDelta(payload string) streamDelta {
 		if message == "" {
 			message = fmt.Sprintf("upstream error code=%s", code)
 		}
-		return streamDelta{Err: streamBusinessError(code, message, inner)}
+		return streamDelta{Err: streamBusinessError(code, message, inner, secrets...)}
 	}
 
 	if result.FinishReason != "" || result.InputTokens > 0 || result.OutputTokens > 0 || result.TotalTokens > 0 {
@@ -294,6 +294,26 @@ func filterValidToolCalls(calls []any) []any {
 	return valid
 }
 
+// stripToolCallIndex removes the streaming-only index field from aggregated
+// tool calls; strict OpenAI clients reject it in a non-streaming response.
+func stripToolCallIndex(calls []any) []any {
+	out := make([]any, 0, len(calls))
+	for _, item := range calls {
+		call, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		clean := make(map[string]any, len(call))
+		for key, value := range call {
+			if key != "index" {
+				clean[key] = value
+			}
+		}
+		out = append(out, clean)
+	}
+	return out
+}
+
 // buildCompletion renders the aggregated state as an OpenAI chat.completion.
 func buildCompletion(state *completionState, id string, created int64, model string) []byte {
 	toolCalls := filterValidToolCalls(state.toolCalls)
@@ -310,7 +330,8 @@ func buildCompletion(state *completionState, id string, created int64, model str
 		message["reasoning_content"] = state.reasoning.String()
 	}
 	if len(toolCalls) > 0 {
-		message["tool_calls"] = toolCalls
+		// OpenAI's non-streaming shape omits the streaming "index" field.
+		message["tool_calls"] = stripToolCallIndex(toolCalls)
 		if state.content.Len() == 0 {
 			message["content"] = nil
 		}
@@ -457,12 +478,36 @@ func writeStreamError(writer io.Writer, upstreamErr *reverse.UpstreamError) erro
 	})
 }
 
+// upstreamErrorPresent reports whether a decoded `error` field actually carries
+// a failure. Empty strings, empty objects and false are normal keepalive shapes
+// on this upstream and must not abort the stream.
+func upstreamErrorPresent(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case bool:
+		return typed
+	case map[string]any:
+		for _, key := range []string{"message", "msg", "code", "type", "error"} {
+			if text := stringValue(typed[key]); text != "" {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
 // consumeStream reads the upstream SSE envelope and returns the aggregated
 // completion state for a non-stream response.
-func consumeStream(body io.Reader) (*completionState, error) {
+func consumeStream(body io.Reader, secrets ...string) (*completionState, error) {
 	state := &completionState{}
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), upstreamStreamFrameLimit)
+	sawDone := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -473,9 +518,10 @@ func consumeStream(body io.Reader) (*completionState, error) {
 			continue
 		}
 		if payload == "[DONE]" {
+			sawDone = true
 			break
 		}
-		delta := extractDelta(payload)
+		delta := extractDelta(payload, secrets...)
 		if delta.Err != nil {
 			return nil, delta.Err
 		}
@@ -487,16 +533,23 @@ func consumeStream(body io.Reader) (*completionState, error) {
 	if !state.sawDelta {
 		return nil, reverse.NewUpstreamError(http.StatusBadGateway, "empty_upstream_stream", "upstream returned an empty stream")
 	}
+	// A clean EOF without either [DONE] or a finish_reason is a truncated
+	// upstream stream, not a completed completion. Returning it as success
+	// would bill and hand the client a half answer.
+	if !sawDone && state.finishReason == "" {
+		return nil, reverse.NewUpstreamError(http.StatusBadGateway, "upstream_stream_truncated", "upstream stream ended before [DONE]")
+	}
 	return state, nil
 }
 
 // pumpStream proxies the upstream stream into the synthetic OpenAI SSE body.
-func pumpStream(ctx context.Context, body io.ReadCloser, writer io.Writer, id string, created int64, model string, includeUsage bool) error {
+func pumpStream(ctx context.Context, body io.ReadCloser, writer io.Writer, id string, created int64, model string, includeUsage bool, secrets ...string) error {
 	defer body.Close()
 
 	state := &streamWriter{writer: writer, id: id, created: created, model: model, includeUsage: includeUsage}
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), upstreamStreamFrameLimit)
+	sawDone := false
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -512,9 +565,10 @@ func pumpStream(ctx context.Context, body io.ReadCloser, writer io.Writer, id st
 			continue
 		}
 		if payload == "[DONE]" {
+			sawDone = true
 			break
 		}
-		delta := extractDelta(payload)
+		delta := extractDelta(payload, secrets...)
 		if delta.Err != nil {
 			// Surface the upstream failure as an SSE error event, then abort the
 			// stream instead of pretending it finished normally.
@@ -534,6 +588,15 @@ func pumpStream(ctx context.Context, body io.ReadCloser, writer io.Writer, id st
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if !sawDone && state.finishReason == "" {
+		// Do not synthesize finish_reason "stop" for a silently truncated
+		// upstream stream; report it as an error event instead.
+		truncated := reverse.NewUpstreamError(http.StatusBadGateway, "upstream_stream_truncated", "upstream stream ended before [DONE]")
+		if err := writeStreamError(writer, truncated); err != nil {
+			return err
+		}
+		return truncated
 	}
 	return state.finish()
 }
