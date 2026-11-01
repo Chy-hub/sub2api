@@ -380,6 +380,7 @@ export default {
         queryQuota: "查询上游额度",
         quotaPlan: '套餐',
         quotaAddon: '拓展包',
+        quotaShared: '共享资源包',
         quotaCredits: '积分',
         quotaUsedTotal: '已用 {used} / {total}',
         quotaUsed: '已用 {used}',

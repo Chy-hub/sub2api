@@ -152,6 +152,7 @@ export default {
         queryQuota: "Query upstream quota",
         quotaPlan: 'Plan',
         quotaAddon: 'Add-on',
+        quotaShared: 'Shared package',
         quotaCredits: 'Credits',
         quotaUsedTotal: 'Used {used} / {total}',
         quotaUsed: 'Used {used}',
