@@ -80,6 +80,27 @@ describe('Reverse quota in the account usage column', () => {
     wrapper.unmount()
   })
 
+  it('shows the shared resource package of a Qoder CN team account whose plan is exhausted', async () => {
+    const wrapper = render(account({
+      subscription: { tierName: 'Teams' },
+      summary: [
+        { key: 'user_quota_used', label: '', value: 3000 },
+        { key: 'user_quota_total', label: '', value: 3000 },
+        { key: 'user_quota_remaining', label: '', value: 0 },
+        { key: 'shared_quota_used', label: '', value: 0 },
+        { key: 'shared_quota_total', label: '', value: 2000 },
+        { key: 'shared_quota_remaining', label: '', value: 2000 }
+      ]
+    }))
+    await flushPromises()
+    expect(wrapper.get('[data-test="reverse-quota-plan"]').text()).toContain('Used 3,000 / 3,000')
+    const shared = wrapper.get('[data-test="reverse-quota-shared"]')
+    expect(shared.text()).toContain('Shared package')
+    expect(shared.text()).toContain('Used 0 / 2,000 · Remaining 2,000')
+    expect(shared.findComponent(UsageProgressBar).props('utilization')).toBe(0)
+    wrapper.unmount()
+  })
+
   it('uses the WorkBuddy summary too, preserving fractional enterprise credits', async () => {
     const wrapper = render(account({
       subscription: { tierName: 'Enterprise' },

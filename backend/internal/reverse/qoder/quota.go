@@ -17,10 +17,10 @@ type QuotaBucket struct {
 	ResetTime              string
 }
 type Quota struct {
-	Plan                  string
-	UserQuota, AddonQuota *QuotaBucket
-	IsQuotaExceeded       bool
-	ExpiresAt             int64
+	Plan                          string
+	UserQuota, AddonQuota, Shared *QuotaBucket
+	IsQuotaExceeded               bool
+	ExpiresAt                     int64
 }
 
 func (p *Provider) Quota(ctx context.Context, acc *reverse.Account) (*reverse.QuotaFetchResponse, error) {
@@ -51,18 +51,50 @@ func (p *Provider) Quota(ctx context.Context, acc *reverse.Account) (*reverse.Qu
 	if err != nil {
 		return nil, err
 	}
-	quota := &Quota{Plan: fetchPlanName(ctx, reverse.HTTPClient(acc.ProxyURL), ep.plan, token), UserQuota: extractQuotaBucket(raw, "userQuota"), AddonQuota: extractQuotaBucket(raw, "addOnQuota"), IsQuotaExceeded: raw["isQuotaExceeded"] == true, ExpiresAt: parseQuotaExpiresAt(raw["expiresAt"])}
+	quota := &Quota{Plan: fetchPlanName(ctx, reverse.HTTPClient(acc.ProxyURL), ep.plan, token), UserQuota: extractQuotaBucket(raw, "userQuota"), AddonQuota: extractQuotaBucket(raw, "addOnQuota"), Shared: extractSharedPackage(raw), IsQuotaExceeded: raw["isQuotaExceeded"] == true, ExpiresAt: parseQuotaExpiresAt(raw["expiresAt"])}
 	result := BuildQuotaResponse(quota)
 	return &result, nil
 }
 func extractQuotaBucket(data map[string]any, key string) *QuotaBucket {
 	obj, okObj := data[key].(map[string]any)
-	if !okObj || len(obj) == 0 {
+	if !okObj {
 		return nil
+	}
+	return bucketFromObject(obj)
+}
+
+// extractSharedPackage 读取「共享资源包」。
+//
+// 团队账号的主额度不在 userQuota（订阅席位）里：席位用尽后（3000/3000），
+// 真正还能用的额度在顶层 orgResourcePackage 中。该桶的总额字段叫 cap 而不是
+// total，另带 available 说明当前能否取用；available=false（过期 / 停用 / 已
+// 退还）时余额取不出来，按「没有这份额度」处理，否则页面会展示一份无法使用
+// 的数字。
+func extractSharedPackage(data map[string]any) *QuotaBucket {
+	obj, okObj := data["orgResourcePackage"].(map[string]any)
+	if !okObj {
+		return nil
+	}
+	if available, okAvailable := obj["available"].(bool); okAvailable && !available {
+		return nil
+	}
+	return bucketFromObject(obj)
+}
+
+// bucketFromObject 把一个额度桶对象读成 QuotaBucket；空对象视为「没有这份额度」。
+//
+// 总额接受 total 与 cap 两种拼写：组织共享资源包用 cap，其余桶用 total。
+func bucketFromObject(obj map[string]any) *QuotaBucket {
+	if len(obj) == 0 {
+		return nil
+	}
+	total := toFloat(obj, "total")
+	if _, hasTotal := obj["total"]; !hasTotal {
+		total = toFloat(obj, "cap")
 	}
 	bucket := &QuotaBucket{
 		Used:      toFloat(obj, "used"),
-		Total:     toFloat(obj, "total"),
+		Total:     total,
 		Remaining: toFloat(obj, "remaining"),
 	}
 	if reset, okReset := obj["resetTime"].(string); okReset {
@@ -87,6 +119,9 @@ func BuildQuotaResponse(quota *Quota) reverse.QuotaFetchResponse {
 	if group := quotaGroup("个人拓展包", quota.AddonQuota); group != nil {
 		response.Groups = append(response.Groups, *group)
 	}
+	if group := quotaGroup("共享资源包", quota.Shared); group != nil {
+		response.Groups = append(response.Groups, *group)
+	}
 	if quota.UserQuota != nil {
 		// total 必须一并输出：页面的「剩余/总额 + 使用率」要它才能算比例。
 		// 上游对 Free 计划可能给 total=0（额度按剩余量计），此时仍输出 0——
@@ -101,6 +136,12 @@ func BuildQuotaResponse(quota *Quota) reverse.QuotaFetchResponse {
 			reverse.QuotaMetric{Key: "addon_quota_remaining", Label: "拓展包剩余额度", Value: quota.AddonQuota.Remaining, Unit: "credits"},
 			reverse.QuotaMetric{Key: "addon_quota_total", Label: "拓展包总额度", Value: quota.AddonQuota.Total, Unit: "credits"},
 			reverse.QuotaMetric{Key: "addon_quota_used", Label: "拓展包已用额度", Value: quota.AddonQuota.Used, Unit: "credits"})
+	}
+	if quota.Shared != nil {
+		response.Summary = append(response.Summary,
+			reverse.QuotaMetric{Key: "shared_quota_remaining", Label: "共享资源包剩余额度", Value: quota.Shared.Remaining, Unit: "credits"},
+			reverse.QuotaMetric{Key: "shared_quota_total", Label: "共享资源包总额度", Value: quota.Shared.Total, Unit: "credits"},
+			reverse.QuotaMetric{Key: "shared_quota_used", Label: "共享资源包已用额度", Value: quota.Shared.Used, Unit: "credits"})
 	}
 	if quota.IsQuotaExceeded {
 		response.Summary = append(response.Summary,
