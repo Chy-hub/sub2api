@@ -156,6 +156,64 @@ func TestQuotaNormalizesFreePlanAndAddonBuckets(t *testing.T) {
 	require.InDelta(t, 10.0/11.0, result.Groups[1].Buckets[0].RemainingFraction, 0.0001)
 }
 
+// TestQuotaReadsSharedResourcePackage 覆盖团队账号：套餐席位用尽（3000/3000）
+// 后，真正可用的额度在顶层 orgResourcePackage 中，总额字段叫 cap。
+//
+// 旧实现只读 userQuota / addOnQuota，这个桶从未被解析，账号列表于是一直显示
+// 「已用 3000 / 总计 3000」，而 Qoder CN 控制台里明明还有共享资源包可用。
+func TestQuotaReadsSharedResourcePackage(t *testing.T) {
+	original := endpointsCN
+	defer func() { endpointsCN = original }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"u1"}`)
+		case "/quota":
+			_, _ = io.WriteString(w, `{"userQuota":{"used":3000,"total":3000,"remaining":0},`+
+				`"orgResourcePackage":{"used":0,"cap":2000,"remaining":2000,"percentage":0,"available":true}}`)
+		case "/plan":
+			_, _ = io.WriteString(w, `{"plan_tier_name":"Teams"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	endpointsCN.userinfo = server.URL + "/userinfo"
+	endpointsCN.quota = server.URL + "/quota"
+	endpointsCN.plan = server.URL + "/plan"
+	result, err := New().(*Provider).Quota(context.Background(), &reverse.Account{ID: 1, Region: "cn", Credentials: map[string]any{"access_token": "dt-test-access"}})
+	require.NoError(t, err)
+	require.Len(t, result.Groups, 2)
+	require.Equal(t, "共享资源包", result.Groups[1].DisplayName)
+	require.InDelta(t, 1.0, result.Groups[1].Buckets[0].RemainingFraction, 0.0001)
+	require.Contains(t, result.Groups[1].Buckets[0].Description, "已用 0 / 总计 2000，剩余 2000")
+	metrics := map[string]float64{}
+	for _, metric := range result.Summary {
+		metrics[metric.Key] = metric.Value
+	}
+	require.Equal(t, 2000.0, metrics["shared_quota_remaining"])
+	require.Equal(t, 2000.0, metrics["shared_quota_total"])
+	require.Equal(t, 0.0, metrics["shared_quota_used"])
+}
+
+// TestQuotaSkipsUnavailableSharedPackage 覆盖过期 / 停用 / 已退还的资源包：
+// 这类包的余额取不出来，不能作为可用额度展示。
+func TestQuotaSkipsUnavailableSharedPackage(t *testing.T) {
+	result := BuildQuotaResponse(&Quota{
+		UserQuota: &QuotaBucket{Used: 3000, Total: 3000},
+		Shared:    nil,
+	})
+	for _, metric := range result.Summary {
+		require.NotContains(t, metric.Key, "shared_quota")
+	}
+	require.Len(t, result.Groups, 1)
+
+	// available=false 时 extractSharedPackage 必须丢弃整个桶。
+	require.Nil(t, extractSharedPackage(map[string]any{
+		"orgResourcePackage": map[string]any{"cap": 2000.0, "remaining": 2000.0, "used": 0.0, "available": false},
+	}))
+}
+
 func TestQuotaExpiryUsesUnixSeconds(t *testing.T) {
 	for _, input := range []int64{1794240000, 1794240000000} {
 		result := BuildQuotaResponse(&Quota{ExpiresAt: input})

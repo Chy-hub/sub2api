@@ -11,7 +11,7 @@
         v-if="row.percent != null"
         :label="row.label"
         :utilization="row.percent"
-        :color="row.key === 'addon' ? 'emerald' : 'indigo'"
+        :color="row.color"
         label-width="auto"
         :title="row.text"
       />
@@ -83,9 +83,11 @@ const metric = (key: string): number | undefined => {
 }
 const formatNumber = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 })
 const rows = computed(() => [
-  { key: 'plan', label: 'quotaPlan', prefix: 'user_quota', remaining: 'user_quota_remaining' },
-  { key: 'addon', label: 'quotaAddon', prefix: 'addon_quota', remaining: 'addon_quota_remaining' },
-  { key: 'credits', label: 'quotaCredits', prefix: 'credit', remaining: 'credit_remain' }
+  { key: 'plan', label: 'quotaPlan', prefix: 'user_quota', remaining: 'user_quota_remaining', color: 'indigo' as const },
+  { key: 'addon', label: 'quotaAddon', prefix: 'addon_quota', remaining: 'addon_quota_remaining', color: 'emerald' as const },
+  // Qoder 团队账号的主额度：套餐席位用尽后，真正能用的额度在这里。
+  { key: 'shared', label: 'quotaShared', prefix: 'shared_quota', remaining: 'shared_quota_remaining', color: 'purple' as const },
+  { key: 'credits', label: 'quotaCredits', prefix: 'credit', remaining: 'credit_remain', color: 'indigo' as const }
 ].flatMap(definition => {
   const used = metric(`${definition.prefix}_used`)
   const total = metric(`${definition.prefix}_total`)
@@ -105,6 +107,7 @@ const rows = computed(() => [
     key: definition.key,
     label: t(`admin.accounts.reverse.${definition.label}`),
     percent: total != null && total > 0 && spent != null ? (spent / total) * 100 : null,
+    color: definition.color,
     text: parts.join(' · ')
   }]
 }))
