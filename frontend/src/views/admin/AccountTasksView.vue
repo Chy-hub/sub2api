@@ -272,6 +272,14 @@
           </div>
         </div>
 
+        <div>
+          <label class="input-label">{{ t('admin.accountTasks.fieldRateMultiplier') }}</label>
+          <input v-model="form.rateMultiplier" type="number" min="0" step="0.0001" class="input" :placeholder="t('admin.accountTasks.fieldRateMultiplierPlaceholder')" />
+          <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">
+            {{ t('admin.accountTasks.fieldRateMultiplierHint') }}
+          </p>
+        </div>
+
         <div class="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-dark-900">
           <label class="flex items-center gap-2 text-sm">
             <input v-model="form.verifyModels" type="checkbox" />
@@ -424,6 +432,7 @@ const form = reactive({
   priority: 50,
   concurrency: 3,
   sortOrder: 0,
+  rateMultiplier: '',
   verifyModels: true,
   rejectOnVerifyFail: true,
   enabled: true
@@ -434,13 +443,19 @@ const form = reactive({
 const allowedAccountTypes = computed(() => accountTypesForPlatform(form.platform))
 
 // 只有「填密钥」类账号才能自定义上游地址。OAuth 平台的地址由平台适配器固定，
-// 反代平台（Qoder / WorkBuddy）更是没有这个概念。
+// 反代平台（Qoder / WorkBuddy）与服务账号/Bedrock 更没有这个概念。
 const supportsCustomBaseURL = computed(() => {
   const types = form.accountTypes
   if (types.length === 0) return false
-  return types.every((type) =>
-    ['apikey', 'upstream', 'service_account', 'bedrock'].includes(type)
-  )
+  return types.every((type) => ['apikey', 'upstream'].includes(type))
+})
+
+// 切换平台/账号类型后，隐藏的上游地址不能继续留在表单里，否则会被当成
+// 有效配置提交（后端也会拒绝这种组合）。
+watch(supportsCustomBaseURL, (supported) => {
+  if (!supported) {
+    form.expectedBaseUrl = ''
+  }
 })
 
 // 切换平台后：
@@ -479,6 +494,7 @@ function resetForm(): void {
   form.priority = 50
   form.concurrency = 3
   form.sortOrder = 0
+  form.rateMultiplier = ''
   form.verifyModels = true
   form.rejectOnVerifyFail = true
   form.enabled = true
@@ -513,6 +529,7 @@ function openEdit(task: AdminAccountTask): void {
   form.priority = task.priority
   form.concurrency = task.concurrency
   form.sortOrder = task.sort_order
+  form.rateMultiplier = task.rate_multiplier == null ? '' : String(task.rate_multiplier)
   form.verifyModels = task.verify_models
   form.rejectOnVerifyFail = task.reject_on_verify_fail
   form.enabled = task.enabled
@@ -535,6 +552,15 @@ async function saveTask(): Promise<void> {
     formError.value = t('admin.accountTasks.rewardGroupRequired')
     return
   }
+  const rateMultiplierRaw = form.rateMultiplier.trim()
+  const hasRateMultiplier = rateMultiplierRaw !== ''
+  if (hasRateMultiplier) {
+    const parsed = Number(rateMultiplierRaw)
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      formError.value = t('admin.accountTasks.rateMultiplierInvalid')
+      return
+    }
+  }
   const payload: AccountTaskPayload = {
     name: form.name,
     description: form.description,
@@ -543,11 +569,13 @@ async function saveTask(): Promise<void> {
     reward_group_id: form.rewardGroupId,
     reward_days: form.rewardDays,
     target_group_ids: form.targetGroupIds,
-    expected_base_url: form.expectedBaseUrl,
+    expected_base_url: supportsCustomBaseURL.value ? form.expectedBaseUrl : '',
     max_per_user: form.maxPerUser,
     priority: form.priority,
     concurrency: form.concurrency,
     sort_order: form.sortOrder,
+    rate_multiplier: hasRateMultiplier ? Number(rateMultiplierRaw) : undefined,
+    clear_rate_multiplier: !hasRateMultiplier,
     verify_models: form.verifyModels,
     reject_on_verify_fail: form.rejectOnVerifyFail,
     enabled: form.enabled

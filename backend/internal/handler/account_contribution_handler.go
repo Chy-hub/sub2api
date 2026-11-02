@@ -22,44 +22,42 @@ func NewAccountContributionHandler(svc *service.AccountContributionService) *Acc
 
 // AccountTaskDTO 是面向用户的公开任务视图，不暴露内部分组与优先级配置。
 type AccountTaskDTO struct {
-	ID            int64    `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Platform      string   `json:"platform"`
-	AccountTypes  []string `json:"account_types"`
-	RewardDays    int      `json:"reward_days"`
-	MaxPerUser    int      `json:"max_per_user"`
-	VerifyModels  bool     `json:"verify_models"`
-	RewardGroupID int64    `json:"reward_group_id"`
+	ID           int64    `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Platform     string   `json:"platform"`
+	AccountTypes []string `json:"account_types"`
+	RewardDays   int      `json:"reward_days"`
+	MaxPerUser   int      `json:"max_per_user"`
+	VerifyModels bool     `json:"verify_models"`
 	// ExpectedBaseURL 非空时表示任务已锁定上游，前端据此预填并隐藏输入框。
 	ExpectedBaseURL string `json:"expected_base_url,omitempty"`
 }
 
 // AccountSubmissionDTO 是用户可见的提交记录。
 type AccountSubmissionDTO struct {
-	ID                   int64   `json:"id"`
-	TaskID               int64   `json:"task_id"`
-	AccountID            int64   `json:"account_id"`
-	Status               string  `json:"status"`
-	VerificationStatus   string  `json:"verification_status"`
-	VerificationError    string  `json:"verification_error,omitempty"`
-	ModelCount           int     `json:"model_count"`
-	ReviewNote           string  `json:"review_note,omitempty"`
-	RewardGrantedAt      *string `json:"reward_granted_at,omitempty"`
-	CreatedAt            string  `json:"created_at"`
+	ID                 int64   `json:"id"`
+	TaskID             int64   `json:"task_id"`
+	AccountID          int64   `json:"account_id"`
+	Status             string  `json:"status"`
+	VerificationStatus string  `json:"verification_status"`
+	VerificationError  string  `json:"verification_error,omitempty"`
+	ModelCount         int     `json:"model_count"`
+	ReviewNote         string  `json:"review_note,omitempty"`
+	RewardGrantedAt    *string `json:"reward_granted_at,omitempty"`
+	CreatedAt          string  `json:"created_at"`
 }
 
 func toAccountTaskDTO(task *service.AccountTask) AccountTaskDTO {
 	return AccountTaskDTO{
-		ID:            task.ID,
-		Name:          task.Name,
-		Description:   task.Description,
-		Platform:      task.Platform,
-		AccountTypes:  task.AccountTypes,
-		RewardDays:    task.RewardDays,
-		MaxPerUser:    task.MaxPerUser,
+		ID:              task.ID,
+		Name:            task.Name,
+		Description:     task.Description,
+		Platform:        task.Platform,
+		AccountTypes:    task.AccountTypes,
+		RewardDays:      task.RewardDays,
+		MaxPerUser:      task.MaxPerUser,
 		VerifyModels:    task.VerifyModels,
-		RewardGroupID:   task.RewardGroupID,
 		ExpectedBaseURL: task.ExpectedBaseURL,
 	}
 }
