@@ -112,6 +112,10 @@ func RegisterUserRoutes(
 			accountSubmissions.GET("", h.AccountContribution.ListSubmissions)
 			// 提交会触发上游模型列表探测，属于重操作，叠加严格限流。
 			accountSubmissions.POST("", panelRateLimiter.Heavy(), h.AccountContribution.Submit)
+			// 授权式提交：复用管理端同一批 OAuth / 反代服务，会话归属当前用户。
+			accountSubmissions.POST("/auth/start", panelRateLimiter.Heavy(), h.AccountSubmissionAuth.StartAuth)
+			accountSubmissions.GET("/auth/poll", h.AccountSubmissionAuth.PollAuth)
+			accountSubmissions.POST("/auth/complete", panelRateLimiter.Heavy(), h.AccountSubmissionAuth.CompleteAuth)
 		}
 
 		// 使用记录（聚合统计属重查询，叠加更严格的按用户限流）
