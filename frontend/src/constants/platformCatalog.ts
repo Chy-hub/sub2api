@@ -112,6 +112,45 @@ export function supportsPricingModelSync(platform: string | null | undefined): b
   return !!getPlatformSpec(platform?.trim().toLowerCase())?.litellm_provider?.trim()
 }
 
+/** 账号类型标识，与后端 AccountType 常量一致。 */
+export type AccountTypeId =
+  | 'oauth'
+  | 'setup-token'
+  | 'apikey'
+  | 'upstream'
+  | 'bedrock'
+  | 'service_account'
+  | 'reverse'
+
+/**
+ * 平台允许的账号类型。与后端 buildAccountForCreate 的硬约束保持一致：
+ * - 反代平台（Qoder / WorkBuddy）只接受 reverse
+ * - reverse 只能用于反代平台
+ * - TypeSafe 只接受 apikey
+ * 其余平台允许按量 / OAuth 类凭证。
+ */
+export function accountTypesForPlatform(platform: string | null | undefined): AccountTypeId[] {
+  const spec = getPlatformSpec(platform?.trim().toLowerCase())
+  if (!spec) return []
+
+  if (spec.reverse_provider) {
+    return ['reverse']
+  }
+  if (spec.id === 'typesafe') {
+    return ['apikey']
+  }
+
+  const types: AccountTypeId[] = ['apikey', 'upstream', 'oauth', 'setup-token']
+  // Gemini 的 Vertex 服务账号、Anthropic 的 Bedrock 只在这两个平台成立。
+  if (spec.id === 'gemini') {
+    types.push('service_account')
+  }
+  if (spec.id === 'anthropic') {
+    types.push('bedrock')
+  }
+  return types
+}
+
 /** 平台展示名；未登记的值原样返回。 */
 export function platformDisplayName(platform: string | null | undefined): string {
   return getPlatformSpec(platform)?.display_name ?? platform ?? ''

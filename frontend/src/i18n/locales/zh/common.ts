@@ -479,7 +479,7 @@ export default {
     fieldApiKey: 'API Key',
     fieldAccessToken: 'Access Token',
     fieldBaseUrl: '上游地址（可选）',
-    oauthHint: '需要填入未过期的 access_token；过期的凭证无法在提交时自动刷新。',
+    tokenHint: '需要填入未过期的 access_token；过期的凭证无法在提交时自动刷新。',
     apiKeyRequired: '请填写 API Key',
     accessTokenRequired: '请填写 Access Token',
     submitSuccess: '已提交，等待管理员审核',
