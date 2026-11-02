@@ -199,7 +199,7 @@
         <div>
           <label class="input-label">{{ t('admin.accountTasks.fieldTypes') }} *</label>
           <div class="flex flex-wrap gap-3">
-            <label v-for="option in ACCOUNT_TYPE_OPTIONS" :key="option" class="flex items-center gap-1.5 text-sm">
+            <label v-for="option in allowedAccountTypes" :key="option" class="flex items-center gap-1.5 text-sm">
               <input v-model="form.accountTypes" type="checkbox" :value="option" />
               <span class="font-mono text-xs">{{ option }}</span>
             </label>
@@ -347,6 +347,7 @@ import {
   type AdminAccountTask
 } from '@/api/admin/accountTasks'
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
+import { accountTypesForPlatform } from '@/constants/platformCatalog'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime } from '@/utils/format'
@@ -355,8 +356,6 @@ import type { AdminGroup, GroupPlatform } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
-
-const ACCOUNT_TYPE_OPTIONS = ['apikey', 'oauth', 'setup-token', 'upstream', 'reverse', 'service_account', 'bedrock']
 
 const loading = ref(true)
 const loadingSubmissions = ref(false)
@@ -388,12 +387,17 @@ const formGroups = computed(() =>
   groups.value.filter((group) => group.platform === form.platform)
 )
 
-// 切换平台后，之前选中的分组 ID 可能属于旧平台。
-// 保留它们会提交出「账号入组与平台不一致」的任务，所以在切换时清空。
+// 切换平台后：
+// - 之前选中的分组 ID 可能属于旧平台，保留会提交出「账号入组与平台不一致」的任务；
+// - 之前选中的账号类型可能在新平台不成立（例如从 openai 切到 qoder_cn 只允许 reverse）。
+// 两者一起清空，并把类型重置为新平台的可选项。
 watch(
   () => form.platform,
   () => {
     form.targetGroupIds = []
+    const allowed = accountTypesForPlatform(form.platform)
+    const kept = form.accountTypes.filter((type) => allowed.includes(type as never))
+    form.accountTypes = kept.length > 0 ? kept : allowed.slice(0, 1)
   }
 )
 
@@ -437,6 +441,10 @@ const form = reactive({
   enabled: true
 })
 
+// 账号类型选项按平台推导：反代平台只有 reverse，TypeSafe 只有 apikey。
+// 写死全量列表会让管理员配出必然创建失败的任务。
+const allowedAccountTypes = computed(() => accountTypesForPlatform(form.platform))
+
 function resetForm(): void {
   form.name = ''
   form.description = ''
@@ -467,7 +475,13 @@ function openEdit(task: AdminAccountTask): void {
   form.name = task.name
   form.description = task.description
   form.platform = task.platform
-  form.accountTypes = [...task.account_types]
+  // 历史任务可能存着当前平台不再支持的账号类型，这里收敛到有效集合，
+  // 避免打开编辑框就是一个保存必然失败的状态。
+  const allowed = accountTypesForPlatform(task.platform)
+  const kept = task.account_types.filter((type) =>
+    allowed.includes(type as never)
+  )
+  form.accountTypes = kept.length > 0 ? kept : allowed.slice(0, 1)
   form.rewardGroupId = task.reward_group_id
   form.rewardDays = task.reward_days
   form.targetGroupIds = [...task.target_group_ids]

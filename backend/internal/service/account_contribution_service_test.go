@@ -400,3 +400,156 @@ func TestUpdateTaskRejectsInvalidChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, updated.Enabled)
 }
+
+func TestAllowedAccountTypesForPlatform(t *testing.T) {
+	// 反代平台只接受 reverse，这是 buildAccountForCreate 的硬约束。
+	require.Equal(t, []string{AccountTypeReverse}, AllowedAccountTypesForPlatform(PlatformQoderCN))
+	require.Equal(t, []string{AccountTypeReverse}, AllowedAccountTypesForPlatform(PlatformQoderGlobal))
+	require.Equal(t, []string{AccountTypeReverse}, AllowedAccountTypesForPlatform(PlatformWorkbuddyCN))
+	require.Equal(t, []string{AccountTypeReverse}, AllowedAccountTypesForPlatform(PlatformWorkbuddyGlobal))
+
+	// TypeSafe 只接受 apikey。
+	require.Equal(t, []string{AccountTypeAPIKey}, AllowedAccountTypesForPlatform(PlatformTypeSafe))
+
+	// 普通平台不提供 reverse。
+	openai := AllowedAccountTypesForPlatform(PlatformOpenAI)
+	require.Contains(t, openai, AccountTypeAPIKey)
+	require.Contains(t, openai, AccountTypeOAuth)
+	require.NotContains(t, openai, AccountTypeReverse)
+	require.NotContains(t, openai, AccountTypeBedrock)
+	require.NotContains(t, openai, AccountTypeServiceAccount)
+
+	// Gemini 支持 Vertex 服务账号。
+	require.Contains(t, AllowedAccountTypesForPlatform(PlatformGemini), AccountTypeServiceAccount)
+	// Anthropic 支持 Bedrock。
+	require.Contains(t, AllowedAccountTypesForPlatform(PlatformAnthropic), AccountTypeBedrock)
+	require.NotContains(t, AllowedAccountTypesForPlatform(PlatformGemini), AccountTypeBedrock)
+
+	require.Empty(t, AllowedAccountTypesForPlatform(""))
+	require.Empty(t, AllowedAccountTypesForPlatform("no-such-platform"))
+}
+
+func TestValidatePlatformAccountTypes(t *testing.T) {
+	require.NoError(t, validatePlatformAccountTypes(PlatformQoderCN, []string{AccountTypeReverse}))
+	require.Error(t, validatePlatformAccountTypes(PlatformQoderCN, []string{AccountTypeAPIKey}),
+		"反代平台不能接受 apikey 类型")
+	require.Error(t, validatePlatformAccountTypes(PlatformQoderCN, []string{AccountTypeReverse, AccountTypeAPIKey}),
+		"混入任一不支持的平台类型都要拒绝")
+
+	require.NoError(t, validatePlatformAccountTypes(PlatformTypeSafe, []string{AccountTypeAPIKey}))
+	require.Error(t, validatePlatformAccountTypes(PlatformTypeSafe, []string{AccountTypeOAuth}))
+
+	require.NoError(t, validatePlatformAccountTypes(PlatformOpenAI, []string{AccountTypeAPIKey, AccountTypeOAuth}))
+	require.Error(t, validatePlatformAccountTypes(PlatformOpenAI, []string{AccountTypeReverse}))
+
+	require.Error(t, validatePlatformAccountTypes("nope", []string{AccountTypeAPIKey}))
+}
+
+func TestCreateTaskRejectsTypeNotSupportedByPlatform(t *testing.T) {
+	repo := newContributionRepoStub()
+	svc := &AccountContributionService{repo: repo, groupRepo: newRewardGroupRepo()}
+
+	_, err := svc.CreateTask(context.Background(), &AccountTaskCreateInput{
+		Name:          "Qoder 贡献",
+		Platform:      PlatformQoderCN,
+		AccountTypes:  []string{AccountTypeAPIKey},
+		RewardGroupID: 9,
+		RewardDays:    30,
+	})
+	require.Error(t, err)
+
+	// 正确的组合可以创建。
+	task, err := svc.CreateTask(context.Background(), &AccountTaskCreateInput{
+		Name:          "Qoder 贡献",
+		Platform:      PlatformQoderCN,
+		AccountTypes:  []string{AccountTypeReverse},
+		RewardGroupID: 9,
+		RewardDays:    30,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{AccountTypeReverse}, task.AccountTypes)
+}
+
+func TestUpdateTaskRejectsTypeIncompatibleWithNewPlatform(t *testing.T) {
+	repo := newContributionRepoStub()
+	svc := &AccountContributionService{repo: repo, groupRepo: newRewardGroupRepo()}
+	task, err := svc.CreateTask(context.Background(), &AccountTaskCreateInput{
+		Name:          "OpenAI 贡献",
+		Platform:      PlatformOpenAI,
+		AccountTypes:  []string{AccountTypeAPIKey},
+		RewardGroupID: 9,
+		RewardDays:    30,
+	})
+	require.NoError(t, err)
+
+	// 只改平台、不改类型 → 组合不成立，必须拒绝。
+	qoder := PlatformQoderCN
+	_, err = svc.UpdateTask(context.Background(), task.ID, &AccountTaskUpdateInput{Platform: &qoder})
+	require.Error(t, err)
+
+	// 同时改平台和类型 → 允许。
+	reverseTypes := []string{AccountTypeReverse}
+	updated, err := svc.UpdateTask(context.Background(), task.ID, &AccountTaskUpdateInput{
+		Platform:     &qoder,
+		AccountTypes: &reverseTypes,
+	})
+	require.NoError(t, err)
+	require.Equal(t, PlatformQoderCN, updated.Platform)
+}
+
+// 任务锁定上游时，用户只交凭证；地址由服务端补全。
+func TestApplyExpectedBaseURL(t *testing.T) {
+	svc := &AccountContributionService{}
+
+	task := &AccountTask{ExpectedBaseURL: "api.llm.ustc.edu.cn"}
+	got := svc.applyExpectedBaseURL(task, map[string]any{"api_key": "sk-1"})
+	require.Equal(t, "https://api.llm.ustc.edu.cn", got["base_url"])
+	require.Equal(t, "sk-1", got["api_key"])
+
+	// 不修改调用方入参。
+	original := map[string]any{"api_key": "sk-1"}
+	_ = svc.applyExpectedBaseURL(task, original)
+	require.NotContains(t, original, "base_url")
+
+	// 用户显式提供地址时保留，交给 checkExpectedBaseURL 做一致性校验。
+	explicit := map[string]any{"api_key": "sk-1", "base_url": "https://api.llm.ustc.edu.cn/v1"}
+	require.Equal(t, "https://api.llm.ustc.edu.cn/v1", svc.applyExpectedBaseURL(task, explicit)["base_url"])
+
+	// 任务未锁定上游时原样返回。
+	open := &AccountTask{}
+	input := map[string]any{"api_key": "sk-1"}
+	require.Equal(t, input, svc.applyExpectedBaseURL(open, input))
+}
+
+// 端到端：锁定上游的任务，用户不填 base_url 也能提交成功。
+func TestSubmitWithLockedUpstreamDoesNotRequireBaseURL(t *testing.T) {
+	admin := &contributionAdminStub{}
+	svc, _ := newContributionServiceForTest(admin)
+	task := seedTask(t, svc, func(in *AccountTaskCreateInput) {
+		in.ExpectedBaseURL = "api.llm.ustc.edu.cn"
+	})
+
+	sub, err := svc.Submit(context.Background(), &AccountSubmissionCreateInput{
+		TaskID: task.ID, UserID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-1"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, AccountSubmissionPending, sub.Status)
+
+	require.Len(t, admin.created, 1)
+	require.Equal(t, "https://api.llm.ustc.edu.cn", admin.created[0].Credentials["base_url"])
+}
+
+// 用户显式填了不匹配的地址仍然拒绝。
+func TestSubmitWithLockedUpstreamRejectsMismatchedExplicitBaseURL(t *testing.T) {
+	svc, _ := newContributionServiceForTest(&contributionAdminStub{})
+	task := seedTask(t, svc, func(in *AccountTaskCreateInput) {
+		in.ExpectedBaseURL = "api.llm.ustc.edu.cn"
+	})
+
+	_, err := svc.Submit(context.Background(), &AccountSubmissionCreateInput{
+		TaskID: task.ID, UserID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-1", "base_url": "https://evil.example.com"},
+	})
+	require.ErrorIs(t, err, ErrAccountTaskBaseURL)
+}

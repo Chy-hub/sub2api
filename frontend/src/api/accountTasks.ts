@@ -19,6 +19,8 @@ export interface AccountTask {
   max_per_user: number
   verify_models: boolean
   reward_group_id: number
+  /** 非空表示任务已锁定上游，前端应预填并隐藏输入框，服务端会补全 base_url */
+  expected_base_url?: string
 }
 
 export interface AccountSubmission {
