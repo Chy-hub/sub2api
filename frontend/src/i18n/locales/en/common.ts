@@ -479,7 +479,7 @@ export default {
     fieldApiKey: 'API Key',
     fieldAccessToken: 'Access Token',
     fieldBaseUrl: 'Upstream URL (optional)',
-    oauthHint: 'Provide an unexpired access_token; expired credentials cannot be refreshed during submission.',
+    tokenHint: 'Provide an unexpired access_token; expired credentials cannot be refreshed during submission.',
     apiKeyRequired: 'API key is required',
     accessTokenRequired: 'Access token is required',
     submitSuccess: 'Submitted, waiting for administrator review',

@@ -31,6 +31,8 @@ type AccountTaskDTO struct {
 	MaxPerUser    int      `json:"max_per_user"`
 	VerifyModels  bool     `json:"verify_models"`
 	RewardGroupID int64    `json:"reward_group_id"`
+	// ExpectedBaseURL 非空时表示任务已锁定上游，前端据此预填并隐藏输入框。
+	ExpectedBaseURL string `json:"expected_base_url,omitempty"`
 }
 
 // AccountSubmissionDTO 是用户可见的提交记录。
@@ -56,8 +58,9 @@ func toAccountTaskDTO(task *service.AccountTask) AccountTaskDTO {
 		AccountTypes:  task.AccountTypes,
 		RewardDays:    task.RewardDays,
 		MaxPerUser:    task.MaxPerUser,
-		VerifyModels:  task.VerifyModels,
-		RewardGroupID: task.RewardGroupID,
+		VerifyModels:    task.VerifyModels,
+		RewardGroupID:   task.RewardGroupID,
+		ExpectedBaseURL: task.ExpectedBaseURL,
 	}
 }
 
