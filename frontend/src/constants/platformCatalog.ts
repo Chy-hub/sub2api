@@ -123,11 +123,12 @@ export type AccountTypeId =
   | 'reverse'
 
 /**
- * 平台允许的账号类型。与后端 buildAccountForCreate 的硬约束保持一致：
+ * 平台允许的账号类型。与后端 AllowedAccountTypesForPlatform 保持一致：
  * - 反代平台（Qoder / WorkBuddy）只接受 reverse
- * - reverse 只能用于反代平台
  * - TypeSafe 只接受 apikey
- * 其余平台允许按量 / OAuth 类凭证。
+ * - oauth 只在真正实现了授权流程的平台开放
+ * - setup-token / bedrock 只在 Anthropic 成立
+ * - service_account 只在 Gemini / Anthropic 成立
  */
 export function accountTypesForPlatform(platform: string | null | undefined): AccountTypeId[] {
   const spec = getPlatformSpec(platform?.trim().toLowerCase())
@@ -140,13 +141,15 @@ export function accountTypesForPlatform(platform: string | null | undefined): Ac
     return ['apikey']
   }
 
-  const types: AccountTypeId[] = ['apikey', 'upstream', 'oauth', 'setup-token']
-  // Gemini 的 Vertex 服务账号、Anthropic 的 Bedrock 只在这两个平台成立。
-  if (spec.id === 'gemini') {
-    types.push('service_account')
+  const types: AccountTypeId[] = ['apikey', 'upstream']
+  if (['openai', 'gemini', 'antigravity', 'grok', 'anthropic'].includes(spec.id)) {
+    types.push('oauth')
   }
   if (spec.id === 'anthropic') {
-    types.push('bedrock')
+    types.push('setup-token', 'bedrock')
+  }
+  if (spec.id === 'gemini' || spec.id === 'anthropic') {
+    types.push('service_account')
   }
   return types
 }
