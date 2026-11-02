@@ -109,23 +109,23 @@ func toAccountSubmissionAdminDTO(sub *service.AccountSubmission) AccountSubmissi
 
 // AccountTaskRequest 是创建/更新任务的请求体。
 type AccountTaskRequest struct {
-	Name               *string  `json:"name"`
-	Description        *string  `json:"description"`
-	Enabled            *bool    `json:"enabled"`
-	Platform           *string  `json:"platform"`
-	AccountTypes       *[]string `json:"account_types"`
-	TargetGroupIDs     *[]int64 `json:"target_group_ids"`
-	RewardGroupID      *int64   `json:"reward_group_id"`
-	RewardDays         *int     `json:"reward_days"`
-	MaxPerUser         *int     `json:"max_per_user"`
-	ExpectedBaseURL    *string  `json:"expected_base_url"`
-	VerifyModels       *bool    `json:"verify_models"`
-	RejectOnVerifyFail *bool    `json:"reject_on_verify_fail"`
-	Priority           *int     `json:"priority"`
-	Concurrency        *int     `json:"concurrency"`
-	RateMultiplier     *float64 `json:"rate_multiplier"`
-	ClearRateMultiplier bool    `json:"clear_rate_multiplier"`
-	SortOrder          *int     `json:"sort_order"`
+	Name                *string   `json:"name"`
+	Description         *string   `json:"description"`
+	Enabled             *bool     `json:"enabled"`
+	Platform            *string   `json:"platform"`
+	AccountTypes        *[]string `json:"account_types"`
+	TargetGroupIDs      *[]int64  `json:"target_group_ids"`
+	RewardGroupID       *int64    `json:"reward_group_id"`
+	RewardDays          *int      `json:"reward_days"`
+	MaxPerUser          *int      `json:"max_per_user"`
+	ExpectedBaseURL     *string   `json:"expected_base_url"`
+	VerifyModels        *bool     `json:"verify_models"`
+	RejectOnVerifyFail  *bool     `json:"reject_on_verify_fail"`
+	Priority            *int      `json:"priority"`
+	Concurrency         *int      `json:"concurrency"`
+	RateMultiplier      *float64  `json:"rate_multiplier"`
+	ClearRateMultiplier bool      `json:"clear_rate_multiplier"`
+	SortOrder           *int      `json:"sort_order"`
 }
 
 // ListTasks 列出全部任务。

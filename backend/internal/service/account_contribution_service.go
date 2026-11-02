@@ -52,26 +52,26 @@ const (
 
 // AccountTask 是管理员发布的账号贡献任务。
 type AccountTask struct {
-	ID                  int64
-	Name                string
-	Description         string
-	Enabled             bool
-	Platform            string
-	AccountTypes        []string
-	TargetGroupIDs      []int64
-	RewardGroupID       int64
-	RewardDays          int
-	MaxPerUser          int
-	ExpectedBaseURL     string
-	VerifyModels        bool
-	RejectOnVerifyFail  bool
-	Priority            int
-	Concurrency         int
-	RateMultiplier      *float64
-	SortOrder           int
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	DeletedAt           *time.Time
+	ID                 int64
+	Name               string
+	Description        string
+	Enabled            bool
+	Platform           string
+	AccountTypes       []string
+	TargetGroupIDs     []int64
+	RewardGroupID      int64
+	RewardDays         int
+	MaxPerUser         int
+	ExpectedBaseURL    string
+	VerifyModels       bool
+	RejectOnVerifyFail bool
+	Priority           int
+	Concurrency        int
+	RateMultiplier     *float64
+	SortOrder          int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          *time.Time
 }
 
 // AccountSubmission 是一条用户提交记录。
@@ -99,11 +99,15 @@ type AccountContributionRepository interface {
 	CreateTask(ctx context.Context, task *AccountTask) error
 	UpdateTask(ctx context.Context, task *AccountTask) error
 	GetTaskByID(ctx context.Context, id int64) (*AccountTask, error)
+	// GetTaskByIDIncludingDeleted 供审核路径使用：任务软删除后，其待审提交仍要能走完审核。
+	GetTaskByIDIncludingDeleted(ctx context.Context, id int64) (*AccountTask, error)
 	ListTasks(ctx context.Context, enabledOnly bool) ([]*AccountTask, error)
 	DeleteTask(ctx context.Context, id int64) error
 
 	CreateSubmission(ctx context.Context, sub *AccountSubmission) error
 	UpdateSubmission(ctx context.Context, sub *AccountSubmission) error
+	// UpdateSubmissionIfStatus 只在当前状态等于 fromStatus 时更新，用于原子审核。
+	UpdateSubmissionIfStatus(ctx context.Context, sub *AccountSubmission, fromStatus string) (bool, error)
 	GetSubmissionByID(ctx context.Context, id int64) (*AccountSubmission, error)
 	ListSubmissionsByUser(ctx context.Context, userID int64) ([]*AccountSubmission, error)
 	ListPendingSubmissions(ctx context.Context, taskID int64) ([]*AccountSubmission, error)
@@ -134,23 +138,23 @@ type AccountTaskCreateInput struct {
 
 // AccountTaskUpdateInput 更新任务输入；nil 表示不修改。
 type AccountTaskUpdateInput struct {
-	Name               *string
-	Description        *string
-	Platform           *string
-	AccountTypes       *[]string
-	TargetGroupIDs     *[]int64
-	RewardGroupID      *int64
-	RewardDays         *int
-	MaxPerUser         *int
-	ExpectedBaseURL    *string
-	VerifyModels       *bool
-	RejectOnVerifyFail *bool
-	Priority           *int
-	Concurrency        *int
-	RateMultiplier     *float64
+	Name                *string
+	Description         *string
+	Platform            *string
+	AccountTypes        *[]string
+	TargetGroupIDs      *[]int64
+	RewardGroupID       *int64
+	RewardDays          *int
+	MaxPerUser          *int
+	ExpectedBaseURL     *string
+	VerifyModels        *bool
+	RejectOnVerifyFail  *bool
+	Priority            *int
+	Concurrency         *int
+	RateMultiplier      *float64
 	ClearRateMultiplier bool
-	SortOrder          *int
-	Enabled            *bool
+	SortOrder           *int
+	Enabled             *bool
 }
 
 // AccountSubmissionCreateInput 用户提交输入。
@@ -216,14 +220,29 @@ func AllowedAccountTypesForPlatform(platform string) []string {
 	if trimmed == PlatformTypeSafe {
 		return []string{AccountTypeAPIKey}
 	}
-	types := []string{AccountTypeAPIKey, AccountTypeUpstream, AccountTypeOAuth, AccountTypeSetupToken}
+	// 密钥类账号所有平台都成立。
+	types := []string{AccountTypeAPIKey, AccountTypeUpstream}
+	// OAuth 只在真正实现了授权流程的平台开放。把 oauth 发给没有对应流程的
+	// 平台，用户会看到一个永远走不通的「开始授权」按钮。
 	switch trimmed {
-	case PlatformGemini:
+	case PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformAnthropic:
+		types = append(types, AccountTypeOAuth)
+	}
+	// setup-token 是 Anthropic 的推理专用长令牌；Bedrock 也只在 Anthropic 成立。
+	if trimmed == PlatformAnthropic {
+		types = append(types, AccountTypeSetupToken, AccountTypeBedrock)
+	}
+	// Vertex 服务账号：Gemini 与 Anthropic 都支持。
+	if trimmed == PlatformGemini || trimmed == PlatformAnthropic {
 		types = append(types, AccountTypeServiceAccount)
-	case PlatformAnthropic:
-		types = append(types, AccountTypeBedrock)
 	}
 	return types
+}
+
+// accountTypeUsesBaseURL 报告账号类型是否真的会读取 credentials.base_url。
+// OAuth / 反代 / 服务账号 / Bedrock 的上游地址由适配器决定，任务限定地址对它们没有意义。
+func accountTypeUsesBaseURL(accountType string) bool {
+	return accountType == AccountTypeAPIKey || accountType == AccountTypeUpstream
 }
 
 // validatePlatformAccountTypes 校验任务声明的账号类型都能在该平台成立。
@@ -278,6 +297,28 @@ func validateAccountTaskInput(in *AccountTaskCreateInput) error {
 	if err := validatePlatformAccountTypes(in.Platform, in.AccountTypes); err != nil {
 		return err
 	}
+	if err := validateExpectedBaseURLConfig(in.ExpectedBaseURL, in.AccountTypes); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateExpectedBaseURLConfig 校验任务限定上游的配置。
+// 只有 apikey / upstream 会读取 base_url，给 OAuth / 服务账号 / Bedrock 配置
+// 限定地址既不会生效，又会在提交时把用户挡在门外。
+func validateExpectedBaseURLConfig(expectedBaseURL string, accountTypes []string) error {
+	if strings.TrimSpace(expectedBaseURL) == "" {
+		return nil
+	}
+	if _, err := ValidateExpectedBaseURL(expectedBaseURL); err != nil {
+		return infraerrors.BadRequest("ACCOUNT_TASK_BASE_URL_INVALID", "expected_base_url is not a valid URL host")
+	}
+	for _, accountType := range accountTypes {
+		if !accountTypeUsesBaseURL(accountType) {
+			return infraerrors.BadRequest("ACCOUNT_TASK_BASE_URL_TYPE_CONFLICT",
+				fmt.Sprintf("expected_base_url only applies to apikey/upstream accounts, got %q", accountType))
+		}
+	}
 	return nil
 }
 
@@ -289,6 +330,24 @@ func (s *AccountContributionService) validateRewardGroup(ctx context.Context, gr
 	}
 	if group == nil || !group.IsActive() || !group.IsSubscriptionType() {
 		return ErrAccountTaskRewardGroup
+	}
+	return nil
+}
+
+// validateTargetGroups 校验账号入组分组与任务平台一致。
+// ValidateAccountGroupBindings 只处理 simple mode 的 composite 约束，不校验平台；
+// 任务与分组平台不一致时，审核通过会把账号绑进一个永远调度不到的分组。
+func (s *AccountContributionService) validateTargetGroups(ctx context.Context, platform string, groupIDs []int64) error {
+	for _, groupID := range groupIDs {
+		group, err := s.groupRepo.GetByID(ctx, groupID)
+		if err != nil || group == nil {
+			return infraerrors.BadRequest("ACCOUNT_TASK_TARGET_GROUP_INVALID",
+				fmt.Sprintf("target group %d not found", groupID))
+		}
+		if group.Platform != platform && group.Platform != domain.PlatformComposite {
+			return infraerrors.BadRequest("ACCOUNT_TASK_TARGET_GROUP_PLATFORM",
+				fmt.Sprintf("target group %d belongs to platform %q, not %q", groupID, group.Platform, platform))
+		}
 	}
 	return nil
 }
@@ -305,6 +364,13 @@ func (s *AccountContributionService) CreateTask(ctx context.Context, in *Account
 		if err := s.adminService.ValidateAccountGroupBindings(ctx, in.TargetGroupIDs); err != nil {
 			return nil, err
 		}
+		if err := s.validateTargetGroups(ctx, strings.TrimSpace(in.Platform), in.TargetGroupIDs); err != nil {
+			return nil, err
+		}
+	}
+	expectedBaseURL, err := ValidateExpectedBaseURL(in.ExpectedBaseURL)
+	if err != nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_TASK_BASE_URL_INVALID", "expected_base_url is not a valid URL host")
 	}
 	task := &AccountTask{
 		Name:               strings.TrimSpace(in.Name),
@@ -316,7 +382,7 @@ func (s *AccountContributionService) CreateTask(ctx context.Context, in *Account
 		RewardGroupID:      in.RewardGroupID,
 		RewardDays:         in.RewardDays,
 		MaxPerUser:         in.MaxPerUser,
-		ExpectedBaseURL:    normalizeBaseURLHost(in.ExpectedBaseURL),
+		ExpectedBaseURL:    expectedBaseURL,
 		VerifyModels:       in.VerifyModels,
 		RejectOnVerifyFail: in.RejectOnVerifyFail,
 		Priority:           in.Priority,
@@ -340,10 +406,14 @@ func (s *AccountContributionService) UpdateTask(ctx context.Context, id int64, i
 		return nil, ErrAccountTaskNotFound
 	}
 	if in.Name != nil {
-		if strings.TrimSpace(*in.Name) == "" {
+		trimmed := strings.TrimSpace(*in.Name)
+		if trimmed == "" {
 			return nil, infraerrors.BadRequest("ACCOUNT_TASK_NAME_REQUIRED", "task name is required")
 		}
-		task.Name = strings.TrimSpace(*in.Name)
+		if len([]rune(trimmed)) > accountTaskMaxNameRunes {
+			return nil, infraerrors.BadRequest("ACCOUNT_TASK_NAME_TOO_LONG", "task name is too long")
+		}
+		task.Name = trimmed
 	}
 	if in.Description != nil {
 		task.Description = *in.Description
@@ -387,7 +457,11 @@ func (s *AccountContributionService) UpdateTask(ctx context.Context, id int64, i
 		task.MaxPerUser = *in.MaxPerUser
 	}
 	if in.ExpectedBaseURL != nil {
-		task.ExpectedBaseURL = normalizeBaseURLHost(*in.ExpectedBaseURL)
+		normalized, err := ValidateExpectedBaseURL(*in.ExpectedBaseURL)
+		if err != nil {
+			return nil, infraerrors.BadRequest("ACCOUNT_TASK_BASE_URL_INVALID", "expected_base_url is not a valid URL host")
+		}
+		task.ExpectedBaseURL = normalized
 	}
 	if in.VerifyModels != nil {
 		task.VerifyModels = *in.VerifyModels
@@ -424,6 +498,13 @@ func (s *AccountContributionService) UpdateTask(ctx context.Context, id int64, i
 	// 平台和账号类型可以分开更新，所以必须按最终组合再校验一次：
 	// 只改平台不改类型时，原类型可能在新平台上不成立。
 	if err := validatePlatformAccountTypes(task.Platform, task.AccountTypes); err != nil {
+		return nil, err
+	}
+	if err := validateExpectedBaseURLConfig(task.ExpectedBaseURL, task.AccountTypes); err != nil {
+		return nil, err
+	}
+	// 同理：只改平台不改分组时，原分组可能已经不属于新平台。
+	if err := s.validateTargetGroups(ctx, task.Platform, task.TargetGroupIDs); err != nil {
 		return nil, err
 	}
 	if err := s.repo.UpdateTask(ctx, task); err != nil {
@@ -482,12 +563,19 @@ func (s *AccountContributionService) Submit(ctx context.Context, in *AccountSubm
 	if err := validatePlatformAccountTypes(in.Platform, []string{in.Type}); err != nil {
 		return nil, ErrAccountTaskType
 	}
+	// 凭证完整性是硬约束，不受任务校验开关影响：没有密钥的提交没有任何意义。
+	if err := validateSubmissionCredentials(in.Type, in.Credentials); err != nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_SUBMISSION_CREDENTIALS_INVALID", err.Error())
+	}
 	// 任务锁定了上游时，用户不需要（也不应该）自己填 base_url：
 	// 由服务端补全，用户只提供凭证本身。这既省掉一个必然填错的输入，
 	// 也保证地址一定落在任务限定的主机上。
-	in.Credentials = s.applyExpectedBaseURL(task, in.Credentials)
-	if err := s.checkExpectedBaseURL(task, in.Credentials); err != nil {
-		return nil, err
+	// 只有 apikey / upstream 会读取 base_url，其余类型跳过地址约束。
+	if accountTypeUsesBaseURL(in.Type) {
+		in.Credentials = s.applyExpectedBaseURL(task, in.Credentials)
+		if err := s.checkExpectedBaseURL(task, in.Credentials); err != nil {
+			return nil, err
+		}
 	}
 
 	count, err := s.repo.CountUserSubmissions(ctx, task.ID, in.UserID)
@@ -522,6 +610,7 @@ func (s *AccountContributionService) Submit(ctx context.Context, in *AccountSubm
 		Extra:                 map[string]any{},
 		Concurrency:           task.Concurrency,
 		Priority:              task.Priority,
+		RateMultiplier:        task.RateMultiplier,
 		GroupIDs:              nil,
 		SkipDefaultGroupBind:  true,
 		SkipMixedChannelCheck: true,
@@ -548,6 +637,8 @@ type AuthorizedSubmissionInput struct {
 	Platform    string
 	Type        string
 	Credentials map[string]any
+	// Extra 是管理端创建账号时同样会写入的账号元数据（邮箱、计划、org 等）。
+	Extra map[string]any
 }
 
 // SubmitAuthorized 登记一次授权完成的提交。
@@ -572,6 +663,9 @@ func (s *AccountContributionService) SubmitAuthorized(ctx context.Context, in *A
 	if !slices.Contains(task.AccountTypes, in.Type) {
 		return nil, ErrAccountTaskType
 	}
+	if err := validateSubmissionCredentials(in.Type, in.Credentials); err != nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_SUBMISSION_CREDENTIALS_INVALID", err.Error())
+	}
 
 	count, err := s.repo.CountUserSubmissions(ctx, task.ID, in.UserID)
 	if err != nil {
@@ -592,23 +686,33 @@ func (s *AccountContributionService) SubmitAuthorized(ctx context.Context, in *A
 		}
 	}
 
+	extra := in.Extra
+	if extra == nil {
+		extra = map[string]any{}
+	}
 	createInput := &CreateAccountInput{
 		Name:                  buildSubmittedAccountNameFor(task, in.Name),
 		Platform:              in.Platform,
 		Type:                  in.Type,
 		Credentials:           in.Credentials,
-		Extra:                 map[string]any{},
+		Extra:                 extra,
 		Concurrency:           task.Concurrency,
 		Priority:              task.Priority,
+		RateMultiplier:        task.RateMultiplier,
 		SkipDefaultGroupBind:  true,
 		SkipMixedChannelCheck: true,
 		PendingReview:         true,
+	}
+	// 授权流程已经由上游确认了凭证有效，但任务关闭校验时仍应如实记录未校验。
+	verificationStatus := AccountVerifyPassed
+	if !task.VerifyModels {
+		verificationStatus = AccountVerifyNotRun
 	}
 	return s.createPendingSubmission(ctx, createInput, &AccountSubmission{
 		TaskID:                task.ID,
 		UserID:                in.UserID,
 		Status:                AccountSubmissionPending,
-		VerificationStatus:    AccountVerifyPassed,
+		VerificationStatus:    verificationStatus,
 		CredentialFingerprint: fingerprint,
 	})
 }
@@ -750,12 +854,6 @@ func (s *AccountContributionService) verifyCredential(ctx context.Context, task 
 		Extra:       map[string]any{},
 		Status:      StatusActive,
 	}
-	// 凭证存在性检查不依赖探测服务，先做掉：没有密钥的提交无论配置如何都无效。
-	if probe.IsReverse() {
-		// 反代适配器只读凭证字段，不需要入库账号。
-	} else if strings.TrimSpace(probe.GetCredential("api_key")) == "" && strings.TrimSpace(probe.GetCredential("access_token")) == "" {
-		return AccountVerifyFailed, "no api_key or access_token in credentials", 0
-	}
 	if s.testService == nil {
 		return AccountVerifyNotRun, "", 0
 	}
@@ -780,6 +878,40 @@ func (s *AccountContributionService) verifyCredential(ctx context.Context, task 
 	return AccountVerifyPassed, "", len(models)
 }
 
+// validateSubmissionCredentials 按账号类型检查必需凭证字段。
+// 不同账号类型的凭证结构完全不同：service_account 要私钥，bedrock 要 AWS
+// 密钥对或 API Key，反代要 access_token。只检查 api_key/access_token 会
+// 把前两类误判成无效凭证。
+func validateSubmissionCredentials(accountType string, credentials map[string]any) error {
+	value := func(key string) string {
+		raw, ok := credentials[key].(string)
+		if !ok {
+			return ""
+		}
+		return strings.TrimSpace(raw)
+	}
+	switch accountType {
+	case AccountTypeReverse:
+		if value("access_token") == "" {
+			return errors.New("reverse account requires access_token")
+		}
+	case AccountTypeServiceAccount:
+		if value("service_account_json") == "" && value("private_key") == "" && value("api_key") == "" {
+			return errors.New("service account requires service_account_json, private_key or api_key")
+		}
+	case AccountTypeBedrock:
+		hasSigV4 := value("aws_access_key_id") != "" && value("aws_secret_access_key") != ""
+		if value("api_key") == "" && !hasSigV4 {
+			return errors.New("bedrock account requires an api_key or AWS access key pair")
+		}
+	default:
+		if value("api_key") == "" && value("access_token") == "" {
+			return errors.New("no api_key or access_token in credentials")
+		}
+	}
+	return nil
+}
+
 // ---------- 审核 ----------
 
 // ListPendingSubmissions 列出待审提交。
@@ -802,10 +934,9 @@ type ApproveInput struct {
 
 // Approve 审核通过：激活账号、绑定分组、发放一次性奖励。
 //
-// 顺序刻意做成「先落审核状态，再发奖励」：账号激活等步骤失败时提交仍是 pending，
-// 管理员可以重试；而奖励发放失败不会把整条审核卡在中间态——状态已经是 approved，
-// 账号也可用，奖励可由管理员在订阅管理里手工补发。反过来（先发奖励再落状态）一旦
-// 落状态失败，重复点击会重复发放。
+// 顺序：先激活账号（可重试），再发奖励，最后用带状态条件的更新原子落库。
+// 激活失败时提交仍是 pending，管理员可以重试；奖励服务按 (user, group) 幂等，
+// 所以最后一步即使并发失败或落库失败，重试也不会发出第二份订阅。
 func (s *AccountContributionService) Approve(ctx context.Context, in *ApproveInput) (*AccountSubmission, error) {
 	sub, err := s.repo.GetSubmissionByID(ctx, in.SubmissionID)
 	if err != nil {
@@ -817,9 +948,14 @@ func (s *AccountContributionService) Approve(ctx context.Context, in *ApproveInp
 	if sub.Status != AccountSubmissionPending {
 		return nil, ErrAccountSubmissionState
 	}
-	task, err := s.GetTask(ctx, sub.TaskID)
+	// 任务可能已被软删除，但它的待审提交仍需要能走完审核（账号已按任务配置建好）。
+	// 用 including-deleted 读取，避免删除任务后这些提交永远卡在 pending。
+	task, err := s.repo.GetTaskByIDIncludingDeleted(ctx, sub.TaskID)
 	if err != nil {
 		return nil, err
+	}
+	if task == nil {
+		return nil, ErrAccountTaskNotFound
 	}
 
 	// 1) 激活账号并绑定分组。任一步失败都保持 pending，允许重试。
@@ -839,7 +975,7 @@ func (s *AccountContributionService) Approve(ctx context.Context, in *ApproveInp
 		}
 	}
 
-	// 2) 落审核状态。此后重复提交审核会被状态检查拦住，不会二次发奖。
+	// 2) 组装审核结果。真正的状态迁移在最后一步用条件更新完成。
 	now := time.Now().UTC()
 	sub.Status = AccountSubmissionApproved
 	sub.ReviewedBy = &in.ReviewerID
@@ -859,8 +995,14 @@ func (s *AccountContributionService) Approve(ctx context.Context, in *ApproveInp
 		}
 	}
 
-	if err := s.repo.UpdateSubmission(ctx, sub); err != nil {
+	// 4) 原子落审核结果：只有仍处于 pending 的那次请求能成功。
+	// 并发审核时后到的请求在这里失败，不会覆盖先到的结果。
+	updated, err := s.repo.UpdateSubmissionIfStatus(ctx, sub, AccountSubmissionPending)
+	if err != nil {
 		return nil, err
+	}
+	if !updated {
+		return nil, ErrAccountSubmissionState
 	}
 	return sub, nil
 }
@@ -917,8 +1059,12 @@ func (s *AccountContributionService) Reject(ctx context.Context, submissionID, r
 	sub.ReviewedBy = &reviewerID
 	sub.ReviewedAt = &now
 	sub.ReviewNote = note
-	if err := s.repo.UpdateSubmission(ctx, sub); err != nil {
+	updated, err := s.repo.UpdateSubmissionIfStatus(ctx, sub, AccountSubmissionPending)
+	if err != nil {
 		return nil, err
+	}
+	if !updated {
+		return nil, ErrAccountSubmissionState
 	}
 	return sub, nil
 }
@@ -982,18 +1128,6 @@ func normalizeInt64List(values []int64) []int64 {
 	return out
 }
 
-// normalizeBaseURLHost 把配置值归一成小写主机名；无法解析时原样保留小写化结果。
-func normalizeBaseURLHost(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return ""
-	}
-	if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
-		return strings.ToLower(parsed.Hostname())
-	}
-	return strings.ToLower(trimmed)
-}
-
 func extractBaseURLHost(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -1005,15 +1139,25 @@ func extractBaseURLHost(raw string) string {
 	return ""
 }
 
-// ValidateExpectedBaseURL 供 handler 预校验使用。
+// ValidateExpectedBaseURL 把任务配置的上游地址归一成小写主机名。
+// 管理端填写的是主机名（如 api.llm.ustc.edu.cn），也允许完整 URL；
+// 端口与路径会被丢弃，因为提交校验只比较主机。
 func ValidateExpectedBaseURL(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", nil
 	}
-	normalized, err := urlvalidator.ValidateURLFormat(trimmed, true)
+	candidate := trimmed
+	if !strings.Contains(candidate, "://") {
+		candidate = "https://" + candidate
+	}
+	normalized, err := urlvalidator.ValidateURLFormat(candidate, true)
 	if err != nil {
 		return "", err
 	}
-	return normalized, nil
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Hostname() == "" {
+		return "", errors.New("invalid host")
+	}
+	return strings.ToLower(parsed.Hostname()), nil
 }

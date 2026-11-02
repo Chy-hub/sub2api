@@ -97,6 +97,22 @@ func (r *accountContributionRepository) GetTaskByID(ctx context.Context, id int6
 	return task, nil
 }
 
+// GetTaskByIDIncludingDeleted 读取任务时不排除软删除记录。
+// 审核一条待审提交需要任务配置（入组、奖励），而任务被删除后这些提交仍然有效。
+func (r *accountContributionRepository) GetTaskByIDIncludingDeleted(ctx context.Context, id int64) (*service.AccountTask, error) {
+	row := r.sql.QueryRowContext(ctx, `
+		SELECT `+accountTaskSelectColumns+`
+		FROM account_tasks WHERE id = $1`, id)
+	task, err := scanAccountTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
 func (r *accountContributionRepository) ListTasks(ctx context.Context, enabledOnly bool) ([]*service.AccountTask, error) {
 	query := `
 		SELECT ` + accountTaskSelectColumns + `
@@ -134,11 +150,11 @@ type contributionRowScanner interface {
 
 func scanAccountTask(row contributionRowScanner) (*service.AccountTask, error) {
 	var (
-		task          service.AccountTask
-		accountTypes  []byte
-		targetGroups  []byte
-		rateMult      sql.NullFloat64
-		deletedAt     sql.NullTime
+		task         service.AccountTask
+		accountTypes []byte
+		targetGroups []byte
+		rateMult     sql.NullFloat64
+		deletedAt    sql.NullTime
 	)
 	if err := row.Scan(
 		&task.ID, &task.Name, &task.Description, &task.Enabled, &task.Platform, &accountTypes,
@@ -222,6 +238,33 @@ func (r *accountContributionRepository) UpdateSubmission(ctx context.Context, su
 	}
 	*sub = *updated
 	return nil
+}
+
+// UpdateSubmissionIfStatus 只在当前状态等于 fromStatus 时写入，返回是否命中。
+// 审核路径用它做原子的状态迁移：并发的第二次审核会命中 0 行，不会覆盖先到的结果。
+func (r *accountContributionRepository) UpdateSubmissionIfStatus(
+	ctx context.Context, sub *service.AccountSubmission, fromStatus string,
+) (bool, error) {
+	row := r.sql.QueryRowContext(ctx, `
+		UPDATE account_submissions SET
+			status = $2, verification_status = $3, verification_error = $4, model_count = $5,
+			reviewed_by = $6, reviewed_at = $7, review_note = $8,
+			reward_subscription_id = $9, reward_granted_at = $10, updated_at = NOW()
+		WHERE id = $1 AND status = $11
+		RETURNING `+accountSubmissionSelectColumns,
+		sub.ID, sub.Status, sub.VerificationStatus, sub.VerificationError, sub.ModelCount,
+		sub.ReviewedBy, sub.ReviewedAt, sub.ReviewNote, sub.RewardSubscriptionID, sub.RewardGrantedAt,
+		fromStatus,
+	)
+	updated, err := scanAccountSubmission(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	*sub = *updated
+	return true, nil
 }
 
 func (r *accountContributionRepository) GetSubmissionByID(ctx context.Context, id int64) (*service.AccountSubmission, error) {
@@ -309,11 +352,11 @@ func (r *accountContributionRepository) HasUserReward(ctx context.Context, taskI
 
 func scanAccountSubmission(row contributionRowScanner) (*service.AccountSubmission, error) {
 	var (
-		sub              service.AccountSubmission
-		reviewedBy       sql.NullInt64
-		reviewedAt       sql.NullTime
-		rewardSubID      sql.NullInt64
-		rewardGrantedAt  sql.NullTime
+		sub             service.AccountSubmission
+		reviewedBy      sql.NullInt64
+		reviewedAt      sql.NullTime
+		rewardSubID     sql.NullInt64
+		rewardGrantedAt sql.NullTime
 	)
 	if err := row.Scan(
 		&sub.ID, &sub.TaskID, &sub.UserID, &sub.AccountID, &sub.Status, &sub.VerificationStatus,

@@ -28,7 +28,7 @@ export default {
     fieldDescription: 'Description',
     fieldPlatform: 'Platform',
     fieldTypes: 'Allowed account types',
-    fieldTypesHint: 'apikey and reverse support automatic verification; oauth requires an unexpired access_token.',
+    fieldTypesHint: 'Options follow the platform: oauth only where an authorization flow exists, setup-token / Bedrock only on Anthropic, service accounts only on Gemini / Anthropic.',
     fieldRewardGroup: 'Reward subscription group',
     fieldRewardGroupHint: 'Must be a subscription group. Approved users receive a subscription for the configured days.',
     fieldRewardDays: 'Reward days',
@@ -40,6 +40,9 @@ export default {
     fieldPriority: 'Scheduling priority',
     fieldConcurrency: 'Account concurrency',
     fieldSortOrder: 'Sort order',
+    fieldRateMultiplier: 'Account rate multiplier',
+    fieldRateMultiplierPlaceholder: 'Leave empty for no override',
+    fieldRateMultiplierHint: 'Billing multiplier applied to contributed accounts on approval. Leave empty to use the group default.',
     fieldVerifyModels: 'Verify credentials on submit (fetch upstream model list)',
     fieldVerifyModelsHint: 'Verification makes a real upstream request. Disable it if the upstream does not support /v1/models.',
     fieldRejectOnVerifyFail: 'Reject submission when verification fails',
@@ -49,6 +52,7 @@ export default {
 
     typesRequired: 'Select at least one account type',
     rewardGroupRequired: 'Select a reward subscription group',
+    rateMultiplierInvalid: 'Rate multiplier must be a number greater than or equal to 0',
 
     saveSuccess: 'Task saved',
     saveFailed: 'Failed to save task',

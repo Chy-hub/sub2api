@@ -196,6 +196,62 @@
           />
         </div>
 
+        <!-- Vertex 服务账号：粘贴 Google 服务账号 JSON -->
+        <div v-else-if="submitMode === 'service_account'" class="space-y-3">
+          <div>
+            <label class="input-label">{{ t('accountTasks.fieldServiceAccountJson') }}</label>
+            <textarea
+              v-model="form.serviceAccountJSON"
+              rows="6"
+              class="input font-mono text-xs"
+              :placeholder="t('accountTasks.fieldServiceAccountJsonPlaceholder')"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('accountTasks.fieldServiceAccountLocation') }}</label>
+            <input v-model="form.serviceAccountLocation" type="text" class="input font-mono" placeholder="global" />
+          </div>
+        </div>
+
+        <!-- AWS Bedrock：API Key 或 SigV4 密钥对 -->
+        <div v-else-if="submitMode === 'bedrock'" class="space-y-3">
+          <div>
+            <label class="input-label">{{ t('accountTasks.fieldBedrockAuthMode') }}</label>
+            <div class="mt-2 flex gap-4">
+              <label class="flex items-center gap-1.5 text-sm">
+                <input v-model="form.bedrockAuthMode" type="radio" value="sigv4" />
+                <span>SigV4</span>
+              </label>
+              <label class="flex items-center gap-1.5 text-sm">
+                <input v-model="form.bedrockAuthMode" type="radio" value="apikey" />
+                <span>API Key</span>
+              </label>
+            </div>
+          </div>
+          <template v-if="form.bedrockAuthMode === 'sigv4'">
+            <div>
+              <label class="input-label">{{ t('accountTasks.fieldBedrockAccessKeyId') }}</label>
+              <input v-model="form.bedrockAccessKeyId" type="text" class="input font-mono" autocomplete="off" />
+            </div>
+            <div>
+              <label class="input-label">{{ t('accountTasks.fieldBedrockSecretAccessKey') }}</label>
+              <input v-model="form.bedrockSecretAccessKey" type="password" class="input font-mono" autocomplete="off" />
+            </div>
+            <div>
+              <label class="input-label">{{ t('accountTasks.fieldBedrockSessionToken') }}</label>
+              <input v-model="form.bedrockSessionToken" type="password" class="input font-mono" autocomplete="off" />
+            </div>
+          </template>
+          <div v-else>
+            <label class="input-label">{{ t('accountTasks.fieldApiKey') }}</label>
+            <input v-model="form.bedrockApiKey" type="password" class="input font-mono" autocomplete="off" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('accountTasks.fieldBedrockRegion') }}</label>
+            <input v-model="form.bedrockRegion" type="text" class="input font-mono" placeholder="us-east-1" />
+          </div>
+        </div>
+
         <!-- 授权类：跳转到上游完成登录，回来后由服务端换取凭证 -->
         <div v-else class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
           <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -313,9 +369,18 @@ const form = reactive({
   name: '',
   type: '',
   apiKey: '',
-  accessToken: '',
   baseUrl: '',
-  authCode: ''
+  authCode: '',
+  // Vertex 服务账号：粘贴 Google 服务账号 JSON
+  serviceAccountJSON: '',
+  serviceAccountLocation: 'global',
+  // AWS Bedrock：SigV4 密钥对或 API Key
+  bedrockAuthMode: 'sigv4' as 'sigv4' | 'apikey',
+  bedrockApiKey: '',
+  bedrockAccessKeyId: '',
+  bedrockSecretAccessKey: '',
+  bedrockSessionToken: '',
+  bedrockRegion: 'us-east-1'
 })
 
 // 授权流程状态
@@ -323,6 +388,7 @@ const authBusy = ref(false)
 const authURL = ref('')
 const authSessionId = ref('')
 const authState = ref('')
+const authTicket = ref('')
 const authDone = ref(false)
 const authError = ref('')
 let authPollTimer: ReturnType<typeof setTimeout> | null = null
@@ -339,13 +405,17 @@ function canSubmit(task: AccountTask): boolean {
 }
 
 // 按账号类型决定提交方式：
-//   apikey  —— 用户粘贴密钥
-//   oauth   —— 浏览器 OAuth 授权后回填 code
-//   reverse —— 设备授权登录，服务端轮询拿到登录票据
-const submitMode = computed<'apikey' | 'oauth' | 'reverse'>(() => {
+//   apikey           —— 用户粘贴密钥（upstream 同样走这里）
+//   oauth            —— 浏览器 OAuth 授权后回填 code
+//   reverse          —— 设备授权登录，服务端轮询拿到登录票据
+//   service_account  —— 粘贴 Google 服务账号 JSON
+//   bedrock          —— AWS SigV4 密钥对或 API Key
+const submitMode = computed<'apikey' | 'oauth' | 'reverse' | 'service_account' | 'bedrock'>(() => {
   const type = form.type
   if (type === 'reverse') return 'reverse'
   if (type === 'oauth' || type === 'setup-token') return 'oauth'
+  if (type === 'service_account') return 'service_account'
+  if (type === 'bedrock') return 'bedrock'
   return 'apikey'
 })
 
@@ -404,9 +474,16 @@ function openSubmit(task: AccountTask): void {
   form.name = ''
   form.type = task.account_types[0] || ''
   form.apiKey = ''
-  form.accessToken = ''
   form.baseUrl = ''
   form.authCode = ''
+  form.serviceAccountJSON = ''
+  form.serviceAccountLocation = 'global'
+  form.bedrockAuthMode = 'sigv4'
+  form.bedrockApiKey = ''
+  form.bedrockAccessKeyId = ''
+  form.bedrockSecretAccessKey = ''
+  form.bedrockSessionToken = ''
+  form.bedrockRegion = 'us-east-1'
   submitError.value = ''
   resetAuthState()
   submitOpen.value = true
@@ -418,6 +495,7 @@ function resetAuthState(): void {
   authURL.value = ''
   authSessionId.value = ''
   authState.value = ''
+  authTicket.value = ''
   authDone.value = false
   authError.value = ''
 }
@@ -448,7 +526,7 @@ async function startAuth(): Promise<void> {
   try {
     const result = await startSubmissionAuth({
       task_id: task.id,
-      redirect_uri: typeof window !== 'undefined' ? window.location.origin + '/account-tasks' : ''
+      account_type: form.type
     })
     authURL.value = result.auth_url
     authSessionId.value = result.session_id
@@ -477,6 +555,8 @@ function scheduleAuthPoll(sessionId: string): void {
         return
       }
       authDone.value = true
+      // 登录票据是提交时换取凭证的唯一凭据，必须保留下来。
+      authTicket.value = result.login_ticket || ''
       if (result.nickname) {
         form.name = form.name || result.nickname
       }
@@ -488,21 +568,85 @@ function scheduleAuthPoll(sessionId: string): void {
   authPollTimer = setTimeout(tick, 2000)
 }
 
+/** Vertex 服务账号：把用户粘贴的 JSON 转成账号凭证。 */
+function buildServiceAccountCredentials(): Record<string, unknown> | null {
+  const raw = form.serviceAccountJSON.trim()
+  if (!raw) {
+    submitError.value = t('accountTasks.serviceAccountJsonRequired')
+    return null
+  }
+  let parsed: Record<string, unknown>
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('service account json must be an object')
+    }
+    parsed = value as Record<string, unknown>
+  } catch {
+    submitError.value = t('accountTasks.serviceAccountJsonInvalid')
+    return null
+  }
+  const projectId = typeof parsed.project_id === 'string' ? parsed.project_id.trim() : ''
+  const clientEmail = typeof parsed.client_email === 'string' ? parsed.client_email.trim() : ''
+  if (!projectId || !clientEmail) {
+    submitError.value = t('accountTasks.serviceAccountJsonInvalid')
+    return null
+  }
+  return {
+    service_account_json: raw,
+    project_id: projectId,
+    client_email: clientEmail,
+    location: form.serviceAccountLocation.trim() || 'global',
+    tier_id: 'vertex'
+  }
+}
+
+/** AWS Bedrock：按认证方式组装凭证，键名与管理端保持一致。 */
+function buildBedrockCredentials(): Record<string, unknown> | null {
+  const region = form.bedrockRegion.trim() || 'us-east-1'
+  if (form.bedrockAuthMode === 'sigv4') {
+    const accessKeyId = form.bedrockAccessKeyId.trim()
+    const secret = form.bedrockSecretAccessKey.trim()
+    if (!accessKeyId || !secret) {
+      submitError.value = t('accountTasks.bedrockKeysRequired')
+      return null
+    }
+    const credentials: Record<string, unknown> = {
+      auth_mode: 'sigv4',
+      aws_region: region,
+      aws_access_key_id: accessKeyId,
+      aws_secret_access_key: secret
+    }
+    const sessionToken = form.bedrockSessionToken.trim()
+    if (sessionToken) {
+      credentials.aws_session_token = sessionToken
+    }
+    return credentials
+  }
+  const apiKey = form.bedrockApiKey.trim()
+  if (!apiKey) {
+    submitError.value = t('accountTasks.apiKeyRequired')
+    return null
+  }
+  return { auth_mode: 'apikey', aws_region: region, api_key: apiKey }
+}
+
 async function doSubmit(): Promise<void> {
   const task = activeTask.value
   if (!task) return
 
+  const mode = submitMode.value
+
   // 授权类账号不走凭证表单，直接提交授权结果。
-  if (submitMode.value !== 'apikey') {
-    if (!authDone.value) {
+  if (mode === 'oauth' || mode === 'reverse') {
+    // 反代平台靠轮询确认登录完成；OAuth 平台以用户粘贴的 code 为准。
+    if (mode === 'reverse' && !authDone.value) {
       submitError.value = t('accountTasks.authNotCompleted')
       return
     }
-    if (submitMode.value === 'oauth') {
-      if (!form.authCode.trim()) {
-        submitError.value = t('accountTasks.authCodeRequired')
-        return
-      }
+    if (mode === 'oauth' && !form.authCode.trim()) {
+      submitError.value = t('accountTasks.authCodeRequired')
+      return
     }
     submitting.value = true
     submitError.value = ''
@@ -510,9 +654,11 @@ async function doSubmit(): Promise<void> {
       await completeSubmissionAuth({
         task_id: task.id,
         name: form.name.trim() || undefined,
+        account_type: form.type,
         session_id: authSessionId.value,
         code: form.authCode.trim(),
-        state: authState.value
+        state: authState.value,
+        ticket: authTicket.value
       })
       submitOpen.value = false
       resetAuthState()
@@ -526,16 +672,24 @@ async function doSubmit(): Promise<void> {
     return
   }
 
-  const credentials: Record<string, unknown> = {}
-  if (!form.apiKey.trim()) {
-    submitError.value = t('accountTasks.apiKeyRequired')
-    return
+  let credentials: Record<string, unknown> | null = null
+  if (mode === 'service_account') {
+    credentials = buildServiceAccountCredentials()
+  } else if (mode === 'bedrock') {
+    credentials = buildBedrockCredentials()
+  } else {
+    // apikey / upstream：用户直接粘贴密钥。
+    if (!form.apiKey.trim()) {
+      submitError.value = t('accountTasks.apiKeyRequired')
+      return
+    }
+    credentials = { api_key: form.apiKey.trim() }
+    // 任务锁定上游时不传，由服务端按任务配置补全，避免用户输入与任务不一致。
+    if (!lockedBaseURL.value && form.baseUrl.trim()) {
+      credentials.base_url = form.baseUrl.trim()
+    }
   }
-  credentials.api_key = form.apiKey.trim()
-  // 任务锁定上游时不传，由服务端按任务配置补全，避免用户输入与任务不一致。
-  if (!lockedBaseURL.value && form.baseUrl.trim()) {
-    credentials.base_url = form.baseUrl.trim()
-  }
+  if (!credentials) return
 
   submitting.value = true
   submitError.value = ''
