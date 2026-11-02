@@ -175,7 +175,7 @@
           <input v-model="form.name" type="text" class="input" :placeholder="t('accountTasks.fieldNamePlaceholder')" />
         </div>
 
-        <div>
+        <div v-if="(activeTask?.account_types.length || 0) > 1">
           <label class="input-label">{{ t('accountTasks.fieldType') }}</label>
           <select v-model="form.type" class="input">
             <option v-for="type in activeTask?.account_types || []" :key="type" :value="type">
@@ -184,7 +184,8 @@
           </select>
         </div>
 
-        <div v-if="usesSecretKey">
+        <!-- 密钥类：用户直接粘贴 API Key -->
+        <div v-if="submitMode === 'apikey'">
           <label class="input-label">{{ t('accountTasks.fieldApiKey') }}</label>
           <input
             v-model="form.apiKey"
@@ -195,20 +196,54 @@
           />
         </div>
 
-        <div v-if="usesAccessToken">
-          <label class="input-label">{{ t('accountTasks.fieldAccessToken') }}</label>
-          <textarea v-model="form.accessToken" rows="3" class="input font-mono" />
-          <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">
-            {{ t('accountTasks.tokenHint') }}
+        <!-- 授权类：跳转到上游完成登录，回来后由服务端换取凭证 -->
+        <div v-else class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+          <p class="text-sm text-gray-600 dark:text-gray-400">
+            {{ submitMode === 'reverse'
+              ? t('accountTasks.reverseAuthHint')
+              : t('accountTasks.oauthHint') }}
           </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="btn btn-primary btn-sm"
+              :disabled="authBusy"
+              @click="startAuth"
+            >
+              {{ authURL ? t('accountTasks.restartAuth') : t('accountTasks.startAuth') }}
+            </button>
+            <a
+              v-if="authURL"
+              :href="authURL"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn btn-secondary btn-sm"
+            >
+              {{ t('accountTasks.openAuthPage') }}
+            </a>
+          </div>
+
+          <!-- OAuth 平台授权后会带 code 回跳，需要用户粘贴回来 -->
+          <div v-if="submitMode === 'oauth' && authSessionId && !authDone">
+            <label class="input-label">{{ t('accountTasks.fieldAuthCode') }}</label>
+            <input v-model="form.authCode" type="text" class="input font-mono" autocomplete="off" />
+          </div>
+
+          <p v-if="authURL && !authDone" class="text-xs text-amber-600 dark:text-amber-400">
+            {{ t('accountTasks.waitingAuth') }}
+          </p>
+          <p v-if="authDone" class="text-xs text-emerald-600 dark:text-emerald-400">
+            {{ t('accountTasks.authSuccess') }}
+          </p>
+          <p v-if="authError" class="text-xs text-red-600 dark:text-red-400">{{ authError }}</p>
         </div>
 
         <!-- 任务锁定上游时不给输入框：地址已由任务确定，服务端会自动补全 -->
-        <div v-if="lockedBaseURL" class="rounded-lg bg-gray-50 px-3 py-2 text-sm dark:bg-dark-900">
+        <div v-if="submitMode === 'apikey' && lockedBaseURL" class="rounded-lg bg-gray-50 px-3 py-2 text-sm dark:bg-dark-900">
           <span class="text-gray-500 dark:text-dark-400">{{ t('accountTasks.fieldBaseUrl') }}: </span>
           <span class="font-mono text-gray-900 dark:text-white">{{ lockedBaseURL }}</span>
         </div>
-        <div v-else>
+        <div v-if="submitMode === 'apikey' && !lockedBaseURL">
           <label class="input-label">{{ t('accountTasks.fieldBaseUrl') }}</label>
           <input
             v-model="form.baseUrl"
@@ -240,15 +275,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import {
+  completeSubmissionAuth,
   listAccountTasks,
   listMySubmissions,
+  pollSubmissionAuth,
+  startSubmissionAuth,
   submitAccount,
   type AccountSubmission,
   type AccountTask
@@ -276,8 +314,19 @@ const form = reactive({
   type: '',
   apiKey: '',
   accessToken: '',
-  baseUrl: ''
+  baseUrl: '',
+  authCode: ''
 })
+
+// 授权流程状态
+const authBusy = ref(false)
+const authURL = ref('')
+const authSessionId = ref('')
+const authState = ref('')
+const authDone = ref(false)
+const authError = ref('')
+let authPollTimer: ReturnType<typeof setTimeout> | null = null
+let authPollGeneration = 0
 
 function submittedCount(taskId: number): number {
   return submissions.value.filter(
@@ -289,11 +338,16 @@ function canSubmit(task: AccountTask): boolean {
   return submittedCount(task.id) < task.max_per_user
 }
 
-// 按账号类型决定需要填哪种凭证。
-// reverse（Qoder/WorkBuddy）与 oauth 一样用 access_token；其余用 api_key。
-const TOKEN_TYPES = new Set(['oauth', 'setup-token', 'reverse'])
-const usesAccessToken = computed(() => TOKEN_TYPES.has(form.type))
-const usesSecretKey = computed(() => !TOKEN_TYPES.has(form.type))
+// 按账号类型决定提交方式：
+//   apikey  —— 用户粘贴密钥
+//   oauth   —— 浏览器 OAuth 授权后回填 code
+//   reverse —— 设备授权登录，服务端轮询拿到登录票据
+const submitMode = computed<'apikey' | 'oauth' | 'reverse'>(() => {
+  const type = form.type
+  if (type === 'reverse') return 'reverse'
+  if (type === 'oauth' || type === 'setup-token') return 'oauth'
+  return 'apikey'
+})
 
 // 任务锁定上游时，地址由任务决定，用户不需要填。
 const lockedBaseURL = computed(() => activeTask.value?.expected_base_url ?? '')
@@ -352,33 +406,132 @@ function openSubmit(task: AccountTask): void {
   form.apiKey = ''
   form.accessToken = ''
   form.baseUrl = ''
+  form.authCode = ''
   submitError.value = ''
+  resetAuthState()
   submitOpen.value = true
+}
+
+function resetAuthState(): void {
+  stopAuthPolling()
+  authBusy.value = false
+  authURL.value = ''
+  authSessionId.value = ''
+  authState.value = ''
+  authDone.value = false
+  authError.value = ''
+}
+
+function stopAuthPolling(): void {
+  authPollGeneration += 1
+  if (authPollTimer) {
+    clearTimeout(authPollTimer)
+    authPollTimer = null
+  }
 }
 
 function closeSubmit(): void {
   if (submitting.value) return
+  resetAuthState()
   submitOpen.value = false
+}
+
+/** 发起授权：OAuth 平台拿授权链接，反代平台拿设备登录链接。 */
+async function startAuth(): Promise<void> {
+  const task = activeTask.value
+  if (!task) return
+  authBusy.value = true
+  authError.value = ''
+  authDone.value = false
+  authURL.value = ''
+  authSessionId.value = ''
+  try {
+    const result = await startSubmissionAuth({
+      task_id: task.id,
+      redirect_uri: typeof window !== 'undefined' ? window.location.origin + '/account-tasks' : ''
+    })
+    authURL.value = result.auth_url
+    authSessionId.value = result.session_id
+    authState.value = result.state || ''
+    if (result.mode === 'reverse') {
+      scheduleAuthPoll(result.session_id)
+    }
+  } catch (error) {
+    authError.value = extractApiErrorMessage(error, t('accountTasks.authStartFailed'))
+  } finally {
+    authBusy.value = false
+  }
+}
+
+/** 反代平台：轮询直到用户在浏览器完成登录。 */
+function scheduleAuthPoll(sessionId: string): void {
+  stopAuthPolling()
+  const generation = authPollGeneration
+  const tick = async () => {
+    if (generation !== authPollGeneration) return
+    try {
+      const result = await pollSubmissionAuth(sessionId)
+      if (generation !== authPollGeneration) return
+      if (result.pending) {
+        authPollTimer = setTimeout(tick, 3000)
+        return
+      }
+      authDone.value = true
+      if (result.nickname) {
+        form.name = form.name || result.nickname
+      }
+    } catch (error) {
+      if (generation !== authPollGeneration) return
+      authError.value = extractApiErrorMessage(error, t('accountTasks.authPollFailed'))
+    }
+  }
+  authPollTimer = setTimeout(tick, 2000)
 }
 
 async function doSubmit(): Promise<void> {
   const task = activeTask.value
   if (!task) return
 
-  const credentials: Record<string, unknown> = {}
-  if (usesAccessToken.value) {
-    if (!form.accessToken.trim()) {
-      submitError.value = t('accountTasks.accessTokenRequired')
+  // 授权类账号不走凭证表单，直接提交授权结果。
+  if (submitMode.value !== 'apikey') {
+    if (!authDone.value) {
+      submitError.value = t('accountTasks.authNotCompleted')
       return
     }
-    credentials.access_token = form.accessToken.trim()
-  } else {
-    if (!form.apiKey.trim()) {
-      submitError.value = t('accountTasks.apiKeyRequired')
-      return
+    if (submitMode.value === 'oauth') {
+      if (!form.authCode.trim()) {
+        submitError.value = t('accountTasks.authCodeRequired')
+        return
+      }
     }
-    credentials.api_key = form.apiKey.trim()
+    submitting.value = true
+    submitError.value = ''
+    try {
+      await completeSubmissionAuth({
+        task_id: task.id,
+        name: form.name.trim() || undefined,
+        session_id: authSessionId.value,
+        code: form.authCode.trim(),
+        state: authState.value
+      })
+      submitOpen.value = false
+      resetAuthState()
+      appStore.showSuccess(t('accountTasks.submitSuccess'))
+      await loadAll(true)
+    } catch (error) {
+      submitError.value = extractApiErrorMessage(error, t('accountTasks.submitFailed'))
+    } finally {
+      submitting.value = false
+    }
+    return
   }
+
+  const credentials: Record<string, unknown> = {}
+  if (!form.apiKey.trim()) {
+    submitError.value = t('accountTasks.apiKeyRequired')
+    return
+  }
+  credentials.api_key = form.apiKey.trim()
   // 任务锁定上游时不传，由服务端按任务配置补全，避免用户输入与任务不一致。
   if (!lockedBaseURL.value && form.baseUrl.trim()) {
     credentials.base_url = form.baseUrl.trim()
@@ -403,6 +556,8 @@ async function doSubmit(): Promise<void> {
     submitting.value = false
   }
 }
+
+onBeforeUnmount(stopAuthPolling)
 
 onMounted(loadAll)
 </script>

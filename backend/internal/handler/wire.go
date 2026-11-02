@@ -211,6 +211,7 @@ func ProvideHandlers(
 	asyncImageHandler *AsyncImageHandler,
 	batchImageHandler *BatchImageHandler,
 	accountContributionHandler *AccountContributionHandler,
+	accountSubmissionAuthHandler *AccountSubmissionOAuthHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
@@ -238,6 +239,7 @@ func ProvideHandlers(
 		AsyncImage:       asyncImageHandler,
 		BatchImage:       batchImageHandler,
 		AccountContribution: accountContributionHandler,
+		AccountSubmissionAuth: accountSubmissionAuthHandler,
 	}
 }
 
@@ -265,6 +267,7 @@ var ProviderSet = wire.NewSet(
 	NewAsyncImageHandler,
 	ProvideBatchImageHandler,
 	NewAccountContributionHandler,
+	NewAccountSubmissionOAuthHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

@@ -528,21 +528,103 @@ func (s *AccountContributionService) Submit(ctx context.Context, in *AccountSubm
 		// 待审账号必须从创建起就不可调度：先建活跃账号再冻结之间存在窗口。
 		PendingReview: true,
 	}
-	account, err := s.adminService.CreateAccount(ctx, createInput)
-	if err != nil {
-		return nil, err
-	}
-
-	sub := &AccountSubmission{
+	return s.createPendingSubmission(ctx, createInput, &AccountSubmission{
 		TaskID:                task.ID,
 		UserID:                in.UserID,
-		AccountID:             account.ID,
 		Status:                AccountSubmissionPending,
 		VerificationStatus:    verifyStatus,
 		VerificationError:     verifyErr,
 		ModelCount:            modelCount,
 		CredentialFingerprint: fingerprint,
+	})
+}
+
+// AuthorizedSubmissionInput 是走完授权流程后的提交输入。
+// 凭证已经由 OAuth 兑换或设备授权拿到，不再需要用户填写或再次探测。
+type AuthorizedSubmissionInput struct {
+	TaskID      int64
+	UserID      int64
+	Name        string
+	Platform    string
+	Type        string
+	Credentials map[string]any
+}
+
+// SubmitAuthorized 登记一次授权完成的提交。
+//
+// 与 Submit 的区别：凭证来源是授权流程本身，有效性已由上游确认，因此跳过
+// 模型列表探测；平台与类型必须与任务一致，其余约束（配额、去重、待审状态）
+// 完全相同。
+func (s *AccountContributionService) SubmitAuthorized(ctx context.Context, in *AuthorizedSubmissionInput) (*AccountSubmission, error) {
+	task, err := s.repo.GetTaskByID(ctx, in.TaskID)
+	if err != nil {
+		return nil, err
 	}
+	if task == nil {
+		return nil, ErrAccountTaskNotFound
+	}
+	if !task.Enabled {
+		return nil, ErrAccountTaskDisabled
+	}
+	if strings.TrimSpace(in.Platform) != task.Platform {
+		return nil, ErrAccountTaskPlatform
+	}
+	if !slices.Contains(task.AccountTypes, in.Type) {
+		return nil, ErrAccountTaskType
+	}
+
+	count, err := s.repo.CountUserSubmissions(ctx, task.ID, in.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if count >= task.MaxPerUser {
+		return nil, ErrAccountTaskQuotaExceeded
+	}
+
+	fingerprint := credentialFingerprint(in.Platform, in.Type, in.Credentials)
+	if fingerprint != "" {
+		existing, err := s.repo.FindActiveByFingerprint(ctx, fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return nil, ErrAccountSubmissionExists
+		}
+	}
+
+	createInput := &CreateAccountInput{
+		Name:                  buildSubmittedAccountNameFor(task, in.Name),
+		Platform:              in.Platform,
+		Type:                  in.Type,
+		Credentials:           in.Credentials,
+		Extra:                 map[string]any{},
+		Concurrency:           task.Concurrency,
+		Priority:              task.Priority,
+		SkipDefaultGroupBind:  true,
+		SkipMixedChannelCheck: true,
+		PendingReview:         true,
+	}
+	return s.createPendingSubmission(ctx, createInput, &AccountSubmission{
+		TaskID:                task.ID,
+		UserID:                in.UserID,
+		Status:                AccountSubmissionPending,
+		VerificationStatus:    AccountVerifyPassed,
+		CredentialFingerprint: fingerprint,
+	})
+}
+
+// createPendingSubmission 建立待审账号并登记提交记录；提交记录失败时回收账号。
+func (s *AccountContributionService) createPendingSubmission(
+	ctx context.Context,
+	createInput *CreateAccountInput,
+	sub *AccountSubmission,
+) (*AccountSubmission, error) {
+	account, err := s.adminService.CreateAccount(ctx, createInput)
+	if err != nil {
+		return nil, err
+	}
+	sub.AccountID = account.ID
+
 	if err := s.repo.CreateSubmission(ctx, sub); err != nil {
 		// 提交记录没写成功，账号就成了没有任何归属的孤儿（且带着用户凭证）。
 		// 并发提交撞上指纹唯一索引时就会走到这里，必须回收。
@@ -553,6 +635,18 @@ func (s *AccountContributionService) Submit(ctx context.Context, in *AccountSubm
 		return nil, err
 	}
 	return sub, nil
+}
+
+// buildSubmittedAccountNameFor 用于授权流程：用户没给名字时用任务名兜底。
+func buildSubmittedAccountNameFor(task *AccountTask, name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		trimmed = fmt.Sprintf("%s - submission", task.Name)
+	}
+	if runes := []rune(trimmed); len(runes) > accountTaskMaxNameRunes {
+		trimmed = string(runes[:accountTaskMaxNameRunes])
+	}
+	return trimmed
 }
 
 // discardSubmittedAccount 回收未成功建立提交记录的账号：先清空凭证再软删。

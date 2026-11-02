@@ -237,7 +237,9 @@
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2">
-          <div>
+          <!-- 上游地址只对「填密钥」类账号有意义：OAuth 与反代平台的地址由
+               平台适配器决定，用户无从填写，这里也不该出现。 -->
+          <div v-if="supportsCustomBaseURL">
             <label class="input-label">{{ t('admin.accountTasks.fieldExpectedBaseUrl') }}</label>
             <input
               v-model="form.expectedBaseUrl"
@@ -430,6 +432,16 @@ const form = reactive({
 // 账号类型选项按平台推导：反代平台只有 reverse，TypeSafe 只有 apikey。
 // 写死全量列表会让管理员配出必然创建失败的任务。
 const allowedAccountTypes = computed(() => accountTypesForPlatform(form.platform))
+
+// 只有「填密钥」类账号才能自定义上游地址。OAuth 平台的地址由平台适配器固定，
+// 反代平台（Qoder / WorkBuddy）更是没有这个概念。
+const supportsCustomBaseURL = computed(() => {
+  const types = form.accountTypes
+  if (types.length === 0) return false
+  return types.every((type) =>
+    ['apikey', 'upstream', 'service_account', 'bedrock'].includes(type)
+  )
+})
 
 // 切换平台后：
 // - 之前选中的分组 ID 可能属于旧平台，保留会提交出「账号入组与平台不一致」的任务；
