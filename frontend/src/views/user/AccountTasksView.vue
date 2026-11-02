@@ -184,7 +184,7 @@
           </select>
         </div>
 
-        <div>
+        <div v-if="usesSecretKey">
           <label class="input-label">{{ t('accountTasks.fieldApiKey') }}</label>
           <input
             v-model="form.apiKey"
@@ -195,15 +195,20 @@
           />
         </div>
 
-        <div v-if="form.type === 'oauth'">
+        <div v-if="usesAccessToken">
           <label class="input-label">{{ t('accountTasks.fieldAccessToken') }}</label>
           <textarea v-model="form.accessToken" rows="3" class="input font-mono" />
           <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">
-            {{ t('accountTasks.oauthHint') }}
+            {{ t('accountTasks.tokenHint') }}
           </p>
         </div>
 
-        <div>
+        <!-- 任务锁定上游时不给输入框：地址已由任务确定，服务端会自动补全 -->
+        <div v-if="lockedBaseURL" class="rounded-lg bg-gray-50 px-3 py-2 text-sm dark:bg-dark-900">
+          <span class="text-gray-500 dark:text-dark-400">{{ t('accountTasks.fieldBaseUrl') }}: </span>
+          <span class="font-mono text-gray-900 dark:text-white">{{ lockedBaseURL }}</span>
+        </div>
+        <div v-else>
           <label class="input-label">{{ t('accountTasks.fieldBaseUrl') }}</label>
           <input
             v-model="form.baseUrl"
@@ -235,7 +240,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -283,6 +288,15 @@ function submittedCount(taskId: number): number {
 function canSubmit(task: AccountTask): boolean {
   return submittedCount(task.id) < task.max_per_user
 }
+
+// 按账号类型决定需要填哪种凭证。
+// reverse（Qoder/WorkBuddy）与 oauth 一样用 access_token；其余用 api_key。
+const TOKEN_TYPES = new Set(['oauth', 'setup-token', 'reverse'])
+const usesAccessToken = computed(() => TOKEN_TYPES.has(form.type))
+const usesSecretKey = computed(() => !TOKEN_TYPES.has(form.type))
+
+// 任务锁定上游时，地址由任务决定，用户不需要填。
+const lockedBaseURL = computed(() => activeTask.value?.expected_base_url ?? '')
 
 function taskName(taskId: number): string {
   return tasks.value.find((task) => task.id === taskId)?.name || `#${taskId}`
@@ -352,13 +366,7 @@ async function doSubmit(): Promise<void> {
   if (!task) return
 
   const credentials: Record<string, unknown> = {}
-  if (form.type === 'apikey') {
-    if (!form.apiKey.trim()) {
-      submitError.value = t('accountTasks.apiKeyRequired')
-      return
-    }
-    credentials.api_key = form.apiKey.trim()
-  } else if (form.type === 'oauth') {
+  if (usesAccessToken.value) {
     if (!form.accessToken.trim()) {
       submitError.value = t('accountTasks.accessTokenRequired')
       return
@@ -369,9 +377,10 @@ async function doSubmit(): Promise<void> {
       submitError.value = t('accountTasks.apiKeyRequired')
       return
     }
-    credentials.access_token = form.apiKey.trim()
+    credentials.api_key = form.apiKey.trim()
   }
-  if (form.baseUrl.trim()) {
+  // 任务锁定上游时不传，由服务端按任务配置补全，避免用户输入与任务不一致。
+  if (!lockedBaseURL.value && form.baseUrl.trim()) {
     credentials.base_url = form.baseUrl.trim()
   }
 

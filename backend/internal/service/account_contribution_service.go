@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -196,6 +197,50 @@ func NewAccountContributionService(
 
 // ---------- 任务管理 ----------
 
+// AllowedAccountTypesForPlatform 返回该平台允许的账号类型。
+// 与 buildAccountForCreate 的硬约束保持一致，供任务配置在下发前就拦截
+// 必然创建失败的组合（例如 Qoder CN 只能收 reverse 账号）。
+func AllowedAccountTypesForPlatform(platform string) []string {
+	trimmed := strings.TrimSpace(platform)
+	if trimmed == "" {
+		return nil
+	}
+	// 未知平台返回 nil，让调用方按「不支持」处理；
+	// 否则拼错平台名会落到普通分支被静默放行。
+	if !domain.IsConcretePlatform(trimmed) {
+		return nil
+	}
+	if IsReversePlatform(trimmed) {
+		return []string{AccountTypeReverse}
+	}
+	if trimmed == PlatformTypeSafe {
+		return []string{AccountTypeAPIKey}
+	}
+	types := []string{AccountTypeAPIKey, AccountTypeUpstream, AccountTypeOAuth, AccountTypeSetupToken}
+	switch trimmed {
+	case PlatformGemini:
+		types = append(types, AccountTypeServiceAccount)
+	case PlatformAnthropic:
+		types = append(types, AccountTypeBedrock)
+	}
+	return types
+}
+
+// validatePlatformAccountTypes 校验任务声明的账号类型都能在该平台成立。
+func validatePlatformAccountTypes(platform string, types []string) error {
+	allowed := AllowedAccountTypesForPlatform(platform)
+	if len(allowed) == 0 {
+		return infraerrors.BadRequest("ACCOUNT_TASK_PLATFORM_INVALID", "unknown platform")
+	}
+	for _, accountType := range types {
+		if !slices.Contains(allowed, accountType) {
+			return infraerrors.BadRequest("ACCOUNT_TASK_TYPE_UNSUPPORTED",
+				fmt.Sprintf("account type %q is not supported on platform %q", accountType, platform))
+		}
+	}
+	return nil
+}
+
 const accountTaskMaxNameRunes = 100
 
 // accountContributionProbeTimeout 限制提交时的凭证探测耗时。
@@ -229,6 +274,9 @@ func validateAccountTaskInput(in *AccountTaskCreateInput) error {
 	}
 	if in.Priority <= 0 {
 		in.Priority = 50
+	}
+	if err := validatePlatformAccountTypes(in.Platform, in.AccountTypes); err != nil {
+		return err
 	}
 	return nil
 }
@@ -373,6 +421,11 @@ func (s *AccountContributionService) UpdateTask(ctx context.Context, id int64, i
 	if in.Enabled != nil {
 		task.Enabled = *in.Enabled
 	}
+	// 平台和账号类型可以分开更新，所以必须按最终组合再校验一次：
+	// 只改平台不改类型时，原类型可能在新平台上不成立。
+	if err := validatePlatformAccountTypes(task.Platform, task.AccountTypes); err != nil {
+		return nil, err
+	}
 	if err := s.repo.UpdateTask(ctx, task); err != nil {
 		return nil, err
 	}
@@ -424,6 +477,15 @@ func (s *AccountContributionService) Submit(ctx context.Context, in *AccountSubm
 	if !slices.Contains(task.AccountTypes, in.Type) {
 		return nil, ErrAccountTaskType
 	}
+	// 纵深防御：任务配置可能来自历史数据，提交时按平台规则再确认一次，
+	// 避免把平台根本不支持的账号类型建出来。
+	if err := validatePlatformAccountTypes(in.Platform, []string{in.Type}); err != nil {
+		return nil, ErrAccountTaskType
+	}
+	// 任务锁定了上游时，用户不需要（也不应该）自己填 base_url：
+	// 由服务端补全，用户只提供凭证本身。这既省掉一个必然填错的输入，
+	// 也保证地址一定落在任务限定的主机上。
+	in.Credentials = s.applyExpectedBaseURL(task, in.Credentials)
 	if err := s.checkExpectedBaseURL(task, in.Credentials); err != nil {
 		return nil, err
 	}
@@ -513,6 +575,23 @@ func buildSubmittedAccountName(task *AccountTask, in *AccountSubmissionCreateInp
 		name = string(runes[:accountTaskMaxNameRunes])
 	}
 	return name
+}
+
+// applyExpectedBaseURL 在任务锁定上游、且用户未提供 base_url 时补全地址。
+// 返回新的凭证 map，不修改调用方的入参。
+func (s *AccountContributionService) applyExpectedBaseURL(task *AccountTask, credentials map[string]any) map[string]any {
+	if task.ExpectedBaseURL == "" {
+		return credentials
+	}
+	if raw, ok := credentials["base_url"].(string); ok && strings.TrimSpace(raw) != "" {
+		return credentials
+	}
+	out := make(map[string]any, len(credentials)+1)
+	for key, value := range credentials {
+		out[key] = value
+	}
+	out["base_url"] = "https://" + task.ExpectedBaseURL
+	return out
 }
 
 // checkExpectedBaseURL 在任务限定上游主机时校验提交的 base_url。
