@@ -339,7 +339,8 @@ func TestRejectRejectsNonPendingSubmission(t *testing.T) {
 	require.ErrorIs(t, err, ErrAccountSubmissionState)
 }
 
-func TestSubmitRecordsVerificationNotRunWhenDisabled(t *testing.T) {	svc, _ := newContributionServiceForTest(&contributionAdminStub{})
+func TestSubmitRecordsVerificationNotRunWhenDisabled(t *testing.T) {
+	svc, _ := newContributionServiceForTest(&contributionAdminStub{})
 	task := seedTask(t, svc, func(in *AccountTaskCreateInput) { in.VerifyModels = false })
 
 	sub, err := svc.Submit(context.Background(), &AccountSubmissionCreateInput{
@@ -358,7 +359,21 @@ func TestSubmitRejectsCredentialWithoutSecret(t *testing.T) {
 		TaskID: task.ID, UserID: 7, Platform: PlatformOpenAI,
 		Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.openai.com"},
 	})
-	require.ErrorIs(t, err, ErrAccountTaskVerifyFailed)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "api_key")
+}
+
+// 校验开关只控制是否探测上游，不能放过没有凭证的提交。
+func TestSubmitRejectsEmptyCredentialsWhenVerificationDisabled(t *testing.T) {
+	svc, _ := newContributionServiceForTest(&contributionAdminStub{})
+	task := seedTask(t, svc, func(in *AccountTaskCreateInput) { in.VerifyModels = false })
+
+	_, err := svc.Submit(context.Background(), &AccountSubmissionCreateInput{
+		TaskID: task.ID, UserID: 7, Platform: PlatformOpenAI,
+		Type: AccountTypeAPIKey, Credentials: map[string]any{},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "api_key")
 }
 
 // 提交记录写入失败（例如并发撞上凭证指纹唯一索引）时必须回收已创建的账号，
@@ -378,4 +393,105 @@ func TestSubmitDiscardsAccountWhenSubmissionRecordFails(t *testing.T) {
 	require.Len(t, admin.created, 1, "账号仍然会被创建")
 	require.Equal(t, []int64{1}, admin.deleted, "创建出的账号必须被回收")
 	require.Empty(t, repo.submissions)
+}
+
+// 授权流程提交时，账号要继承任务的调度配置；校验关闭时不能谎报 passed。
+func TestSubmitAuthorizedAppliesTaskAccountConfig(t *testing.T) {
+	admin := &contributionAdminStub{}
+	svc, _ := newContributionServiceForTest(admin)
+	rate := 0.5
+	task := seedTask(t, svc, func(in *AccountTaskCreateInput) {
+		in.AccountTypes = []string{AccountTypeOAuth}
+		in.VerifyModels = false
+		in.RateMultiplier = &rate
+		in.Priority = 77
+		in.Concurrency = 9
+	})
+
+	sub, err := svc.SubmitAuthorized(context.Background(), &AuthorizedSubmissionInput{
+		TaskID: task.ID, UserID: 7, Platform: PlatformOpenAI,
+		Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "at"},
+		Extra: map[string]any{"email": "user@example.com"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, AccountVerifyNotRun, sub.VerificationStatus)
+	require.Len(t, admin.created, 1)
+	require.NotNil(t, admin.created[0].RateMultiplier)
+	require.Equal(t, rate, *admin.created[0].RateMultiplier)
+	require.Equal(t, 77, admin.created[0].Priority)
+	require.Equal(t, 9, admin.created[0].Concurrency)
+	require.Equal(t, "user@example.com", admin.created[0].Extra["email"])
+}
+
+// 删除任务不能把它的待审提交永久卡在 pending。
+func TestApproveWorksAfterTaskDeleted(t *testing.T) {
+	admin := &contributionAdminStub{}
+	svc, _ := newContributionServiceForTest(admin)
+	task := seedTask(t, svc, nil)
+	sub, err := svc.Submit(context.Background(), &AccountSubmissionCreateInput{
+		TaskID: task.ID, UserID: 7, Platform: PlatformOpenAI,
+		Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "sk-1"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.DeleteTask(context.Background(), task.ID))
+
+	approved, err := svc.Approve(context.Background(), &ApproveInput{
+		SubmissionID: sub.ID,
+		ReviewerID:   1,
+		GrantReward:  false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, AccountSubmissionApproved, approved.Status)
+}
+
+// 入组分组必须与任务平台一致，否则审核通过后账号永远调度不到。
+func TestCreateTaskRejectsTargetGroupFromOtherPlatform(t *testing.T) {
+	groups := newRewardGroupRepo()
+	groups.groups[11] = &Group{ID: 11, Platform: PlatformGemini, Status: StatusActive}
+	svc := &AccountContributionService{
+		repo:         newContributionRepoStub(),
+		groupRepo:    groups,
+		adminService: &contributionAdminStub{},
+	}
+
+	_, err := svc.CreateTask(context.Background(), &AccountTaskCreateInput{
+		Name:           "任务",
+		Platform:       PlatformOpenAI,
+		AccountTypes:   []string{AccountTypeAPIKey},
+		TargetGroupIDs: []int64{11},
+		RewardGroupID:  9,
+		RewardDays:     30,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "platform")
+}
+
+// 只有 apikey / upstream 读取 base_url，给 OAuth 任务限定上游地址是无效配置。
+func TestCreateTaskRejectsBaseURLForOAuthAccount(t *testing.T) {
+	svc := &AccountContributionService{
+		repo:      newContributionRepoStub(),
+		groupRepo: newRewardGroupRepo(),
+	}
+	_, err := svc.CreateTask(context.Background(), &AccountTaskCreateInput{
+		Name:            "任务",
+		Platform:        PlatformOpenAI,
+		AccountTypes:    []string{AccountTypeOAuth},
+		ExpectedBaseURL: "api.example.com",
+		RewardGroupID:   9,
+		RewardDays:      30,
+	})
+	require.Error(t, err)
+}
+
+func TestValidateSubmissionCredentials(t *testing.T) {
+	require.NoError(t, validateSubmissionCredentials(AccountTypeAPIKey, map[string]any{"api_key": "sk"}))
+	require.Error(t, validateSubmissionCredentials(AccountTypeAPIKey, map[string]any{}))
+	require.NoError(t, validateSubmissionCredentials(AccountTypeReverse, map[string]any{"access_token": "at"}))
+	require.Error(t, validateSubmissionCredentials(AccountTypeReverse, map[string]any{}))
+	require.NoError(t, validateSubmissionCredentials(AccountTypeServiceAccount, map[string]any{"service_account_json": "{}"}))
+	require.Error(t, validateSubmissionCredentials(AccountTypeServiceAccount, map[string]any{}))
+	require.NoError(t, validateSubmissionCredentials(AccountTypeBedrock, map[string]any{
+		"aws_access_key_id": "id", "aws_secret_access_key": "secret",
+	}))
+	require.Error(t, validateSubmissionCredentials(AccountTypeBedrock, map[string]any{"aws_access_key_id": "id"}))
 }

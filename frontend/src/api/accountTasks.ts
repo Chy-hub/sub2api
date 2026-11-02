@@ -18,7 +18,6 @@ export interface AccountTask {
   reward_days: number
   max_per_user: number
   verify_models: boolean
-  reward_group_id: number
   /** 非空表示任务已锁定上游，前端应预填并隐藏输入框，服务端会补全 base_url */
   expected_base_url?: string
 }
@@ -77,20 +76,23 @@ export interface SubmissionAuthPollResult {
   pending: boolean
   status?: string
   nickname?: string
+  /** 反代平台登录完成后的一次性票据，提交时凭它换取凭证 */
+  login_ticket?: string
 }
 
 export interface SubmissionAuthStartRequest {
   task_id: number
+  /** 用户选择的账号类型；Anthropic 用它区分 oauth / setup-token */
+  account_type?: string
   oauth_type?: string
-  redirect_uri?: string
 }
 
 export interface SubmissionAuthCompleteRequest {
   task_id: number
+  account_type?: string
   session_id?: string
   code?: string
   state?: string
-  redirect_uri?: string
   oauth_type?: string
   ticket?: string
   name?: string

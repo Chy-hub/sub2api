@@ -54,6 +54,15 @@ func (s *contributionRepoStub) UpdateTask(_ context.Context, task *AccountTask) 
 
 func (s *contributionRepoStub) GetTaskByID(_ context.Context, id int64) (*AccountTask, error) {
 	task, ok := s.tasks[id]
+	if !ok || task.DeletedAt != nil {
+		return nil, nil
+	}
+	cloned := *task
+	return &cloned, nil
+}
+
+func (s *contributionRepoStub) GetTaskByIDIncludingDeleted(_ context.Context, id int64) (*AccountTask, error) {
+	task, ok := s.tasks[id]
 	if !ok {
 		return nil, nil
 	}
@@ -74,7 +83,13 @@ func (s *contributionRepoStub) ListTasks(_ context.Context, enabledOnly bool) ([
 }
 
 func (s *contributionRepoStub) DeleteTask(_ context.Context, id int64) error {
-	delete(s.tasks, id)
+	task, ok := s.tasks[id]
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	task.DeletedAt = &now
+	task.Enabled = false
 	return nil
 }
 
@@ -99,6 +114,16 @@ func (s *contributionRepoStub) UpdateSubmission(_ context.Context, sub *AccountS
 	cloned := *sub
 	s.submissions[sub.ID] = &cloned
 	return nil
+}
+
+func (s *contributionRepoStub) UpdateSubmissionIfStatus(_ context.Context, sub *AccountSubmission, fromStatus string) (bool, error) {
+	current, ok := s.submissions[sub.ID]
+	if !ok || current.Status != fromStatus {
+		return false, nil
+	}
+	cloned := *sub
+	s.submissions[sub.ID] = &cloned
+	return true, nil
 }
 
 func (s *contributionRepoStub) GetSubmissionByID(_ context.Context, id int64) (*AccountSubmission, error) {
@@ -194,7 +219,7 @@ func TestCredentialFingerprintDiffersByPlatform(t *testing.T) {
 	)
 }
 
-func TestNormalizeBaseURLHost(t *testing.T) {
+func TestValidateExpectedBaseURL(t *testing.T) {
 	cases := map[string]string{
 		"https://API.LLM.USTC.EDU.CN/v1": "api.llm.ustc.edu.cn",
 		"api.llm.ustc.edu.cn":            "api.llm.ustc.edu.cn",
@@ -202,8 +227,13 @@ func TestNormalizeBaseURLHost(t *testing.T) {
 		"":                               "",
 	}
 	for input, want := range cases {
-		require.Equal(t, want, normalizeBaseURLHost(input), "input=%q", input)
+		got, err := ValidateExpectedBaseURL(input)
+		require.NoError(t, err, "input=%q", input)
+		require.Equal(t, want, got, "input=%q", input)
 	}
+
+	_, err := ValidateExpectedBaseURL("javascript:alert(1)")
+	require.Error(t, err)
 }
 
 func TestCheckExpectedBaseURL(t *testing.T) {
@@ -337,13 +367,25 @@ func (s *contributionGroupRepoStub) GetByID(_ context.Context, id int64) (*Group
 
 func newRewardGroupRepo() *contributionGroupRepoStub {
 	return &contributionGroupRepoStub{groups: map[int64]*Group{
+		4: {
+			ID:       4,
+			Platform: PlatformOpenAI,
+			Status:   StatusActive,
+		},
+		5: {
+			ID:       5,
+			Platform: PlatformOpenAI,
+			Status:   StatusActive,
+		},
 		9: {
 			ID:               9,
+			Platform:         PlatformOpenAI,
 			Status:           StatusActive,
 			SubscriptionType: SubscriptionTypeSubscription,
 		},
 		10: {
 			ID:               10,
+			Platform:         PlatformOpenAI,
 			Status:           StatusActive,
 			SubscriptionType: SubscriptionTypeStandard,
 		},
@@ -424,6 +466,14 @@ func TestAllowedAccountTypesForPlatform(t *testing.T) {
 	// Anthropic 支持 Bedrock。
 	require.Contains(t, AllowedAccountTypesForPlatform(PlatformAnthropic), AccountTypeBedrock)
 	require.NotContains(t, AllowedAccountTypesForPlatform(PlatformGemini), AccountTypeBedrock)
+
+	// OAuth 只在真正有授权流程的平台开放；setup-token 只在 Anthropic。
+	require.Contains(t, AllowedAccountTypesForPlatform(PlatformGrok), AccountTypeOAuth)
+	require.NotContains(t, AllowedAccountTypesForPlatform(PlatformKimi), AccountTypeOAuth)
+	require.NotContains(t, AllowedAccountTypesForPlatform(PlatformDeepseek), AccountTypeOAuth)
+	require.Contains(t, AllowedAccountTypesForPlatform(PlatformAnthropic), AccountTypeSetupToken)
+	require.NotContains(t, AllowedAccountTypesForPlatform(PlatformOpenAI), AccountTypeSetupToken)
+	require.NotContains(t, AllowedAccountTypesForPlatform(PlatformKimi), AccountTypeServiceAccount)
 
 	require.Empty(t, AllowedAccountTypesForPlatform(""))
 	require.Empty(t, AllowedAccountTypesForPlatform("no-such-platform"))

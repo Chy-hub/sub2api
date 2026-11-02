@@ -28,7 +28,7 @@ export default {
     fieldDescription: '任务说明',
     fieldPlatform: '平台',
     fieldTypes: '允许的账号类型',
-    fieldTypesHint: 'apikey 与 reverse 支持提交时自动校验；oauth 需要未过期的 access_token。',
+    fieldTypesHint: '可选项按平台推导：OAuth 只在有授权流程的平台出现，setup-token / Bedrock 仅 Anthropic，服务账号仅 Gemini / Anthropic。',
     fieldRewardGroup: '奖励订阅分组',
     fieldRewardGroupHint: '必须是订阅型分组，审核通过后按天数发放订阅。',
     fieldRewardDays: '奖励天数',
@@ -40,6 +40,9 @@ export default {
     fieldPriority: '调度优先级',
     fieldConcurrency: '账号并发',
     fieldSortOrder: '排序',
+    fieldRateMultiplier: '账号倍率',
+    fieldRateMultiplierPlaceholder: '留空表示不覆盖',
+    fieldRateMultiplierHint: '审核通过后贡献账号的计费倍率；留空则使用分组默认倍率。',
     fieldVerifyModels: '提交时校验凭证（拉取上游模型列表）',
     fieldVerifyModelsHint: '校验会真实请求上游，用于确认凭证可用。上游不支持 /v1/models 时可关闭。',
     fieldRejectOnVerifyFail: '校验失败时拒绝提交',
@@ -49,6 +52,7 @@ export default {
 
     typesRequired: '至少选择一种账号类型',
     rewardGroupRequired: '请选择奖励订阅分组',
+    rateMultiplierInvalid: '账号倍率必须是不小于 0 的数字',
 
     saveSuccess: '任务已保存',
     saveFailed: '保存任务失败',
