@@ -61,3 +61,69 @@ export async function submitAccount(request: SubmitAccountRequest): Promise<Acco
   const response = await apiClient.post<AccountSubmission>('/account-submissions', request)
   return response.data
 }
+
+/** 授权方式：apikey 直接填 key，oauth 走浏览器授权，reverse 走设备登录 */
+export type SubmissionAuthMode = 'oauth' | 'reverse'
+
+export interface SubmissionAuthStartResult {
+  mode: SubmissionAuthMode
+  session_id: string
+  auth_url: string
+  state?: string
+  expires_at?: string
+}
+
+export interface SubmissionAuthPollResult {
+  pending: boolean
+  status?: string
+  nickname?: string
+}
+
+export interface SubmissionAuthStartRequest {
+  task_id: number
+  oauth_type?: string
+  redirect_uri?: string
+}
+
+export interface SubmissionAuthCompleteRequest {
+  task_id: number
+  session_id?: string
+  code?: string
+  state?: string
+  redirect_uri?: string
+  oauth_type?: string
+  ticket?: string
+  name?: string
+}
+
+/** 发起账号授权，复用管理员创建账号时的同一套 OAuth / 反代流程 */
+export async function startSubmissionAuth(
+  request: SubmissionAuthStartRequest
+): Promise<SubmissionAuthStartResult> {
+  const response = await apiClient.post<SubmissionAuthStartResult>(
+    '/account-submissions/auth/start',
+    request
+  )
+  return response.data
+}
+
+/** 轮询设备授权状态（仅反代平台需要） */
+export async function pollSubmissionAuth(
+  sessionId: string
+): Promise<SubmissionAuthPollResult> {
+  const response = await apiClient.get<SubmissionAuthPollResult>('/account-submissions/auth/poll', {
+    params: { session_id: sessionId }
+  })
+  return response.data
+}
+
+/** 授权完成后登记待审提交 */
+export async function completeSubmissionAuth(
+  request: SubmissionAuthCompleteRequest
+): Promise<AccountSubmission> {
+  const response = await apiClient.post<AccountSubmission>(
+    '/account-submissions/auth/complete',
+    request
+  )
+  return response.data
+}
