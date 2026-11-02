@@ -326,7 +326,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -387,20 +387,6 @@ const formGroups = computed(() =>
   groups.value.filter((group) => group.platform === form.platform)
 )
 
-// 切换平台后：
-// - 之前选中的分组 ID 可能属于旧平台，保留会提交出「账号入组与平台不一致」的任务；
-// - 之前选中的账号类型可能在新平台不成立（例如从 openai 切到 qoder_cn 只允许 reverse）。
-// 两者一起清空，并把类型重置为新平台的可选项。
-watch(
-  () => form.platform,
-  () => {
-    form.targetGroupIds = []
-    const allowed = accountTypesForPlatform(form.platform)
-    const kept = form.accountTypes.filter((type) => allowed.includes(type as never))
-    form.accountTypes = kept.length > 0 ? kept : allowed.slice(0, 1)
-  }
-)
-
 function taskName(taskId: number): string {
   return tasks.value.find((task) => task.id === taskId)?.name || `#${taskId}`
 }
@@ -445,7 +431,30 @@ const form = reactive({
 // 写死全量列表会让管理员配出必然创建失败的任务。
 const allowedAccountTypes = computed(() => accountTypesForPlatform(form.platform))
 
+// 切换平台后：
+// - 之前选中的分组 ID 可能属于旧平台，保留会提交出「账号入组与平台不一致」的任务；
+// - 之前选中的账号类型可能在新平台不成立（例如从 openai 切到 qoder_cn 只允许 reverse）。
+// 两者一起清空，并把类型重置为新平台的可选项。
+//
+// 这个 watch 必须声明在 `form` 之后：Vue 注册时会立即执行一次 getter，
+// 提前访问未初始化的 const 会抛 ReferenceError 并被吞掉，watch 将永远不会生效。
+//
+// suppressPlatformReset 用于 openEdit/resetForm：它们自己会写入平台与类型，
+// 而 watch 在下一个 tick 才执行，不隔离的话会把刚恢复的分组和类型清掉。
+const suppressPlatformReset = ref(false)
+watch(
+  () => form.platform,
+  () => {
+    if (suppressPlatformReset.value) return
+    form.targetGroupIds = []
+    const allowed = accountTypesForPlatform(form.platform)
+    const kept = form.accountTypes.filter((type) => allowed.includes(type as never))
+    form.accountTypes = kept.length > 0 ? kept : allowed.slice(0, 1)
+  }
+)
+
 function resetForm(): void {
+  suppressPlatformReset.value = true
   form.name = ''
   form.description = ''
   form.platform = 'openai'
@@ -462,6 +471,7 @@ function resetForm(): void {
   form.rejectOnVerifyFail = true
   form.enabled = true
   formError.value = ''
+  nextTick(() => { suppressPlatformReset.value = false })
 }
 
 function openCreate(): void {
@@ -471,6 +481,7 @@ function openCreate(): void {
 }
 
 function openEdit(task: AdminAccountTask): void {
+  suppressPlatformReset.value = true
   editingId.value = task.id
   form.name = task.name
   form.description = task.description
@@ -495,6 +506,7 @@ function openEdit(task: AdminAccountTask): void {
   form.enabled = task.enabled
   formError.value = ''
   editorOpen.value = true
+  nextTick(() => { suppressPlatformReset.value = false })
 }
 
 function closeEditor(): void {
