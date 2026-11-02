@@ -980,6 +980,7 @@ var ProviderSet = wire.NewSet(
 	NewAliyunCaptchaService,
 	NewSubscriptionService,
 	wire.Bind(new(DefaultSubscriptionAssigner), new(*SubscriptionService)),
+	NewAccountContributionService,
 	ProvideConcurrencyService,
 	ProvideUserMessageQueueService,
 	NewUsageRecordWorkerPool,

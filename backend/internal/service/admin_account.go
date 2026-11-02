@@ -443,6 +443,15 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, ReverseTasksExtraKey)
 	delete(accountExtra, ReverseModelCatalogExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
+	concurrency := normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency)
+	status := StatusActive
+	schedulable := true
+	// PendingReview 让账号从创建起就不可调度，避免“先建活跃账号、再冻结”
+	// 之间的窗口被调度器看到。用于用户提交后待人工审核的场景。
+	if input.PendingReview {
+		status = "inactive"
+		schedulable = false
+	}
 	account := &Account{
 		Name:        input.Name,
 		Notes:       normalizeAccountNotes(input.Notes),
@@ -451,10 +460,10 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Credentials: input.Credentials,
 		Extra:       accountExtra,
 		ProxyID:     input.ProxyID,
-		Concurrency: normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
+		Concurrency: concurrency,
 		Priority:    input.Priority,
-		Status:      StatusActive,
-		Schedulable: true,
+		Status:      status,
+		Schedulable: schedulable,
 	}
 	if IsReversePlatform(input.Platform) {
 		if input.Type != AccountTypeReverse {
