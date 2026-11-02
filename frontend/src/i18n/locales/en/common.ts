@@ -458,5 +458,54 @@ export default {
     adminApiKeyForbidden: 'Admin API keys cannot perform this operation. Use a two-factor verified admin session.'
   },
 
+  // Account contribution tasks
+  accountTasks: {
+    navLabel: 'Account Tasks',
+    availableTitle: 'Available Tasks',
+    emptyTitle: 'No tasks available',
+    emptyDesc: 'Tasks published by administrators will appear here.',
+    mySubmissions: 'My Submissions',
+    noSubmissions: 'You have not submitted any accounts yet.',
+    submit: 'Submit Account',
+    submitTitle: 'Submit Account',
+    confirmSubmit: 'Confirm',
+    days: 'days of subscription',
+    accountTypes: 'Account types',
+    maxPerUser: 'Submissions',
+    verificationLabel: 'Verification',
+    verifyEnabled: 'Verified on submit',
+    fieldName: 'Account name (optional)',
+    fieldNamePlaceholder: 'A name to help you identify this account',
+    fieldType: 'Account type',
+    fieldApiKey: 'API Key',
+    fieldAccessToken: 'Access Token',
+    fieldBaseUrl: 'Upstream URL (optional)',
+    oauthHint: 'Provide an unexpired access_token; expired credentials cannot be refreshed during submission.',
+    apiKeyRequired: 'API key is required',
+    accessTokenRequired: 'Access token is required',
+    submitSuccess: 'Submitted, waiting for administrator review',
+    submitFailed: 'Submission failed',
+    loadFailed: 'Failed to load account tasks',
+    colTask: 'Task',
+    colStatus: 'Status',
+    colVerification: 'Verification',
+    colReward: 'Reward',
+    colCreated: 'Submitted',
+    rewardGranted: 'Granted',
+    reviewNote: 'Review note',
+    modelCount: '{count} models',
+    status: {
+      pending: 'Pending',
+      approved: 'Approved',
+      rejected: 'Rejected'
+    },
+    verification: {
+      not_run: 'Not run',
+      passed: 'Passed',
+      failed: 'Failed',
+      unsupported: 'Unsupported'
+    }
+  },
+
   // Dashboard
 }

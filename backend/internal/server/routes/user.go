@@ -102,6 +102,18 @@ func RegisterUserRoutes(
 			channels.GET("/available", h.AvailableChannel.List)
 		}
 
+		// 账号贡献任务：提交账号供审核换取订阅奖励
+		accountTasks := authenticated.Group("/account-tasks")
+		{
+			accountTasks.GET("", h.AccountContribution.ListTasks)
+		}
+		accountSubmissions := authenticated.Group("/account-submissions")
+		{
+			accountSubmissions.GET("", h.AccountContribution.ListSubmissions)
+			// 提交会触发上游模型列表探测，属于重操作，叠加严格限流。
+			accountSubmissions.POST("", panelRateLimiter.Heavy(), h.AccountContribution.Submit)
+		}
+
 		// 使用记录（聚合统计属重查询，叠加更严格的按用户限流）
 		usage := authenticated.Group("/usage")
 		usage.Use(panelRateLimiter.Heavy())

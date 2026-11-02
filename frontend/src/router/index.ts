@@ -216,6 +216,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/account-tasks',
+    name: 'AccountTasks',
+    component: () => import('@/views/user/AccountTasksView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Account Tasks',
+      titleKey: 'accountTasks.availableTitle',
+      descriptionKey: 'accountTasks.emptyDesc'
+    }
+  },
+  {
     path: '/batch-image',
     name: 'BatchImageGuide',
     alias: '/docs/batch-image',
@@ -546,6 +558,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Account Management',
       titleKey: 'admin.accounts.title',
       descriptionKey: 'admin.accounts.description'
+    }
+  },
+  {
+    path: '/admin/account-tasks',
+    name: 'AdminAccountTasks',
+    component: () => import('@/views/admin/AccountTasksView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Account Tasks',
+      titleKey: 'admin.accountTasks.title',
+      descriptionKey: 'admin.accountTasks.description'
     }
   },
   {
