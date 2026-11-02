@@ -93,6 +93,9 @@ func RegisterAdminRoutes(
 		// 订阅管理
 		registerSubscriptionRoutes(admin, h)
 
+		// 账号贡献任务与提交审核
+		registerAccountTaskRoutes(admin, h)
+
 		// 使用记录管理
 		registerUsageRoutes(admin, h)
 
@@ -713,6 +716,25 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 
 	// 用户下的订阅列表
 	admin.GET("/users/:id/subscriptions", h.Admin.Subscription.ListByUser)
+}
+
+// registerAccountTaskRoutes 注册账号贡献任务与提交审核路由。
+func registerAccountTaskRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	tasks := admin.Group("/account-tasks")
+	{
+		tasks.GET("", h.Admin.AccountTask.ListTasks)
+		tasks.GET("/:id", h.Admin.AccountTask.GetTask)
+		tasks.POST("", h.Admin.AccountTask.CreateTask)
+		tasks.PUT("/:id", h.Admin.AccountTask.UpdateTask)
+		tasks.DELETE("/:id", h.Admin.AccountTask.DeleteTask)
+	}
+
+	submissions := admin.Group("/account-submissions")
+	{
+		submissions.GET("", h.Admin.AccountTask.ListSubmissions)
+		submissions.POST("/:id/approve", h.Admin.AccountTask.Approve)
+		submissions.POST("/:id/reject", h.Admin.AccountTask.Reject)
+	}
 }
 
 func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

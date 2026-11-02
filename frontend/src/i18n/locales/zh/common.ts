@@ -456,5 +456,54 @@ export default {
     adminApiKeyForbidden: '管理 API Key 无法执行此操作，请使用已通过二次验证的管理员会话。'
   },
 
+  // 账号贡献任务
+  accountTasks: {
+    navLabel: '账号任务',
+    availableTitle: '可参与的任务',
+    emptyTitle: '暂无可用任务',
+    emptyDesc: '管理员发布账号贡献任务后会显示在这里。',
+    mySubmissions: '我的提交',
+    noSubmissions: '还没有提交过账号。',
+    submit: '提交账号',
+    submitTitle: '提交账号',
+    confirmSubmit: '确认提交',
+    days: '天订阅',
+    accountTypes: '账号类型',
+    maxPerUser: '提交次数',
+    verificationLabel: '凭证校验',
+    verifyEnabled: '提交时自动验证',
+    fieldName: '账号名称（可选）',
+    fieldNamePlaceholder: '给这个账号起个名字，便于识别',
+    fieldType: '账号类型',
+    fieldApiKey: 'API Key',
+    fieldAccessToken: 'Access Token',
+    fieldBaseUrl: '上游地址（可选）',
+    oauthHint: '需要填入未过期的 access_token；过期的凭证无法在提交时自动刷新。',
+    apiKeyRequired: '请填写 API Key',
+    accessTokenRequired: '请填写 Access Token',
+    submitSuccess: '已提交，等待管理员审核',
+    submitFailed: '提交失败',
+    loadFailed: '加载账号任务失败',
+    colTask: '任务',
+    colStatus: '状态',
+    colVerification: '校验结果',
+    colReward: '奖励',
+    colCreated: '提交时间',
+    rewardGranted: '已发放',
+    reviewNote: '审核备注',
+    modelCount: '{count} 个模型',
+    status: {
+      pending: '待审核',
+      approved: '已通过',
+      rejected: '已拒绝'
+    },
+    verification: {
+      not_run: '未校验',
+      passed: '通过',
+      failed: '未通过',
+      unsupported: '不支持校验'
+    }
+  },
+
   // Dashboard
 }

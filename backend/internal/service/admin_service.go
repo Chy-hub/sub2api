@@ -419,6 +419,9 @@ type CreateAccountInput struct {
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
+	// PendingReview creates the account as inactive and non-schedulable, so an
+	// account awaiting human review is never visible to the scheduler.
+	PendingReview bool
 }
 
 // ShadowOptions is the input for CreateShadow.
