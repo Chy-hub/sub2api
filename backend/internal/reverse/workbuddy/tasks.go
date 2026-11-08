@@ -1149,6 +1149,16 @@ func (c *Client) ReportWebElementClick(ctx context.Context, cred *Credential, pa
 	return c.ReportWebEvents(ctx, cred, pageURL, []map[string]any{event})
 }
 
+// chat_request_send 事件里「未挂知识库」的标准形态。
+//
+// 官方客户端抓包一律是空字符串（credential.go 的三条事件序列就是这么来的）；
+// 每日活跃信标最初手写成空数组，于是同一个 eventCode 出现了两种类型。上游目前
+// 两种都收，但任何一次 schema 收紧都只会打断其中一条路径，所以统一到抓包形态。
+const (
+	knowledgeIDEmpty   = ""
+	knowledgeNameEmpty = ""
+)
+
 // nowMs 返回当前毫秒时间戳。
 func nowMs() int64 { return time.Now().UnixMilli() }
 
@@ -2073,8 +2083,8 @@ func DailyBonusBeaconEvent(credential *Credential) map[string]any {
 		"requestModelId":       "deepseek-v4-flash",
 		"requestModelName":     "DeepSeek V4 Flash",
 		"mentionContexts":      []any{},
-		"knowledgeId":          []any{},
-		"knowledgeName":        []any{},
+		"knowledgeId":          knowledgeIDEmpty,
+		"knowledgeName":        knowledgeNameEmpty,
 		"presentAt":            now,
 		"rootRequestId":        conversationID,
 		"parentConversationId": conversationID,
@@ -2099,7 +2109,8 @@ func (c *Client) SendDailyBonusBeacon(ctx context.Context, cred *Credential) err
 // 返回的 CheckinResult 语义：
 //   - Already=true：今天已点亮（本轮或早前轮次点亮的都算），无需再上报；
 //   - Already=false：本轮新上报了信标。积分在次日凌晨发放，因此 Credit/Energy
-//     此刻拿不到，恒为 0；Streak 携带热力图上的点亮天数供展示。
+//     此刻拿不到，恒为 0；Streak 是上游连登接口给出的天数（拿不到则为 0，
+//     表示「上游没提供」，上层会保留上一次的值）。
 //
 // 仅接受 global 域凭证：CN 的成长域在 copilot.tencent.com，收入路径是
 // DailyCheckin，两者互不通用。
@@ -2114,22 +2125,46 @@ func (c *Client) GlobalDailyBonus(ctx context.Context, cred *Credential) (*Check
 	if !c.enabledRealm(region) {
 		return nil, fmt.Errorf("realm %s is disabled by plugin configuration", region)
 	}
-	today, lit, errToday := c.GrowthHeatmapToday(ctx, cred)
+	todayKey := time.Now().In(cstZone).Format("2006-01-02")
+	_, lit, errToday := c.GrowthHeatmapToday(ctx, cred)
 	if errToday != nil {
 		return nil, fmt.Errorf("heatmap: %w", errToday)
 	}
-	if today.Score > 0 {
-		return &CheckinResult{Already: true, Streak: int64(len(lit))}, nil
+	// Match "today" by date instead of trusting the last cell: neither the
+	// heatmap's ordering nor its inclusion of today is a protocol guarantee.
+	if heatmapLitOn(lit, todayKey) {
+		return &CheckinResult{Already: true, Streak: c.streakDays(ctx, cred)}, nil
 	}
 	if errSend := c.SendDailyBonusBeacon(ctx, cred); errSend != nil {
 		return nil, fmt.Errorf("report: %w", errSend)
 	}
-	// 热力图聚合滞后数秒，立即回读可能仍是 0；尽力而为，仅用于日志展示，
-	// 当天状态以本条上报为准（下个排程点会看到点亮）。
-	if _, litAfter, errRe := c.GrowthHeatmapToday(ctx, cred); errRe == nil {
-		lit = litAfter
+	// 热力图聚合滞后数秒，立即回读可能仍未点亮；当天状态以本条上报为准，
+	// 下个排程点会看到点亮，这里不因「尚未聚合」把签到判成失败。
+	return &CheckinResult{Already: false, Streak: c.streakDays(ctx, cred)}, nil
+}
+
+// heatmapLitOn reports whether the heatmap contains a lit entry for date.
+func heatmapLitOn(lit []string, date string) bool {
+	for _, item := range lit {
+		if item == date {
+			return true
+		}
 	}
-	return &CheckinResult{Already: false, Streak: int64(len(lit))}, nil
+	return false
+}
+
+// streakDays reads the upstream consecutive-login day count, returning 0 when
+// it is unavailable (meaning "upstream did not report it").
+//
+// Counting lit heatmap entries is not a substitute: break/makeup/monthly-reset
+// rules live upstream, so a locally derived count necessarily diverges (the
+// historic bug used len(lit), which only ever grew).
+func (c *Client) streakDays(ctx context.Context, cred *Credential) int64 {
+	streak, errStreak := c.GrowthStreak(ctx, cred)
+	if errStreak != nil || streak == nil || streak.Days <= 0 {
+		return 0
+	}
+	return streak.Days
 }
 
 // 本文件实现连登兑换与抽奖、猫猫旅行、夜猫子、开学季四套闭环。

@@ -150,6 +150,10 @@ func TestGlobalCheckinUsesRegionalBeaconWithoutClaimingImmediateCredits(t *testi
 			_, _ = io.WriteString(w, `{"code":0,"data":{"cells":[{"date":"2026-10-29","score":0}]}}`)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "streak") {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"streak":{"days":4},"makeup_cards":{"balance":0}}}`)
+			return
+		}
 		require.Equal(t, "/v2/report", r.URL.Path)
 		report++
 		var events []map[string]any

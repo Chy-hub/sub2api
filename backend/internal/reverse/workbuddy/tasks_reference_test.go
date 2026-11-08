@@ -1,11 +1,17 @@
 package workbuddy
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/reverse"
+	"github.com/stretchr/testify/require"
 )
 
 // Regression cases ported from CLIProxyAPI-freetier2api-plugin (MIT).
@@ -222,5 +228,82 @@ func TestParseEnterpriseBalanceRejectsMissingLimit(t *testing.T) {
 		if _, errParse := parseEnterpriseBalance(json.RawMessage(raw)); errParse == nil {
 			t.Fatalf("parseEnterpriseBalance(%s) 必须报错", raw)
 		}
+	}
+}
+
+func TestHeatmapLitOnMatchesExactDate(t *testing.T) {
+	lit := []string{"2026-11-06", "2026-11-07"}
+	if !heatmapLitOn(lit, "2026-11-07") {
+		t.Fatal("an exact date match must report lit")
+	}
+	if heatmapLitOn(lit, "2026-11-08") {
+		t.Fatal("a missing date must not report lit")
+	}
+}
+
+// TestGlobalDailyBonusUsesUpstreamStreak locks the streak source: the day count
+// comes from the upstream streak endpoint, never from counting lit heatmap
+// entries (which only ever grows and diverges on break/makeup days).
+func TestGlobalDailyBonusUsesUpstreamStreak(t *testing.T) {
+	today := time.Now().In(cstZone).Format("2006-01-02")
+	yesterday := time.Now().In(cstZone).AddDate(0, 0, -1).Format("2006-01-02")
+
+	cases := []struct {
+		name       string
+		heatmap    string
+		streakBody string
+		streakFail bool
+		wantStreak int64
+		wantReport bool
+	}{
+		{
+			name:       "尚未点亮：透传上游天数并上报信标",
+			heatmap:    `{"code":0,"data":{"cells":[{"date":"` + yesterday + `","score":1}]}}`,
+			streakBody: `{"code":0,"data":{"streak":{"days":12}}}`,
+			wantStreak: 12,
+			wantReport: true,
+		},
+		{
+			name:       "今日已点亮：不重复上报",
+			heatmap:    `{"code":0,"data":{"cells":[{"date":"` + today + `","score":1}]}}`,
+			streakBody: `{"code":0,"data":{"streak":{"days":7}}}`,
+			wantStreak: 7,
+			wantReport: false,
+		},
+		{
+			name:       "连登接口失败：返回 0 而不是猜一个天数",
+			heatmap:    `{"code":0,"data":{"cells":[{"date":"` + yesterday + `","score":1}]}}`,
+			streakFail: true,
+			wantStreak: 0,
+			wantReport: true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			reported := false
+			p := localProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "heatmap"):
+					_, _ = io.WriteString(w, testCase.heatmap)
+				case strings.HasSuffix(r.URL.Path, "streak"):
+					if testCase.streakFail {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					_, _ = io.WriteString(w, testCase.streakBody)
+				case r.URL.Path == "/v2/report":
+					reported = true
+					_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+				default:
+					_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+				}
+			})
+			acc := &reverse.Account{Region: "global", Credentials: map[string]any{"uid": "u1", "access_token": "access"}}
+			result, err := p.Checkin(context.Background(), acc)
+			require.NoError(t, err)
+			require.Equal(t, testCase.wantStreak, result.Details["streak"])
+			require.Equal(t, testCase.wantReport, reported)
+		})
 	}
 }

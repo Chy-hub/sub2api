@@ -145,13 +145,29 @@ func applyBillingHeaders(req *http.Request, cred *credential) {
 	if cred.enterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", cred.enterpriseID)
 		req.Header.Set("X-Tenant-Id", cred.enterpriseID)
+	} else {
+		// Personal accounts must declare "no enterprise" explicitly; some
+		// billing endpoints treat a missing header as a malformed request.
+		req.Header.Set("X-No-Enterprise-Id", "1")
 	}
-	if cred.domain != "" {
-		req.Header.Set("X-Domain", cred.domain)
-	}
+	// X-Domain prefers the account's recorded domain and falls back to the
+	// request's target region rather than staying empty: the official client
+	// always sends this header on billing calls.
+	req.Header.Set("X-Domain", configDomain(cred))
+	req.Header.Set("X-Product", "SaaS")
+	req.Header.Set("X-Product-Code", productCodeFor(cred.region))
 	if cred.deviceToken != "" {
 		req.Header.Set("X-Device-Token", cred.deviceToken)
 	}
+}
+
+// productCodeFor returns the region's product code (the official client's
+// X-Product-Code header).
+func productCodeFor(reg region) string {
+	if reg.isGlobal() {
+		return "workbuddy"
+	}
+	return "codebuddy"
 }
 
 // applyConfigHeaders writes the model-probe matrix. The IDE UA is the risk gate

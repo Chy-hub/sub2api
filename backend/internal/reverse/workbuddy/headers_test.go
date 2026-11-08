@@ -43,7 +43,7 @@ func TestChatHeadersMatchGenuineClient(t *testing.T) {
 	req := newHeaderRequest(t)
 	applyChatHeaders(req, cred, chatMeta{conversationID: "conv-1", conversationRequestID: newUUIDv7Hex()})
 
-	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0" {
+	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.179.0" {
 		t.Fatalf("User-Agent = %q", got)
 	}
 	for key, want := range map[string]string{
@@ -165,7 +165,7 @@ func TestGlobalChatHeaders(t *testing.T) {
 	req := newHeaderRequest(t)
 	applyChatHeaders(req, cred, chatMeta{})
 
-	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.3 WorkBuddy AI/5.8.3 CLI/2.161.0" {
+	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.3 WorkBuddy AI/5.8.3 CLI/2.179.0" {
 		t.Fatalf("User-Agent = %q", got)
 	}
 	if got := req.Header.Get("X-Domain"); got != "www.workbuddy.ai" {

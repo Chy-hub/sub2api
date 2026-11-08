@@ -227,18 +227,41 @@ func hasFingerprint(text string, rules sanitizeRules) bool {
 	return false
 }
 
+// zeroWidthChars 是第三方 harness 用来规避字面量匹配的不可见字符。
+//
+// DSH（DeepSeek Harness）的部分构建在 "DeepSeek Harness" 之间插入零宽空格
+// （U+200B）：肉眼与原文一致、字节不同，任何 strings.ReplaceAll 都会落空。
+// 因此先做一次清理，让改写表（第 3 步）能命中。只在指纹预检命中后清理——
+// 未命中特征的正文（普通用户消息）原样透传，不做任何字符级改动。
+const zeroWidthChars = "\u200b\u200c\u200d\ufeff"
+
+// stripZeroWidth 删除文本里的零宽字符；不含时直接返回原串（零分配快路径）。
+func stripZeroWidth(text string) string {
+	if !strings.ContainsAny(text, zeroWidthChars) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(zeroWidthChars, r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
 // sanitizeText 对一段文本执行完整脱敏。
 //
 // 执行顺序：
 //  1. 特征预检（不命中直接返回原串）；
-//  2. 改写表（承载语义的模板句，逐词替换）；
-//  3. header 键值段整段剥离；
-//  4. cc_ 键值段循环清理（直到稳定）；
-//  5. 裸 header 键名缩写。
+//  2. 零宽字符清理（部分 harness 用不可见字符规避字面量匹配）；
+//  3. 改写表（承载语义的模板句，逐词替换）；
+//  4. header 键值段整段剥离；
+//  5. cc_ 键值段循环清理（直到稳定）；
+//  6. 裸 header 键名缩写。
 func sanitizeText(text string, rules sanitizeRules, regexes map[string]*regexp.Regexp) string {
 	if text == "" || !hasFingerprint(text, rules) {
 		return text
 	}
+	text = stripZeroWidth(text)
 	for _, pair := range rules.Rewrites {
 		if len(pair) != 2 || pair[0] == "" {
 			continue

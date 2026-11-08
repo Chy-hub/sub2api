@@ -113,35 +113,36 @@ func BuildQuotaResponse(quota *Quota) reverse.QuotaFetchResponse {
 			Plan: quota.Plan, TierName: quota.Plan, TierID: quota.Plan,
 		}
 	}
-	if group := quotaGroup("套餐额度", quota.UserQuota); group != nil {
-		response.Groups = append(response.Groups, *group)
-	}
-	if group := quotaGroup("个人拓展包", quota.AddonQuota); group != nil {
-		response.Groups = append(response.Groups, *group)
-	}
-	if group := quotaGroup("共享资源包", quota.Shared); group != nil {
-		response.Groups = append(response.Groups, *group)
-	}
-	if quota.UserQuota != nil {
+	// Summary 与 Groups 必须同序：页头数字取的是 Summary 里第一个有容量的族，
+	// 两条路径各排各的就会出现「页头 2000/3000、第一条却写着 0/3000」这种
+	// 自相矛盾的展示。
+	//
+	// 全 0 的桶既不进 Summary 也不进 Groups：Free 账号的「套餐额度 0/0」会在
+	// 面板上占掉一整排 chip 加一条 0% 进度条，纯粹是噪音。但若**所有**桶都是
+	// 空的（额度真用光了），至少保留一个，否则面板只会显示「暂无额度数据」，
+	// 看不出「已经用完」。
+	anyData := quotaBucketHasData(quota.UserQuota) || quotaBucketHasData(quota.AddonQuota) || quotaBucketHasData(quota.Shared)
+	for _, family := range orderedQuotaFamilies(quota) {
+		bucket := family.bucket
+		// Keep a bucket when it holds data, or when every bucket is empty and
+		// this is the first surviving one (so "used up" stays visible).
+		if anyData {
+			if !quotaBucketHasData(bucket) {
+				continue
+			}
+		} else if len(response.Groups) > 0 {
+			continue
+		}
+		if group := quotaGroup(family.group, bucket); group != nil {
+			response.Groups = append(response.Groups, *group)
+		}
 		// total 必须一并输出：页面的「剩余/总额 + 使用率」要它才能算比例。
 		// 上游对 Free 计划可能给 total=0（额度按剩余量计），此时仍输出 0——
 		// 页面会显示 "—"，比编一个数诚实。
 		response.Summary = append(response.Summary,
-			reverse.QuotaMetric{Key: "user_quota_remaining", Label: "套餐剩余额度", Value: quota.UserQuota.Remaining, Unit: "credits"},
-			reverse.QuotaMetric{Key: "user_quota_total", Label: "套餐总额度", Value: quota.UserQuota.Total, Unit: "credits"},
-			reverse.QuotaMetric{Key: "user_quota_used", Label: "套餐已用额度", Value: quota.UserQuota.Used, Unit: "credits"})
-	}
-	if quota.AddonQuota != nil {
-		response.Summary = append(response.Summary,
-			reverse.QuotaMetric{Key: "addon_quota_remaining", Label: "拓展包剩余额度", Value: quota.AddonQuota.Remaining, Unit: "credits"},
-			reverse.QuotaMetric{Key: "addon_quota_total", Label: "拓展包总额度", Value: quota.AddonQuota.Total, Unit: "credits"},
-			reverse.QuotaMetric{Key: "addon_quota_used", Label: "拓展包已用额度", Value: quota.AddonQuota.Used, Unit: "credits"})
-	}
-	if quota.Shared != nil {
-		response.Summary = append(response.Summary,
-			reverse.QuotaMetric{Key: "shared_quota_remaining", Label: "共享资源包剩余额度", Value: quota.Shared.Remaining, Unit: "credits"},
-			reverse.QuotaMetric{Key: "shared_quota_total", Label: "共享资源包总额度", Value: quota.Shared.Total, Unit: "credits"},
-			reverse.QuotaMetric{Key: "shared_quota_used", Label: "共享资源包已用额度", Value: quota.Shared.Used, Unit: "credits"})
+			reverse.QuotaMetric{Key: family.prefix + "_remaining", Label: family.label + "剩余额度", Value: bucket.Remaining, Unit: "credits"},
+			reverse.QuotaMetric{Key: family.prefix + "_total", Label: family.label + "总额度", Value: bucket.Total, Unit: "credits"},
+			reverse.QuotaMetric{Key: family.prefix + "_used", Label: family.label + "已用额度", Value: bucket.Used, Unit: "credits"})
 	}
 	if quota.IsQuotaExceeded {
 		response.Summary = append(response.Summary,
@@ -158,6 +159,60 @@ func BuildQuotaResponse(quota *Quota) reverse.QuotaFetchResponse {
 			reverse.QuotaMetric{Key: "expires_at", Label: "额度到期时间", Value: float64(expiresAt), Format: "number", Unit: "unix"})
 	}
 	return response
+}
+
+// quotaFamily is one quota bucket together with its Summary key prefix and
+// display names.
+type quotaFamily struct {
+	prefix string
+	label  string
+	group  string
+	bucket *QuotaBucket
+}
+
+// orderedQuotaFamilies orders the buckets by "who still has quota".
+//
+// The account list shows the first family in Summary as the headline number,
+// and "has capacity" includes "total>0, remaining==0" (quota legitimately used
+// up). Qoder produces that state:
+//
+//	team account   plan 3000/3000 exhausted → add-on package expired
+//	               (total=3000, remaining=0) → shared package 2000/3000
+//	Free plan      plan 0/0 (upstream really says 0) → add-on 50/200
+//
+// A fixed order leaves the headline stuck on an exhausted bucket ("0 / 3000")
+// while the account can still use 2000. So rank in three tiers: has remaining →
+// has a total → everything else, keeping the natural
+// plan → add-on → shared-package order within a tier.
+func orderedQuotaFamilies(quota *Quota) []quotaFamily {
+	all := []quotaFamily{
+		{prefix: "user_quota", label: "套餐", group: "套餐额度", bucket: quota.UserQuota},
+		{prefix: "addon_quota", label: "个人拓展包", group: "个人拓展包", bucket: quota.AddonQuota},
+		{prefix: "shared_quota", label: "共享资源包", group: "共享资源包", bucket: quota.Shared},
+	}
+	ordered := make([]quotaFamily, 0, len(all))
+	taken := make([]bool, len(all))
+	appendMatching := func(keep func(quotaFamily) bool) {
+		for index, family := range all {
+			if taken[index] || family.bucket == nil || !keep(family) {
+				continue
+			}
+			taken[index] = true
+			ordered = append(ordered, family)
+		}
+	}
+	appendMatching(func(family quotaFamily) bool { return family.bucket.Remaining > 0 })
+	appendMatching(func(family quotaFamily) bool { return family.bucket.Total > 0 })
+	appendMatching(func(quotaFamily) bool { return true })
+	return ordered
+}
+
+// quotaBucketHasData reports whether a bucket carries any real number.
+func quotaBucketHasData(bucket *QuotaBucket) bool {
+	if bucket == nil {
+		return false
+	}
+	return bucket.Total != 0 || bucket.Remaining != 0 || bucket.Used != 0
 }
 
 // quotaGroup 把额度桶转成「剩余比例」分组。

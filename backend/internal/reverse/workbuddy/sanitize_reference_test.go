@@ -55,3 +55,51 @@ func TestSanitizeMessagesCoversToolArguments(t *testing.T) {
 		t.Fatal("tool_call arguments must be sanitized even when content is null")
 	}
 }
+
+func TestSanitizeRewritesDeepSeekHarnessFingerprint(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	// The DSH kernel sentence triggers upstream 11128 when passed verbatim.
+	const text = "You are an AI agent powered by DeepSeek Harness."
+	got := sanitizeText(text, rules, regexes)
+	if got == text {
+		t.Fatal("DeepSeek Harness fingerprint must be rewritten")
+	}
+	if strings.Contains(got, "DeepSeek Harness") {
+		t.Fatalf("rewritten text still carries the literal fingerprint: %q", got)
+	}
+}
+
+func TestSanitizeStripsZeroWidthCharactersInsideFingerprint(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	// Some DSH builds insert U+200B between the words, which defeats a plain
+	// string replace on the literal.
+	const text = "You are an AI agent powered by DeepSeek​ Harness."
+	got := sanitizeText(text, rules, regexes)
+	if strings.Contains(got, "​") {
+		t.Fatalf("zero-width characters must be stripped once a fingerprint matches: %q", got)
+	}
+	if strings.Contains(got, "DeepSeek Harness") {
+		t.Fatalf("rewritten text still carries the literal fingerprint: %q", got)
+	}
+}
+
+func TestSanitizeKeepsLineStructure(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	// Stripping regexes end in \s*, so an over-broad pattern would swallow the
+	// newline and collapse the system prompt into a single line.
+	const text = "You are Claude Code\nx-anthropic-billing-header: abc;\nsecond line\nthird line"
+	got := sanitizeText(text, rules, regexes)
+	if strings.Count(got, "\n") != strings.Count(text, "\n") {
+		t.Fatalf("sanitize must not change the line count: %q", got)
+	}
+}
+
+func TestSanitizeLeavesPlainTextUntouched(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	// No fingerprint hit means no character-level rewrite at all, even when the
+	// text carries zero-width characters.
+	const text = "ordinary user message with a zero width​ space"
+	if got := sanitizeText(text, rules, regexes); got != text {
+		t.Fatalf("plain text must pass through unchanged: %q", got)
+	}
+}

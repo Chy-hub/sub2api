@@ -580,3 +580,41 @@ func mustJSON(t *testing.T, value any) string {
 	}
 	return string(encoded)
 }
+
+// TestCampaignAchievementGateSkipsBlockedCampaign locks the checkin selection:
+// a claimable-but-achievement-locked campaign must not be taken as the current
+// round. Doing so masks an already-claimed daily campaign in the same list and
+// turns "already claimed today" into a bogus failure.
+func TestCampaignAchievementGateSkipsBlockedCampaign(t *testing.T) {
+	locked := &campaign{
+		CampaignID:             "growth",
+		ActionType:             "CLAIM_BENEFIT",
+		ClaimStatus:            "CLAIMABLE",
+		RequiredAchievementKey: "first_chat",
+		AchievementCompleted:   false,
+	}
+	unlocked := &campaign{
+		CampaignID:             "later",
+		ActionType:             "CLAIM_BENEFIT",
+		ClaimStatus:            "CLAIMABLE",
+		RequiredAchievementKey: "first_chat",
+		AchievementCompleted:   true,
+	}
+
+	if !campaignAchievementBlocked(locked) {
+		t.Fatal("an unfinished achievement must gate the campaign")
+	}
+	if campaignAchievementBlocked(unlocked) {
+		t.Fatal("a completed achievement must not gate the campaign")
+	}
+	if campaignAchievementBlocked(nil) {
+		t.Fatal("nil campaign must not report blocked")
+	}
+	if campaignAchievementBlocked(&campaign{ClaimStatus: "CLAIMED", RequiredAchievementKey: "first_chat"}) {
+		t.Fatal("an already claimed campaign must not report blocked")
+	}
+
+	if got := achievementBlockedMessage(locked); !strings.Contains(got, "first_chat") {
+		t.Fatalf("blocked message must name the achievement: %q", got)
+	}
+}
