@@ -88,6 +88,82 @@ type Model struct {
 	CanDisableThinking bool     `json:"can_disable_thinking,omitempty"`
 }
 
+// SkippedModel is an upstream catalog entry that did not become a Model.
+//
+// The parser used to drop these silently: a model the official client shows but
+// the gateway hides left no trace anywhere, so "upstream never sent it" and
+// "we threw it away" were indistinguishable. Every dropped entry now carries
+// the reason and the raw key.
+type SkippedModel struct {
+	// Key is the raw upstream key, when one could be read.
+	Key string `json:"key,omitempty"`
+	// DisplayName is the raw upstream display name, when present.
+	DisplayName string `json:"display_name,omitempty"`
+	// Reason is a stable code: "disabled" (enable=false), "missing_key"
+	// (no key and no usable name), "duplicate" (same canonical ID as an
+	// earlier entry), or "other_category" (lives in a category the provider
+	// did not select).
+	Reason string `json:"reason"`
+	// Category is the upstream list the entry came from.
+	Category string `json:"category,omitempty"`
+}
+
+// Skipped-model reason codes.
+const (
+	SkipReasonDisabled      = "disabled"
+	SkipReasonMissingKey    = "missing_key"
+	SkipReasonDuplicate     = "duplicate"
+	SkipReasonOtherCategory = "other_category"
+)
+
+// Model-resolution sources, reported when mapping a request's model name to an
+// upstream key.
+const (
+	// ModelSourceCatalog means the name matched the account's own catalogue.
+	ModelSourceCatalog = "catalog"
+	// ModelSourceFamily means a family alias matched (claude-sonnet-4-6 -> gmodel).
+	ModelSourceFamily = "family"
+	// ModelSourceDefault means the request carried no model name.
+	ModelSourceDefault = "default"
+	// ModelSourcePassthrough means nothing matched and the name is forwarded
+	// verbatim. Upstreams commonly answer such requests with a default model
+	// instead of an error, so this is the state that makes a hallucinated model
+	// name look like a working one.
+	ModelSourcePassthrough = "passthrough"
+)
+
+// ModelCatalog is a provider's model listing together with the evidence needed
+// to explain it.
+//
+// Providers parse wildly different upstream shapes and drop entries along the
+// way (disabled flags, empty keys, duplicate IDs, unused category lists). The
+// bare []Model that preceded this type made every one of those drops invisible,
+// which is precisely the question an operator asks first when a model appears
+// in the vendor's own client but not through the gateway.
+type ModelCatalog struct {
+	Models []Model `json:"models"`
+	// Categories reports how many raw entries each upstream category held, so
+	// "assistant=12 developer=3" is answerable without a debugger.
+	Categories map[string]int `json:"categories,omitempty"`
+	// SelectedCategories lists the categories the provider actually parsed, in
+	// the order it tried them.
+	SelectedCategories []string `json:"selected_categories,omitempty"`
+	// Skipped lists dropped entries and why.
+	Skipped []SkippedModel `json:"skipped,omitempty"`
+	// Resolution maps public model aliases to the upstream key, mirroring the
+	// routing table used to translate a request.
+	Resolution map[string]string `json:"resolution,omitempty"`
+}
+
+// IDs returns the catalog's model IDs.
+func (c ModelCatalog) IDs() []string {
+	ids := make([]string, 0, len(c.Models))
+	for _, model := range c.Models {
+		ids = append(ids, model.ID)
+	}
+	return ids
+}
+
 // CheckinResult is the outcome of a daily check-in.
 type CheckinResult struct {
 	Success bool           `json:"success"`
@@ -144,6 +220,18 @@ type Provider interface {
 type LoginProvider interface {
 	StartLogin(ctx context.Context, region string) (*LoginStart, error)
 	PollLogin(ctx context.Context, state any) (*LoginPollResult, error)
+}
+
+// ModelCatalogProvider is implemented by providers that can explain their
+// model listing: which upstream categories existed, which were parsed, and
+// exactly which entries were dropped and why.
+//
+// It is a separate, optional interface so that providers which cannot produce
+// this evidence (and test fixtures) keep implementing Provider unchanged. Code
+// that needs diagnostics should type-assert; code that just needs the list
+// should keep calling ListModels.
+type ModelCatalogProvider interface {
+	ListModelCatalog(ctx context.Context, acc *Account) (*ModelCatalog, error)
 }
 
 // UpstreamError is an upstream HTTP failure that should be surfaced to the

@@ -30,8 +30,20 @@ type bridgeEntry struct {
 type modelEntry struct {
 	models      []reverse.Model
 	resolution  map[string]string
+	diagnostics *reverse.ModelCatalog
 	fingerprint string
 	fetchedAt   time.Time
+}
+
+// catalog returns the entry as a diagnostic catalogue.
+func (e *modelEntry) catalog() *reverse.ModelCatalog {
+	if e == nil {
+		return nil
+	}
+	if e.diagnostics != nil {
+		return e.diagnostics
+	}
+	return &reverse.ModelCatalog{Models: e.models, Resolution: e.resolution}
 }
 
 // Provider implements reverse.Provider and reverse.LoginProvider for Qoder.
@@ -267,11 +279,24 @@ func (p *Provider) openChatStream(ctx context.Context, acc *reverse.Account, br 
 // ListModels fetches the upstream model catalog with a cosy-signed GET and
 // caches it for ten minutes.
 func (p *Provider) ListModels(ctx context.Context, acc *reverse.Account) ([]reverse.Model, error) {
+	catalog, err := p.ListModelCatalog(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.Models, nil
+}
+
+// ListModelCatalog returns the catalogue together with the parsing evidence.
+//
+// This is what makes "the vendor client lists a model the gateway does not"
+// answerable: Categories/SelectedCategories show which upstream arrays existed,
+// and Skipped shows every entry that was dropped with a reason code.
+func (p *Provider) ListModelCatalog(ctx context.Context, acc *reverse.Account) (*reverse.ModelCatalog, error) {
 	if acc == nil {
 		return nil, reverse.NewUpstreamError(http.StatusBadRequest, "missing_account", "qoder account is nil")
 	}
 	if cached := p.cachedModels(acc); cached != nil {
-		return cached.models, nil
+		return cached.catalog(), nil
 	}
 	br, err := p.bridgeFor(ctx, acc)
 	if err != nil {
@@ -283,19 +308,23 @@ func (p *Provider) ListModels(ctx context.Context, acc *reverse.Account) ([]reve
 		p.invalidateOnAuthError(acc.ID, err)
 		return nil, err
 	}
-	models, resolution := parseModels(response)
-	if len(models) == 0 {
+	catalog, err := parseModels(response)
+	if err != nil {
+		return nil, err
+	}
+	if len(catalog.Models) == 0 {
 		return nil, reverse.NewUpstreamError(http.StatusBadGateway, "empty_model_list", "qoder returned an empty model list")
 	}
 	p.mu.Lock()
 	p.models[acc.ID] = &modelEntry{
-		models:      models,
-		resolution:  resolution,
+		models:      catalog.Models,
+		resolution:  catalog.Resolution,
+		diagnostics: catalog,
 		fingerprint: credentialFingerprint(acc),
 		fetchedAt:   time.Now(),
 	}
 	p.mu.Unlock()
-	return models, nil
+	return catalog, nil
 }
 
 func (p *Provider) cachedModels(acc *reverse.Account) *modelEntry {
@@ -311,40 +340,92 @@ func (p *Provider) cachedModels(acc *reverse.Account) *modelEntry {
 	return entry
 }
 
-func parseModels(response map[string]any) ([]reverse.Model, map[string]string) {
-	for _, category := range []string{"assistant", "developer", "chat"} {
-		items, _ := response[category].([]any)
-		models, resolution := extractModels(items)
-		if len(models) > 0 {
-			return models, resolution
-		}
+// modelListCategories is the upstream category list, in preference order.
+//
+// The upstream splits its catalogue across several top-level arrays. The first
+// non-empty one used to be the only one read, which silently hid every model
+// that only appeared in a later category — the exact failure that makes "the
+// vendor client shows it, the gateway does not" unexplainable after the fact.
+var modelListCategories = []string{"assistant", "developer", "chat"}
+
+// parseModels reads the upstream catalogue and records what it dropped.
+func parseModels(response map[string]any) (*reverse.ModelCatalog, error) {
+	catalog := &reverse.ModelCatalog{
+		Categories: make(map[string]int, len(modelListCategories)),
+		Resolution: map[string]string{},
 	}
-	return nil, map[string]string{}
+	for _, category := range modelListCategories {
+		items, _ := response[category].([]any)
+		catalog.Categories[category] = len(items)
+	}
+
+	// Read every category, not just the first non-empty one, so a model that
+	// only lives in a later list is still reachable. Entries already produced
+	// by an earlier category win; the rest are reported as duplicates.
+	selected := make([]string, 0, len(modelListCategories))
+	for _, category := range modelListCategories {
+		items, _ := response[category].([]any)
+		if len(items) == 0 {
+			continue
+		}
+		models, resolution, skipped := extractModels(items, category)
+		if len(models) == 0 && len(skipped) == 0 {
+			continue
+		}
+		selected = append(selected, category)
+		for _, model := range models {
+			if _, exists := catalog.Resolution[model.ID]; exists {
+				catalog.Skipped = append(catalog.Skipped, reverse.SkippedModel{
+					Key: model.ID, DisplayName: model.DisplayName,
+					Reason: reverse.SkipReasonDuplicate, Category: category,
+				})
+				continue
+			}
+			catalog.Models = append(catalog.Models, model)
+		}
+		for alias, key := range resolution {
+			if _, exists := catalog.Resolution[alias]; !exists {
+				catalog.Resolution[alias] = key
+			}
+		}
+		catalog.Skipped = append(catalog.Skipped, skipped...)
+	}
+	catalog.SelectedCategories = selected
+	return catalog, nil
 }
 
-func extractModels(items []any) ([]reverse.Model, map[string]string) {
+// extractModels converts one upstream category into models plus the entries it
+// dropped. A dropped entry is never silent: each one carries a reason code.
+func extractModels(items []any, category string) ([]reverse.Model, map[string]string, []reverse.SkippedModel) {
 	models := make([]reverse.Model, 0, len(items))
 	resolution := make(map[string]string, len(items)*2)
+	skipped := make([]reverse.SkippedModel, 0)
+	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
-			continue
-		}
-		if enabled, ok := entry["enable"].(bool); ok && !enabled {
+			skipped = append(skipped, reverse.SkippedModel{Reason: reverse.SkipReasonMissingKey, Category: category})
 			continue
 		}
 		key := stringValue(entry["key"])
-		if key == "" {
+		name := stringValue(entry["display_name"])
+		if enabled, ok := entry["enable"].(bool); ok && !enabled {
+			skipped = append(skipped, reverse.SkippedModel{Key: key, DisplayName: name, Reason: reverse.SkipReasonDisabled, Category: category})
 			continue
 		}
-		name := stringValue(entry["display_name"])
+		if key == "" {
+			skipped = append(skipped, reverse.SkippedModel{Key: key, DisplayName: name, Reason: reverse.SkipReasonMissingKey, Category: category})
+			continue
+		}
 		if name == "" {
 			name = key
 		}
 		id := canonicalModelID(name, key)
-		if _, duplicate := resolution[id]; duplicate {
+		if _, duplicate := seen[id]; duplicate {
+			skipped = append(skipped, reverse.SkippedModel{Key: key, DisplayName: name, Reason: reverse.SkipReasonDuplicate, Category: category})
 			continue
 		}
+		seen[id] = struct{}{}
 		contextLength := int64(intValue(entry["context_window"]))
 		if configs, ok := entry["context_config"].(map[string]any); ok {
 			keys := make([]string, 0, len(configs))
@@ -389,7 +470,7 @@ func extractModels(items []any) ([]reverse.Model, map[string]string) {
 			}
 		}
 	}
-	return models, resolution
+	return models, resolution, skipped
 }
 
 // canonicalModelID slugifies a display name the way the plugin's model index
@@ -414,19 +495,33 @@ var defaultModelMapping = map[string]string{
 }
 
 func (p *Provider) resolveModel(acc *reverse.Account, model string) string {
+	key, _ := p.resolveModelWithSource(acc, model)
+	return key
+}
+
+// resolveModelWithSource resolves a public model name to the upstream key and
+// reports how the match was made.
+//
+// The source matters because the upstream does not reject unknown model names:
+// it silently answers with a default model. A request for a model that does not
+// exist therefore looks identical to a successful one, which makes the account
+// "test" endpoint unable to distinguish a real model from a typo. Callers that
+// need that distinction (the test endpoint, diagnostics) read the source
+// instead of guessing.
+func (p *Provider) resolveModelWithSource(acc *reverse.Account, model string) (key string, source string) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return "auto"
+		return "auto", reverse.ModelSourceDefault
 	}
 	if cache := p.cachedModels(acc); cache != nil {
 		if key, ok := cache.resolution[strings.ToLower(model)]; ok {
-			return key
+			return key, reverse.ModelSourceCatalog
 		}
 	}
 	if mapped := lookupDefaultModel(model); mapped != "" {
-		return mapped
+		return mapped, reverse.ModelSourceFamily
 	}
-	return strings.ToLower(model)
+	return strings.ToLower(model), reverse.ModelSourcePassthrough
 }
 
 func lookupDefaultModel(model string) string {
@@ -463,12 +558,28 @@ func (p *Provider) Refresh(ctx context.Context, acc *reverse.Account) (map[strin
 }
 
 // Test sends a short non-stream prompt through the normal Forward path.
+//
+// The upstream answers unknown model names with a default model instead of an
+// error, so a typo used to look like a successful test. Resolution is checked
+// first: a name that matches neither the account's catalogue nor a family alias
+// is reported as such rather than silently passing.
 func (p *Provider) Test(ctx context.Context, acc *reverse.Account, model, prompt string) (*reverse.TestResult, error) {
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "hi"
 	}
 	if strings.TrimSpace(model) == "" {
 		model = "auto"
+	}
+	// Reject names the account cannot serve before spending an upstream call:
+	// a passthrough name is answered with a default model upstream, which would
+	// otherwise be reported as a successful test.
+	if _, errCatalog := p.ListModelCatalog(ctx, acc); errCatalog == nil {
+		if key, source := p.resolveModelWithSource(acc, model); source == reverse.ModelSourcePassthrough {
+			return nil, reverse.NewUpstreamError(http.StatusBadRequest, "model_not_in_catalog",
+				fmt.Sprintf("model %q is not in this account's catalogue (upstream would answer with a default model instead)", model))
+		} else if source == reverse.ModelSourceCatalog {
+			model = key
+		}
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model": model,

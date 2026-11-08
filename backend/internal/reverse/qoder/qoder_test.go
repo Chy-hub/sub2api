@@ -271,7 +271,11 @@ func TestDecodeJSONResponseCustomBase64(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeJSONResponse: %v", err)
 	}
-	models, resolution := parseModels(parsed)
+	catalog, err := parseModels(parsed)
+	if err != nil {
+		t.Fatalf("parseModels: %v", err)
+	}
+	models, resolution := catalog.Models, catalog.Resolution
 	if len(models) != 1 || models[0].ID != "deepseek-v4-pro" || models[0].DisplayName != "DeepSeek-V4-Pro" {
 		t.Fatalf("models = %#v", models)
 	}
