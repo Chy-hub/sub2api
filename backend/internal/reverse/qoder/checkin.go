@@ -171,10 +171,18 @@ func campaignsCheckin(ctx context.Context, client *http.Client, r region, bearer
 	campaigns := parseCampaigns(list["campaigns"])
 	now := time.Now().In(campaignZone)
 
-	var current, past *campaign
+	var current, past, blocked *campaign
 	for index := range campaigns {
 		item := &campaigns[index]
 		if item.ActionType != "CLAIM_BENEFIT" {
+			continue
+		}
+		// 成就未完成的 CLAIMABLE 活动**不能**被当成当前轮去领取：上游会拒绝，
+		// 而同一列表里今天已领的每日活动会被它覆盖，导致后续轮次误报失败。
+		if campaignAchievementBlocked(item) {
+			if blocked == nil {
+				blocked = item
+			}
 			continue
 		}
 		if item.StartAt <= 0 {
@@ -229,7 +237,35 @@ func campaignsCheckin(ctx context.Context, client *http.Client, r region, bearer
 		}
 		return checkinFailureWithDate(checkinWindowMissed, fmt.Sprintf("上一轮领取窗口（%s）已结束且未领取，官方不补领", windowDate), windowDate)
 	}
+	if blocked != nil {
+		// 有活动，但都被成就门槛挡住：给出「先完成哪个成就」，而不是「无活动」。
+		return checkinFailureWithDate(checkinNoCampaign, achievementBlockedMessage(blocked), campaignWindowDate(blocked))
+	}
 	return checkinFailure(checkinNoCampaign, noCampaignMessage(r, identity))
+}
+
+// campaignAchievementBlocked reports whether a campaign is claimable but gated
+// behind an unfinished achievement.
+//
+// Such campaigns still show up as CLAIMABLE, but claiming is rejected upstream;
+// picking one as the current round masks an already-claimed daily campaign in
+// the same list and turns "already claimed today" into a bogus failure.
+func campaignAchievementBlocked(item *campaign) bool {
+	if item == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(item.ClaimStatus), "CLAIMED") {
+		return false
+	}
+	return strings.TrimSpace(item.RequiredAchievementKey) != "" && !item.AchievementCompleted
+}
+
+// achievementBlockedMessage names the achievement to complete first.
+func achievementBlockedMessage(item *campaign) string {
+	if key := strings.TrimSpace(item.RequiredAchievementKey); key != "" {
+		return fmt.Sprintf("需先完成成就 %s 才能领取", key)
+	}
+	return "需先完成指定成就才能领取"
 }
 
 func windowNotOpenResult(windowDate string) *reverse.CheckinResult {

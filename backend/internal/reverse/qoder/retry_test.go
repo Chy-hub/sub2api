@@ -150,10 +150,13 @@ func TestQuotaNormalizesFreePlanAndAddonBuckets(t *testing.T) {
 	result, err := New().(*Provider).Quota(context.Background(), &reverse.Account{ID: 1, Region: "global", Credentials: map[string]any{"access_token": "dt-test-access"}})
 	require.NoError(t, err)
 	require.Equal(t, "Free", result.Subscription.Plan)
-	require.Len(t, result.Groups, 2)
-	require.Len(t, result.Summary, 6)
-	require.Equal(t, 0.0, result.Groups[0].Buckets[0].RemainingFraction)
-	require.InDelta(t, 10.0/11.0, result.Groups[1].Buckets[0].RemainingFraction, 0.0001)
+	// 0/0 的套餐桶是噪音，不再占一整排 chip；带余额的拓展包排到第一。
+	require.Len(t, result.Groups, 1)
+	require.Equal(t, "个人拓展包", result.Groups[0].DisplayName)
+	require.Len(t, result.Summary, 3)
+	require.InDelta(t, 10.0/11.0, result.Groups[0].Buckets[0].RemainingFraction, 0.0001)
+	require.Equal(t, "addon_quota_remaining", result.Summary[0].Key)
+	require.Equal(t, 10.0, result.Summary[0].Value)
 }
 
 // TestQuotaReadsSharedResourcePackage 覆盖团队账号：套餐席位用尽（3000/3000）
@@ -183,10 +186,15 @@ func TestQuotaReadsSharedResourcePackage(t *testing.T) {
 	endpointsCN.plan = server.URL + "/plan"
 	result, err := New().(*Provider).Quota(context.Background(), &reverse.Account{ID: 1, Region: "cn", Credentials: map[string]any{"access_token": "dt-test-access"}})
 	require.NoError(t, err)
+	// 席位已用尽（剩余的 0），共享资源包还有余额：页头必须取后者，
+	// 否则账号表永远停在「0 / 3000」，而账号其实还能用 2000。
 	require.Len(t, result.Groups, 2)
-	require.Equal(t, "共享资源包", result.Groups[1].DisplayName)
-	require.InDelta(t, 1.0, result.Groups[1].Buckets[0].RemainingFraction, 0.0001)
-	require.Contains(t, result.Groups[1].Buckets[0].Description, "已用 0 / 总计 2000，剩余 2000")
+	require.Equal(t, "共享资源包", result.Groups[0].DisplayName)
+	require.Equal(t, "套餐额度", result.Groups[1].DisplayName)
+	require.InDelta(t, 1.0, result.Groups[0].Buckets[0].RemainingFraction, 0.0001)
+	require.Contains(t, result.Groups[0].Buckets[0].Description, "已用 0 / 总计 2000，剩余 2000")
+	require.Equal(t, "shared_quota_remaining", result.Summary[0].Key)
+	require.Equal(t, 2000.0, result.Summary[0].Value)
 	metrics := map[string]float64{}
 	for _, metric := range result.Summary {
 		metrics[metric.Key] = metric.Value
@@ -274,4 +282,39 @@ func TestCheckinAuthenticationFailureCanReachGatewayRefresh(t *testing.T) {
 	require.False(t, result.Success)
 	require.NotContains(t, err.Error(), "dt-expired")
 	require.Equal(t, 1, calls, "authentication failure must not trigger extra statistics requests")
+}
+
+// TestQuotaKeepsOneBucketWhenEverythingIsExhausted 覆盖额度真用光的账号：
+// 全 0 的桶平时是噪音会被过滤，但一个都不剩时页面只会显示「暂无额度数据」，
+// 看不出「已经用完」，所以必须保留第一个。
+func TestQuotaKeepsOneBucketWhenEverythingIsExhausted(t *testing.T) {
+	result := BuildQuotaResponse(&Quota{
+		UserQuota:  &QuotaBucket{Used: 3000, Total: 3000},
+		AddonQuota: &QuotaBucket{},
+	})
+
+	require.Len(t, result.Groups, 1)
+	require.Equal(t, "套餐额度", result.Groups[0].DisplayName)
+	require.Equal(t, "user_quota_remaining", result.Summary[0].Key)
+	require.Equal(t, 0.0, result.Summary[0].Value)
+}
+
+// TestQuotaSummaryAndGroupsShareOrder 锁住两条路径同序：页头数字取 Summary 里
+// 第一个有容量的族，两者各排各的就会出现「页头 2000/3000、第一条却 0/3000」。
+func TestQuotaSummaryAndGroupsShareOrder(t *testing.T) {
+	result := BuildQuotaResponse(&Quota{
+		UserQuota:  &QuotaBucket{Used: 3000, Total: 3000},
+		AddonQuota: &QuotaBucket{Used: 3000, Total: 3000},
+		Shared:     &QuotaBucket{Remaining: 2000, Total: 3000, Used: 1000},
+	})
+
+	require.Len(t, result.Groups, 3)
+	require.Equal(t, []string{"shared_quota", "user_quota", "addon_quota"}, []string{
+		strings.TrimSuffix(result.Summary[0].Key, "_remaining"),
+		strings.TrimSuffix(result.Summary[3].Key, "_remaining"),
+		strings.TrimSuffix(result.Summary[6].Key, "_remaining"),
+	})
+	require.Equal(t, "共享资源包", result.Groups[0].DisplayName)
+	require.Equal(t, "套餐额度", result.Groups[1].DisplayName)
+	require.Equal(t, "个人拓展包", result.Groups[2].DisplayName)
 }

@@ -44,7 +44,7 @@ const (
 // 403 code=11140 "request illegal".
 const (
 	clientVersion = "5.8.3"
-	cliVersion    = "2.161.0"
+	cliVersion    = "2.179.0"
 	clientName    = "WorkBuddy"
 
 	codeBuddyIDEUA = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
