@@ -392,29 +392,70 @@ func (g *ReverseGateway) Checkin(ctx context.Context, account *Account) (*revers
 
 // ListModels returns the upstream model catalog and caches it in extra.
 func (g *ReverseGateway) ListModels(ctx context.Context, account *Account) ([]reverse.Model, error) {
+	catalog, err := g.ModelCatalog(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.Models, nil
+}
+
+// ModelCatalog returns the upstream model catalog together with the parsing
+// evidence (which upstream categories existed, which were read, which entries
+// were dropped and why).
+//
+// Providers that cannot produce that evidence fall back to their plain listing,
+// so the diagnostics are additive rather than a new requirement.
+func (g *ReverseGateway) ModelCatalog(ctx context.Context, account *Account) (*reverse.ModelCatalog, error) {
 	provider, acc, err := g.providerFor(account)
 	if err != nil {
 		return nil, err
+	}
+	catalog, err := ReverseModelCatalog(ctx, provider, acc)
+	if err != nil {
+		return nil, err
+	}
+	g.persistModelCatalog(ctx, account, catalog)
+	return catalog, nil
+}
+
+// ReverseModelCatalog prefers a provider's diagnostic listing and falls back to
+// its plain listing wrapped in a catalog.
+func ReverseModelCatalog(ctx context.Context, provider reverse.Provider, acc *reverse.Account) (*reverse.ModelCatalog, error) {
+	if diagnostic, ok := provider.(reverse.ModelCatalogProvider); ok {
+		return diagnostic.ListModelCatalog(ctx, acc)
 	}
 	models, err := provider.ListModels(ctx, acc)
 	if err != nil {
 		return nil, err
 	}
-	if g.accountRepo != nil && account.ID > 0 {
-		ids := make([]string, 0, len(models))
-		for _, model := range models {
-			ids = append(ids, model.ID)
-		}
-		snapshot := map[string]any{
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-			"models":     ids,
-			"catalog":    models,
-		}
-		if err := g.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{ReverseModelCatalogExtraKey: snapshot}); err != nil {
-			logger.LegacyPrintf("service.reverse", "reverse model catalog update failed: account=%d err=%v", account.ID, err)
-		}
+	return &reverse.ModelCatalog{Models: models}, nil
+}
+
+// persistModelCatalog stores the model snapshot on the account.
+//
+// The skipped list is part of the snapshot: when a model is missing, the stored
+// record answers "was it dropped, and why" without re-running the fetch.
+func (g *ReverseGateway) persistModelCatalog(ctx context.Context, account *Account, catalog *reverse.ModelCatalog) {
+	if g.accountRepo == nil || account.ID <= 0 || catalog == nil {
+		return
 	}
-	return models, nil
+	snapshot := map[string]any{
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"models":     catalog.IDs(),
+		"catalog":    catalog.Models,
+	}
+	if len(catalog.Categories) > 0 {
+		snapshot["categories"] = catalog.Categories
+	}
+	if len(catalog.SelectedCategories) > 0 {
+		snapshot["selected_categories"] = catalog.SelectedCategories
+	}
+	if len(catalog.Skipped) > 0 {
+		snapshot["skipped"] = catalog.Skipped
+	}
+	if err := g.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{ReverseModelCatalogExtraKey: snapshot}); err != nil {
+		logger.LegacyPrintf("service.reverse", "reverse model catalog update failed: account=%d err=%v", account.ID, err)
+	}
 }
 
 // Test performs a short non-stream request.

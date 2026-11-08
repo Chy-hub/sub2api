@@ -249,12 +249,14 @@ func TestQoderResponsesPreserveCacheAndReasoningTokenDetails(t *testing.T) {
 }
 
 func TestModelCatalogReadsNestedContextAndDefaultOutputLimits(t *testing.T) {
-	var catalog map[string]any
+	var raw map[string]any
 	require.NoError(t, json.Unmarshal([]byte(`{"assistant":[
 		{"key":"qmodel","display_name":"Reasoner","enable":true,"is_reasoning":true,"price_factor":0,"context_config":{"small":{"token_count":32000},"large":{"token_count":200000,"is_default":true}}},
 		{"key":"gmodel","display_name":"Chat","enable":true,"max_input_tokens":64000}
-	]}`), &catalog))
-	models, _ := parseModels(catalog)
+	]}`), &raw))
+	catalog, err := parseModels(raw)
+	require.NoError(t, err)
+	models := catalog.Models
 	require.Len(t, models, 2)
 	require.EqualValues(t, 200000, models[0].ContextLength)
 	require.EqualValues(t, 32768, models[0].MaxOutputTokens)
@@ -317,4 +319,91 @@ func TestQuotaSummaryAndGroupsShareOrder(t *testing.T) {
 	require.Equal(t, "共享资源包", result.Groups[0].DisplayName)
 	require.Equal(t, "套餐额度", result.Groups[1].DisplayName)
 	require.Equal(t, "个人拓展包", result.Groups[2].DisplayName)
+}
+
+// TestModelCatalogReadsEveryCategory locks the fix for models hidden by the
+// old "first non-empty category wins" rule: a model that only exists in a
+// later upstream category must still reach the caller.
+func TestModelCatalogReadsEveryCategory(t *testing.T) {
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"assistant":[{"key":"amodel","display_name":"Alpha","enable":true}],
+		"developer":[{"key":"qoduck","display_name":"QoDuck","enable":true}],
+		"chat":[{"key":"cmodel","display_name":"Gamma","enable":true}]
+	}`), &raw))
+
+	catalog, err := parseModels(raw)
+	require.NoError(t, err)
+
+	ids := catalog.IDs()
+	require.ElementsMatch(t, []string{"alpha", "qoduck", "gamma"}, ids)
+	require.ElementsMatch(t, []string{"assistant", "developer", "chat"}, catalog.SelectedCategories)
+	require.Equal(t, map[string]int{"assistant": 1, "developer": 1, "chat": 1}, catalog.Categories)
+	// Every parsed model is reachable by its public name.
+	require.Equal(t, "qoduck", catalog.Resolution["qoduck"])
+}
+
+// TestModelCatalogReportsDroppedEntries locks that dropped catalogue entries are
+// never silent: an operator asking "why is this model missing" gets a reason.
+func TestModelCatalogReportsDroppedEntries(t *testing.T) {
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"assistant":[
+		{"key":"good","display_name":"Good","enable":true},
+		{"key":"off","display_name":"Disabled","enable":false},
+		{"display_name":"NoKey","enable":true},
+		{"key":"good","display_name":"Good","enable":true}
+	]}`), &raw))
+
+	catalog, err := parseModels(raw)
+	require.NoError(t, err)
+	require.Equal(t, []string{"good"}, catalog.IDs())
+
+	reasons := map[string]string{}
+	for _, skipped := range catalog.Skipped {
+		reasons[skipped.Key] = skipped.Reason
+	}
+	require.Equal(t, reverse.SkipReasonDisabled, reasons["off"])
+	require.Equal(t, reverse.SkipReasonMissingKey, reasons[""])
+	require.Equal(t, reverse.SkipReasonDuplicate, reasons["good"])
+}
+
+// TestModelCatalogDeduplicatesAcrossCategories locks that reading every
+// category does not duplicate a model listed twice, and that the duplicate is
+// reported rather than silently merged.
+func TestModelCatalogDeduplicatesAcrossCategories(t *testing.T) {
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"assistant":[{"key":"amodel","display_name":"Alpha","enable":true}],
+		"developer":[{"key":"amodel","display_name":"Alpha","enable":true}]
+	}`), &raw))
+
+	catalog, err := parseModels(raw)
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha"}, catalog.IDs())
+	require.Len(t, catalog.Skipped, 1)
+	require.Equal(t, reverse.SkipReasonDuplicate, catalog.Skipped[0].Reason)
+}
+
+// TestResolveModelReportsPassthrough locks the signal that distinguishes a real
+// model from a typo. The upstream answers unknown names with a default model,
+// so passthrough is the only observable difference.
+func TestResolveModelReportsPassthrough(t *testing.T) {
+	provider := New().(*Provider)
+	acc := &reverse.Account{ID: 7, Region: "global", Credentials: map[string]any{}}
+	provider.models[acc.ID] = &modelEntry{
+		models:      []reverse.Model{{ID: "qoduck"}},
+		resolution:  map[string]string{"qoduck": "qoduck_key"},
+		fingerprint: credentialFingerprint(acc),
+		fetchedAt:   time.Now(),
+	}
+
+	if key, source := provider.resolveModelWithSource(acc, "qoduck"); key != "qoduck_key" || source != reverse.ModelSourceCatalog {
+		t.Fatalf("catalog hit = (%q, %q)", key, source)
+	}
+	if _, source := provider.resolveModelWithSource(acc, "claude-sonnet-4-6"); source != reverse.ModelSourceFamily {
+		t.Fatalf("family alias source = %q", source)
+	}
+	if _, source := provider.resolveModelWithSource(acc, "zzz-not-a-real-model"); source != reverse.ModelSourcePassthrough {
+		t.Fatalf("unknown model source = %q", source)
+	}
 }

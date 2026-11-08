@@ -126,6 +126,7 @@ type Provider struct {
 
 type cachedCatalog struct {
 	models    []reverse.Model
+	skipped   []reverse.SkippedModel
 	fetchedAt time.Time
 	lastFail  time.Time
 }

@@ -99,3 +99,24 @@ func (h *AccountHandler) RunReverseTask(c *gin.Context) {
 	}
 	response.Success(c, result)
 }
+
+// ReverseModelCatalog returns the account's upstream model catalogue together
+// with the parsing evidence: which upstream categories existed, which were
+// read, and every entry that was dropped with a reason code.
+//
+// It answers the question the plain model listing cannot: when a model is
+// visible in the vendor's own client but absent from the gateway, this endpoint
+// shows whether the upstream sent it and the parser dropped it, or whether it
+// never arrived at all.
+func (h *AccountHandler) ReverseModelCatalog(c *gin.Context) {
+	account, ok := h.reverseOperationAccount(c)
+	if !ok {
+		return
+	}
+	catalog, err := h.reverseGateway.ModelCatalog(c.Request.Context(), account)
+	if err != nil {
+		response.Error(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	response.Success(c, catalog)
+}
