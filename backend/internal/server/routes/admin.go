@@ -408,6 +408,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/refresh", h.Admin.Account.Refresh)
 		accounts.POST("/:id/checkin", h.Admin.Account.Checkin)
 		accounts.GET("/:id/reverse/quota", h.Admin.Account.ReverseQuota)
+		accounts.GET("/:id/reverse/models", h.Admin.Account.ReverseModelCatalog)
 		accounts.GET("/:id/reverse/tasks", h.Admin.Account.ReverseTasks)
 		accounts.POST("/:id/reverse/tasks", h.Admin.Account.RunReverseTask)
 		accounts.POST("/:id/apply-oauth-credentials", h.Admin.Account.ApplyOAuthCredentials)

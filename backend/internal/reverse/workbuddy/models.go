@@ -127,8 +127,29 @@ type enterpriseModelsResponse struct {
 // A failed probe falls back to the last successful catalog, then to the
 // embedded seed.
 func (p *Provider) ListModels(ctx context.Context, acc *reverse.Account) ([]reverse.Model, error) {
+	catalog, err := p.ListModelCatalog(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.Models, nil
+}
+
+// ListModelCatalog implements reverse.ModelCatalogProvider: the listing plus
+// the evidence of what the probes returned and which entries were dropped.
+//
+// WorkBuddy has no category split; the drops come from disabled entries and
+// from non-chat assets that share the same catalogue.
+func (p *Provider) ListModelCatalog(ctx context.Context, acc *reverse.Account) (*reverse.ModelCatalog, error) {
+	models, skipped, err := p.listModelsWithEvidence(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return &reverse.ModelCatalog{Models: models, Skipped: skipped}, nil
+}
+
+func (p *Provider) listModelsWithEvidence(ctx context.Context, acc *reverse.Account) ([]reverse.Model, []reverse.SkippedModel, error) {
 	if acc == nil {
-		return nil, errors.New("workbuddy: account is required")
+		return nil, nil, errors.New("workbuddy: account is required")
 	}
 	cred := newCredential(acc)
 	key := catalogKey(acc)
@@ -146,34 +167,34 @@ func (p *Provider) ListModels(ctx context.Context, acc *reverse.Account) ([]reve
 	p.mu.Unlock()
 	if hasEntry && len(entry.models) > 0 {
 		if time.Since(entry.fetchedAt) < modelCacheTTL || time.Since(entry.lastFail) < modelCacheFailWindow {
-			return entry.models, nil
+			return entry.models, entry.skipped, nil
 		}
 	}
 
-	models, efforts, errFetch := p.fetchCatalog(ctx, acc, cred)
+	models, efforts, skipped, errFetch := p.fetchCatalog(ctx, acc, cred)
 	if errFetch != nil {
 		if hasEntry && len(entry.models) > 0 {
 			p.mu.Lock()
 			entry.lastFail = time.Now()
 			p.catalogs[key] = entry
 			p.mu.Unlock()
-			return entry.models, nil
+			return entry.models, entry.skipped, nil
 		}
 		if seed := seedModels(cred.region); len(seed) > 0 {
 			p.mu.Lock()
 			p.catalogs[key] = cachedCatalog{models: seed, lastFail: time.Now()}
 			p.mu.Unlock()
 			p.publishEfforts(key, seedEfforts(cred.region))
-			return seed, nil
+			return seed, nil, nil
 		}
-		return nil, errFetch
+		return nil, nil, errFetch
 	}
 
 	p.mu.Lock()
-	p.catalogs[key] = cachedCatalog{models: models, fetchedAt: time.Now()}
+	p.catalogs[key] = cachedCatalog{models: models, skipped: skipped, fetchedAt: time.Now()}
 	p.mu.Unlock()
 	p.publishEfforts(key, efforts)
-	return models, nil
+	return models, skipped, nil
 }
 
 func catalogKey(acc *reverse.Account) string {
@@ -197,7 +218,7 @@ func (p *Provider) publishEfforts(key string, efforts map[string]modelEfforts) {
 
 // fetchCatalog probes /v3/config and the enterprise catalog, merging unique
 // models with /v3/config winning field precedence.
-func (p *Provider) fetchCatalog(ctx context.Context, acc *reverse.Account, cred *credential) ([]reverse.Model, map[string]modelEfforts, error) {
+func (p *Provider) fetchCatalog(ctx context.Context, acc *reverse.Account, cred *credential) ([]reverse.Model, map[string]modelEfforts, []reverse.SkippedModel, error) {
 	callCtx, cancel := withTimeout(ctx, shortCallTimeout)
 	defer cancel()
 	client := p.client(acc)
@@ -228,12 +249,26 @@ func (p *Provider) fetchCatalog(ctx context.Context, acc *reverse.Account, cred 
 
 	merged := make([]reverse.Model, 0, len(primaryEntries)+len(enterpriseEntries))
 	efforts := map[string]modelEfforts{}
+	skipped := make([]reverse.SkippedModel, 0)
 	seen := map[string]bool{}
 
-	appendEntries := func(entries []dynModelEntry) {
+	// Drops are recorded rather than skipped silently: the catalogue merges a
+	// primary and an enterprise probe and filters disabled and non-chat assets,
+	// so "the vendor shows a model the gateway does not" needs the reason.
+	appendEntries := func(entries []dynModelEntry, category string) {
 		for _, entry := range entries {
 			id := entry.resolvedID()
 			if id == "" || entry.Disabled || nonChatModel(entry) {
+				reason := reverse.SkipReasonMissingKey
+				switch {
+				case entry.Disabled:
+					reason = reverse.SkipReasonDisabled
+				case id != "":
+					reason = "non_chat"
+				}
+				skipped = append(skipped, reverse.SkippedModel{
+					Key: id, DisplayName: entry.displayName(), Reason: reason, Category: category,
+				})
 				continue
 			}
 			if capability := entry.efforts(); len(capability.supported) > 0 {
@@ -271,19 +306,19 @@ func (p *Provider) fetchCatalog(ctx context.Context, acc *reverse.Account, cred 
 			merged = append(merged, reverse.Model{ID: id, DisplayName: entry.displayName(), Description: entry.Description, ContextLength: contextLength, MaxOutputTokens: entry.MaxOutputTokens, Efforts: capability.supported, DefaultEffort: capability.fallback, Credits: entry.Credits, SupportsImages: entry.SupportsImages, SupportsTools: entry.SupportsTool, SupportsReasoning: entry.SupportsReason || entry.OnlyReasoning, CanDisableThinking: !entry.OnlyReasoning})
 		}
 	}
-	appendEntries(primaryEntries)
-	appendEntries(enterpriseEntries)
+	appendEntries(primaryEntries, "primary")
+	appendEntries(enterpriseEntries, "enterprise")
 
 	if len(merged) == 0 {
 		switch {
 		case errPrimary != nil && errEnterprise != nil:
-			return nil, nil, fmt.Errorf("workbuddy model probe: %v; %v", errPrimary, errEnterprise)
+			return nil, nil, nil, fmt.Errorf("workbuddy model probe: %v; %v", errPrimary, errEnterprise)
 		case errPrimary != nil:
-			return nil, nil, fmt.Errorf("workbuddy model probe: %w", errPrimary)
+			return nil, nil, nil, fmt.Errorf("workbuddy model probe: %w", errPrimary)
 		case errEnterprise != nil:
-			return nil, nil, fmt.Errorf("workbuddy model probe: %w", errEnterprise)
+			return nil, nil, nil, fmt.Errorf("workbuddy model probe: %w", errEnterprise)
 		default:
-			return nil, nil, errors.New("workbuddy: model probe returned no models")
+			return nil, nil, nil, errors.New("workbuddy: model probe returned no models")
 		}
 	}
 
@@ -309,7 +344,7 @@ func (p *Provider) fetchCatalog(ctx context.Context, acc *reverse.Account, cred 
 			model.SupportsReasoning = model.SupportsReasoning || hasReasoningEffort(capability.supported)
 		}
 	}
-	return merged, efforts, nil
+	return merged, efforts, skipped, nil
 }
 
 // probeV3Config fetches the IDE model catalog.
