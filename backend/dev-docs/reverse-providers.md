@@ -1,6 +1,12 @@
 # Qoder / WorkBuddy 内置反代
 
-参考实现：`../CLIProxyAPI-freetier2api-plugin`，移植时源码版本为 `e90609d`。
+参考实现：`../CLIProxyAPI-freetier2api-plugin`（<https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin>），
+首次移植的源码版本为 `e90609d`。
+
+原地址 `jiandanc/CLIProxyAPI-freetier2api-plugin` 已随作者账号从 GitHub 消失（账号与仓库均 404）。
+当前维护方 `cxy2730` 自 v0.1.29 起接手，该仓库与旧仓库同源、完整历史保留（`e90609d`、`f128066`
+等移植点在历史中均可查），插件 ID 仍为 `freetier`。
+
 协议适配位于 `internal/reverse/`，保留来源的 MIT 许可与说明。
 
 ## 接入与账号参数
