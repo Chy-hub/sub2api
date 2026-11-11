@@ -4,8 +4,8 @@
 // The protocol layer (cosy session crypto, request signing, custom base64,
 // agent chat envelope, SSE deltas, machine identity, device login, campaigns)
 // is ported from the MIT-licensed CLIProxyAPI-freetier2api-plugin
-// (internal/vendors/qoder). The adapter/config/host plumbing of the plugin is
-// intentionally not copied.
+// (github.com/cxy2730/CLIProxyAPI-freetier2api-plugin, internal/vendors/qoder).
+// The adapter/config/host plumbing of the plugin is intentionally not copied.
 package qoder
 
 import (
