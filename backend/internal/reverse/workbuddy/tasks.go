@@ -1555,25 +1555,39 @@ func runGrowthTask(ctx context.Context, client *Client, credential *Credential, 
 	return message + "；" + errGrowthPending.Error(), 0, 0, errGrowthPending
 }
 
+// waitGrowthClaimable polls until the just-completed task becomes claimable.
+//
+// Query first, sleep only between attempts: in the common case the task is
+// already claimable by the time the action returns, and sleeping unconditionally
+// first cost 3–9 seconds per task — tens of seconds across a full run of the
+// task family.
+//
+// A nil task is not a terminal state. The upstream list is eventually
+// consistent, so a task that was just completed may not have surfaced yet;
+// giving up there throws away the work and the reward. Only exhausting the
+// attempts counts as failure, and an already-claimed task is terminal (there is
+// nothing left to claim).
 func waitGrowthClaimable(ctx context.Context, client *Client, credential *Credential, code string) bool {
 	mp := IsMPTaskCode(code)
 	attempts := 4
 	if mp {
 		attempts = 2
 	}
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
+		task, errTask := findGrowthTask(ctx, client, credential, code)
+		if errTask == nil {
+			if task != nil && task.Claimed {
+				return false
+			}
+			if task != nil && (task.Claimable() || task.Done()) {
+				return true
+			}
+		}
+		if attempt == attempts {
+			break
+		}
 		if !reverse.SleepContext(ctx, 3*time.Second) {
 			return false
-		}
-		task, errTask := findGrowthTask(ctx, client, credential, code)
-		if errTask != nil {
-			continue
-		}
-		if task == nil || task.Claimed {
-			return false
-		}
-		if task.Claimable() || task.Done() {
-			return true
 		}
 	}
 	return false
