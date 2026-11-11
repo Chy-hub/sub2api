@@ -21,6 +21,10 @@ import (
 type reverseFixtureProvider struct {
 	forward      func(context.Context, *reverse.Account, []byte, bool) (*http.Response, error)
 	checkin      *reverse.CheckinResult
+	// checkinErrs is consumed one entry per Checkin call; a nil entry means
+	// success. This lets a test express "fails twice, then succeeds".
+	checkinErrs  []error
+	checkinCalls int
 	models       []reverse.Model
 	testModel    string
 	run          func(context.Context, *reverse.Account, string) (reverse.TaskRunResult, error)
@@ -39,6 +43,14 @@ func (p *reverseFixtureProvider) ListModels(context.Context, *reverse.Account) (
 	return []reverse.Model{{ID: "test-model"}}, nil
 }
 func (p *reverseFixtureProvider) Checkin(context.Context, *reverse.Account) (*reverse.CheckinResult, error) {
+	p.checkinCalls++
+	if len(p.checkinErrs) > 0 {
+		err := p.checkinErrs[0]
+		p.checkinErrs = p.checkinErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	return p.checkin, nil
 }
 func (p *reverseFixtureProvider) Refresh(context.Context, *reverse.Account) (map[string]any, error) {
@@ -222,6 +234,73 @@ func TestReverseRefreshPreservesMachineParametersAndAvoidsStaleRotation(t *testi
 	require.NoError(t, g.refreshAccount(context.Background(), &snapshot))
 	require.Equal(t, 1, p.refreshCalls)
 	require.Equal(t, "new-refresh", repo.account.GetCredential("refresh_token"))
+}
+
+// TestReverseCheckinRetriesTransientUpstreamFailures locks why the retry exists:
+// check-in happens once a day, so a single 429 loses the reward until the next
+// scheduled slot. Upstream check-in is idempotent, so replaying is safe.
+func TestReverseCheckinRetriesTransientUpstreamFailures(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		wantCalls   int
+		wantSuccess bool
+	}{
+		{name: "429 once then success", status: http.StatusTooManyRequests, wantCalls: 2, wantSuccess: true},
+		{name: "503 then success", status: http.StatusServiceUnavailable, wantCalls: 2, wantSuccess: true},
+		// A content/parameter rejection is deterministic: asking again cannot
+		// change the answer.
+		{name: "400 is not retried", status: http.StatusBadRequest, wantCalls: 1, wantSuccess: false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			g, p, a, _ := newReverseFixture()
+			p.checkin = &reverse.CheckinResult{Success: true}
+			p.checkinErrs = []error{
+				&reverse.UpstreamError{StatusCode: testCase.status, Code: "throttled", Message: "slow down"},
+			}
+			_, state, err := g.Checkin(context.Background(), a)
+			if testCase.wantSuccess {
+				require.NoError(t, err)
+				require.Equal(t, "success", state["status"])
+			} else {
+				// The failure still surfaces to the caller; retrying was only
+				// ever about giving a transient answer a second chance.
+				require.Error(t, err)
+				require.Equal(t, "failed", state["status"])
+			}
+			require.Equal(t, testCase.wantCalls, p.checkinCalls)
+		})
+	}
+}
+
+// TestReverseCheckinRetryDoesNotDuplicateTheCredentialRefresh locks that a 401
+// is not swallowed by the retry loop: it must reach the caller's refresh path,
+// which is the only thing that can fix it. The refresh then re-runs the check-in
+// once, so two calls here is the refresh path working, not the retry firing.
+func TestReverseCheckinRetryDoesNotDuplicateTheCredentialRefresh(t *testing.T) {
+	g, p, a, _ := newReverseFixture()
+	p.checkin = &reverse.CheckinResult{Success: true}
+	p.checkinErrs = []error{
+		&reverse.UpstreamError{StatusCode: http.StatusUnauthorized, Code: "unauthorized", Message: "expired"},
+	}
+	_, state, err := g.Checkin(context.Background(), a)
+	require.NoError(t, err)
+	require.Equal(t, "success", state["status"])
+	require.Equal(t, 2, p.checkinCalls, "one call, then one after the refresh")
+	require.Equal(t, 1, p.refreshCalls)
+}
+
+// TestReverseCheckinStopsAfterTheAttemptBudget locks that a persistently busy
+// upstream does not loop forever.
+func TestReverseCheckinStopsAfterTheAttemptBudget(t *testing.T) {
+	g, p, a, _ := newReverseFixture()
+	busy := &reverse.UpstreamError{StatusCode: http.StatusTooManyRequests, Code: "throttled", Message: "slow down"}
+	p.checkinErrs = []error{busy, busy, busy, busy, busy}
+	_, state, err := g.Checkin(context.Background(), a)
+	require.Error(t, err)
+	require.Equal(t, reverseCheckinAttempts, p.checkinCalls)
+	require.Equal(t, "failed", state["status"])
 }
 
 func TestReverseTaskPartialFailurePersistsAndSerializesOperations(t *testing.T) {
