@@ -168,6 +168,84 @@ func TestDailyBonusBeaconCarriesTheFullChatRequestSendFieldSet(t *testing.T) {
 	}
 }
 
+// TestWaitGrowthClaimableQueriesBeforeSleeping locks the scheduling detail that
+// dominated the wall-clock cost of a full task run: the task is usually
+// claimable the moment the action returns, and sleeping first added 3–9 seconds
+// per task for nothing.
+//
+// It also locks the opposite mistake: a nil task must not be treated as "no
+// reward", because the upstream list is eventually consistent and a task that
+// was just completed may not appear yet.
+func TestWaitGrowthClaimableQueriesBeforeSleeping(t *testing.T) {
+	t.Run("already claimable: one list call, no sleep", func(t *testing.T) {
+		var calls int
+		p := localProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != growthTasksPath {
+				_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+				return
+			}
+			calls++
+			_, _ = io.WriteString(w, `{"tasks":[{"task_code":"alpha","current":5,"target":5}]}`)
+		})
+		acc := &reverse.Account{Region: "cn", Credentials: map[string]any{"uid": "u1"}}
+		adapter := p.tasks(acc)
+		native, errNative := adapter.Native(acc)
+
+		start := time.Now()
+		got := waitGrowthClaimable(context.Background(), adapter.client(context.Background()), native, "alpha")
+		require.NoError(t, errNative)
+		require.True(t, got)
+		require.Equal(t, 1, calls, "a claimable task must be detected on the first query")
+		require.Less(t, time.Since(start), time.Second, "no sleep should happen when the first query succeeds")
+	})
+
+	t.Run("task not listed yet: keeps polling instead of giving up", func(t *testing.T) {
+		var calls int
+		p := localProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != growthTasksPath {
+				_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+				return
+			}
+			calls++
+			// The task only surfaces on the second query, mirroring upstream's
+			// eventual consistency right after an action completes.
+			if calls < 2 {
+				_, _ = io.WriteString(w, `{"tasks":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"tasks":[{"task_code":"alpha","current":3,"target":3}]}`)
+		})
+		acc := &reverse.Account{Region: "cn", Credentials: map[string]any{"uid": "u1"}}
+		adapter := p.tasks(acc)
+		native, errNative := adapter.Native(acc)
+
+		got := waitGrowthClaimable(context.Background(), adapter.client(context.Background()), native, "alpha")
+		require.NoError(t, errNative)
+		require.True(t, got, "a task that appears on retry must still be claimed")
+		require.Equal(t, 2, calls)
+	})
+
+	t.Run("already claimed: terminal, no further polling", func(t *testing.T) {
+		var calls int
+		p := localProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != growthTasksPath {
+				_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+				return
+			}
+			calls++
+			_, _ = io.WriteString(w, `{"tasks":[{"task_code":"alpha","current":5,"target":5,"claimed":true}]}`)
+		})
+		acc := &reverse.Account{Region: "cn", Credentials: map[string]any{"uid": "u1"}}
+		adapter := p.tasks(acc)
+		native, errNative := adapter.Native(acc)
+
+		got := waitGrowthClaimable(context.Background(), adapter.client(context.Background()), native, "alpha")
+		require.NoError(t, errNative)
+		require.False(t, got)
+		require.Equal(t, 1, calls)
+	})
+}
+
 func TestInNightWindow(t *testing.T) {
 	cases := []struct {
 		hour int
