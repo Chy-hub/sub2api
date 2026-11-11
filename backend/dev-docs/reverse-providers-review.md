@@ -1,6 +1,8 @@
 # Qoder / WorkBuddy 移植审查
 
-日期：2026-10-29。对照来源：`../CLIProxyAPI-freetier2api-plugin`（`e90609d`）。
+日期：2026-10-29。对照来源：`../CLIProxyAPI-freetier2api-plugin`（`e90609d`），
+该仓库现由 `cxy2730` 维护（<https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin>），
+原 `jiandanc` 地址已 404；仓库内完整历史保留，`e90609d` 仍可查。
 
 本轮覆盖协议转发、流式错误和用量、模型目录、账号参数、登录票据、凭据脱敏、
 签到、全部 WorkBuddy 任务族、排程及管理页面。下表中的问题均已修复，并增加回归覆盖。
