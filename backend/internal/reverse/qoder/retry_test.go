@@ -338,13 +338,21 @@ func TestModelCatalogReadsEveryCategory(t *testing.T) {
 	ids := catalog.IDs()
 	require.ElementsMatch(t, []string{"alpha", "qoduck", "gamma"}, ids)
 	require.ElementsMatch(t, []string{"assistant", "developer", "chat"}, catalog.SelectedCategories)
-	require.Equal(t, map[string]int{"assistant": 1, "developer": 1, "chat": 1}, catalog.Categories)
+	// Every configured category is counted, present or not, so an operator can
+	// tell "the upstream sent no app models" from "we never looked".
+	require.Equal(t, 1, catalog.Categories["assistant"])
+	require.Equal(t, 1, catalog.Categories["developer"])
+	require.Equal(t, 1, catalog.Categories["chat"])
+	require.Equal(t, 0, catalog.Categories["app"])
 	// Every parsed model is reachable by its public name.
 	require.Equal(t, "qoduck", catalog.Resolution["qoduck"])
 }
 
 // TestModelCatalogReportsDroppedEntries locks that dropped catalogue entries are
 // never silent: an operator asking "why is this model missing" gets a reason.
+//
+// enable=false is not a drop reason in the primary categories: those models are
+// still listed and still callable, so they stay in the catalogue.
 func TestModelCatalogReportsDroppedEntries(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal([]byte(`{"assistant":[
@@ -356,20 +364,66 @@ func TestModelCatalogReportsDroppedEntries(t *testing.T) {
 
 	catalog, err := parseModels(raw)
 	require.NoError(t, err)
-	require.Equal(t, []string{"good"}, catalog.IDs())
+	// The disabled entry stays: only duplicates and keyless entries are dropped.
+	require.ElementsMatch(t, []string{"good", "disabled"}, catalog.IDs())
 
 	reasons := map[string]string{}
 	for _, skipped := range catalog.Skipped {
 		reasons[skipped.Key] = skipped.Reason
 	}
-	require.Equal(t, reverse.SkipReasonDisabled, reasons["off"])
 	require.Equal(t, reverse.SkipReasonMissingKey, reasons[""])
 	require.Equal(t, reverse.SkipReasonDuplicate, reasons["good"])
+	require.NotContains(t, reasons, "off")
+}
+
+// TestModelCatalogIncludesEnabledSecondaryModels locks the fix for models that
+// exist only in a product-line projection: QoDuck (key=lmodel) is listed under
+// "app" and nowhere else, so a catalogue built from the primary categories only
+// could never route to it even though the vendor client offers it.
+//
+// It also locks the other half of the rule: the secondary lists carry
+// scenario-only keys marked enable=false (quest-auto, nap-auto, …) which must
+// not leak into the catalogue.
+func TestModelCatalogIncludesEnabledSecondaryModels(t *testing.T) {
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"assistant":[{"key":"gmodel","display_name":"General","enable":false}],
+		"app":[
+			{"key":"lmodel","display_name":"QoDuck","enable":true,"price_factor":0},
+			{"key":"quest-auto","display_name":"Quest Auto","enable":false}
+		],
+		"qwork":[{"key":"qwork-ultimate","display_name":"QWork Ultimate","enable":false}],
+		"nap":[{"key":"nmodel","display_name":"Nap Model","enable":true}]
+	}`), &raw))
+
+	catalog, err := parseModels(raw)
+	require.NoError(t, err)
+
+	// gmodel survives despite enable=false: the primary categories are read in
+	// full. lmodel/nmodel come in from the secondary ones.
+	require.ElementsMatch(t, []string{"general", "qoduck", "nap-model"}, catalog.IDs())
+	require.ElementsMatch(t, []string{"assistant", "app", "qwork", "nap"}, catalog.SelectedCategories)
+
+	// The catalogue can route to QoDuck by its public name.
+	require.Equal(t, "lmodel", catalog.Resolution["qoduck"])
+
+	// Scenario-only keys are reported, not silently dropped, and explain why
+	// they are absent: they belong to a projection the provider does not serve.
+	reasons := map[string]string{}
+	for _, skipped := range catalog.Skipped {
+		reasons[skipped.Key] = skipped.Reason
+	}
+	require.Equal(t, reverse.SkipReasonOtherCategory, reasons["quest-auto"])
+	require.Equal(t, reverse.SkipReasonOtherCategory, reasons["qwork-ultimate"])
+	require.NotContains(t, reasons, "lmodel")
 }
 
 // TestModelCatalogDeduplicatesAcrossCategories locks that reading every
 // category does not duplicate a model listed twice, and that the duplicate is
 // reported rather than silently merged.
+//
+// The primary projection wins: when a key appears in both, the primary entry is
+// the one kept and the secondary occurrence reported as a duplicate.
 func TestModelCatalogDeduplicatesAcrossCategories(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal([]byte(`{
