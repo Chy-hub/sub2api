@@ -31,6 +31,15 @@ const (
 	// The stream is still bounded so an idle upstream cannot pin a connection
 	// forever; callers additionally cancel it when the client disconnects.
 	reverseStreamTimeout = 60 * time.Minute
+
+	// Check-in is one request per account per day, so a single throttled
+	// response losing the day's reward is a bad trade. Retry the same kinds of
+	// upstream failure that mean "try again shortly"; the attempts are safe
+	// because check-in is idempotent upstream (an already-claimed answer is a
+	// success, not a second reward).
+	reverseCheckinAttempts   = 3
+	reverseCheckinRetryDelay = time.Second
+	reverseCheckinRetryCap   = 2 * time.Hour
 )
 
 type reverseLoginSession struct {
@@ -330,6 +339,58 @@ func mergeReverseCredentials(existing, incoming map[string]any) map[string]any {
 	return out
 }
 
+// checkinWithRetry runs one check-in, retrying the failures that mean "the
+// upstream is busy, ask again shortly".
+//
+// Without this a single 429 on the one check-in call of the day lost that day's
+// reward outright: the next attempt only happened at the following scheduled
+// slot, if one was still ahead. Upstream check-in is idempotent — an
+// already-claimed day answers success — so replaying is safe; what must not be
+// retried is a credential problem, which the caller handles by refreshing once.
+func (g *ReverseGateway) checkinWithRetry(ctx context.Context, provider reverse.Provider, acc *reverse.Account) (*reverse.CheckinResult, error) {
+	var result *reverse.CheckinResult
+	var err error
+	for attempt := 1; attempt <= reverseCheckinAttempts; attempt++ {
+		result, err = provider.Checkin(ctx, acc)
+		if !isRetryableCheckinError(err) || attempt == reverseCheckinAttempts {
+			return result, err
+		}
+		wait := reverseCheckinRetryDelay << (attempt - 1)
+		var upstream *reverse.UpstreamError
+		if errors.As(err, &upstream) && upstream.RetryAfter > 0 {
+			wait = upstream.RetryAfter
+			if wait > reverseCheckinRetryCap {
+				wait = reverseCheckinRetryCap
+			}
+		}
+		if !reverse.SleepContext(ctx, wait) {
+			return result, err
+		}
+	}
+	return result, err
+}
+
+// isRetryableCheckinError reports whether a check-in failure is worth replaying.
+//
+// Only upstream-side busy answers qualify: a transport failure or 5xx may have
+// been processed before it failed, and retrying a 401/403 just burns attempts
+// on something a retry cannot fix.
+func isRetryableCheckinError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var upstream *reverse.UpstreamError
+	if !errors.As(err, &upstream) {
+		return false
+	}
+	switch upstream.StatusCode {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 // Checkin performs a daily check-in and records the result in extra.
 func (g *ReverseGateway) Checkin(ctx context.Context, account *Account) (*reverse.CheckinResult, map[string]any, error) {
 	unlock, err := g.lockOperation(ctx, account.ID)
@@ -341,12 +402,12 @@ func (g *ReverseGateway) Checkin(ctx context.Context, account *Account) (*revers
 	if err != nil {
 		return nil, nil, err
 	}
-	result, checkinErr := provider.Checkin(ctx, acc)
+	result, checkinErr := g.checkinWithRetry(ctx, provider, acc)
 	var upstream *reverse.UpstreamError
 	if errors.As(checkinErr, &upstream) && upstream.StatusCode == http.StatusUnauthorized && g.refreshAccount(ctx, account) == nil {
 		provider, acc, err = g.providerFor(account)
 		if err == nil {
-			result, checkinErr = provider.Checkin(ctx, acc)
+			result, checkinErr = g.checkinWithRetry(ctx, provider, acc)
 		}
 	}
 	state := map[string]any{
