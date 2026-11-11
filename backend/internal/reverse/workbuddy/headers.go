@@ -52,15 +52,15 @@ func applyAuthHeaders(req *http.Request, cred *credential) {
 
 // applyChatHeaders writes the chat request matrix.
 //
-// The genuine CLI path deliberately omits Origin/Referer/Accept-Language and
-// the device fingerprint headers (X-Device-Token/X-Machine-ID/X-Session-ID);
-// the common headers add them, so they are removed here explicitly.
+// The browser-context headers (Origin/Referer/Accept-Language) are kept here:
+// the global client sends them on chat, and dropping them was one of the
+// differences that made the upstream answer 11128. Only the device-derived
+// identifiers are removed — those belong to the billing and feedback paths.
 func applyChatHeaders(req *http.Request, cred *credential, meta chatMeta) {
 	applyCommonHeaders(req, cred)
 	applyAuthHeaders(req, cred)
 
 	for _, key := range []string{
-		"Origin", "Referer", "Accept-Language",
 		"X-Device-Token", "X-Machine-ID", "X-Session-ID",
 	} {
 		req.Header.Del(key)
@@ -69,7 +69,6 @@ func applyChatHeaders(req *http.Request, cred *credential, meta chatMeta) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
 	if cred.region.isGlobal() {
-		req.Header.Set("X-No-Enterprise-Id", "1")
 		req.Header.Set("X-Domain", endpointHost(endpointsFor(regionGlobal).chatBase))
 	} else {
 		if cred.enterpriseID != "" {
@@ -81,31 +80,44 @@ func applyChatHeaders(req *http.Request, cred *credential, meta chatMeta) {
 		req.Header.Set("X-Domain", endpointHost(endpointsFor(cred.region).chatBase))
 	}
 
-	applyAttributionHeaders(req)
+	applyAttributionHeaders(req, cred.region)
 	req.Header.Set("X-IDE-Name", firstNonEmpty(cred.clientName, clientName))
 	req.Header.Set("X-IDE-Type", firstNonEmpty(cred.clientName, clientName))
-	req.Header.Set("X-IDE-Version", firstNonEmpty(cred.clientVersion, clientVersion))
+	req.Header.Set("X-IDE-Version", cred.clientVersion)
 	applyConversationHeaders(req, meta)
 }
 
 // applyAttributionHeaders writes the client-attribution family the genuine
 // client always sends.
-func applyAttributionHeaders(req *http.Request) {
+//
+// X-Private-Data differs by deployment: the global client reports true, the CN
+// one false. X-IDE-Version follows the region's client version.
+func applyAttributionHeaders(req *http.Request, reg region) {
+	ep := endpointsFor(reg)
 	req.Header.Set("X-Agent-Intent", "craft")
 	req.Header.Set("X-Agent-Purpose", "conversation")
 	req.Header.Set("X-Agent-Type", "main")
 	req.Header.Set("X-IDE-Name", clientName)
 	req.Header.Set("X-IDE-Type", clientName)
-	req.Header.Set("X-IDE-Version", clientVersion)
-	req.Header.Set("X-Private-Data", "false")
+	req.Header.Set("X-IDE-Version", ep.clientVersion)
+	if reg.isGlobal() {
+		req.Header.Set("X-Private-Data", "true")
+	} else {
+		req.Header.Set("X-Private-Data", "false")
+	}
 	req.Header.Set("X-Product", "SaaS")
 }
 
 // applyConversationHeaders writes the conversation and trace families.
 //
-// The apparent redundancy (several headers share one value) is intentional:
-// the upstream aggregates requests by these IDs and splits a conversation when
-// any of them is missing or inconsistent.
+// The upstream aggregates requests by these IDs and splits a conversation when
+// any of them is missing or inconsistent; a missing conversation family is also
+// one of the inputs to the 11128 channel check. The apparent redundancy
+// (several headers share one value) is therefore intentional.
+//
+// X-Conversation-ID must be a canonical hyphenated UUID. An upstream-provided
+// value that is not one is replaced rather than forwarded, because the check
+// looks at shape, not at provenance.
 func applyConversationHeaders(req *http.Request, meta chatMeta) {
 	messageID := strings.TrimSpace(meta.messageID)
 	if messageID == "" {
@@ -115,21 +127,24 @@ func applyConversationHeaders(req *http.Request, meta chatMeta) {
 	if conversationRequestID == "" {
 		conversationRequestID = messageID
 	}
-	if conversationID := strings.TrimSpace(meta.conversationID); conversationID != "" {
-		req.Header.Set("X-Conversation-ID", conversationID)
+	conversationID := strings.TrimSpace(meta.conversationID)
+	if !isCanonicalUUID(conversationID) {
+		conversationID = newUUIDv7()
 	}
+	req.Header.Set("X-Conversation-ID", conversationID)
 	req.Header.Set("X-Conversation-Request-ID", conversationRequestID)
+	req.Header.Set("X-Root-Request-ID", conversationRequestID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 	req.Header.Set("X-Request-ID", messageID)
 
+	// The b3 single header is traceId-spanId-flags; the parent span only exists
+	// on child spans, and inventing one is itself a fingerprint mismatch.
 	traceID := randomHex(16)
 	spanID := randomHex(8)
-	parentSpanID := randomHex(8)
 	req.Header.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
-	req.Header.Set("b3", traceID+"-"+spanID+"-1-"+parentSpanID)
+	req.Header.Set("b3", traceID+"-"+spanID+"-1")
 	req.Header.Set("X-B3-TraceId", traceID)
 	req.Header.Set("X-B3-SpanId", spanID)
-	req.Header.Set("X-B3-ParentSpanId", parentSpanID)
 	req.Header.Set("X-B3-Sampled", "1")
 	req.Header.Set("X-Trace-ID", traceID)
 }
@@ -197,10 +212,14 @@ func applyLoginHeaders(req *http.Request, reg region) {
 	req.Header.Set("X-CodeBuddy-Request", "1")
 }
 
-// userAgent builds the three-segment chat UA.
+// userAgent builds the three-segment chat UA for a region.
+//
+// The version segments come from the region's endpoint table: the two
+// deployments ship different genuine clients and the upstream fingerprints the
+// UA against them.
 func userAgent(reg region) string {
-	platform := endpointsFor(reg).platformLabel
-	return "WorkBuddy/" + clientVersion + " " + platform + "/" + clientVersion + " CLI/" + cliVersion
+	ep := endpointsFor(reg)
+	return "WorkBuddy/" + ep.clientVersion + " " + ep.platformLabel + "/" + ep.clientVersion + " CLI/" + ep.cliVersion
 }
 
 // configDomain resolves X-Domain for model probes: the account domain when
