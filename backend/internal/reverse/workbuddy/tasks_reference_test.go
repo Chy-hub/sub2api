@@ -118,6 +118,56 @@ func TestTaskSpecsForGlobalRegistersDailyBonus(t *testing.T) {
 	}
 }
 
+func TestDailyBonusBeaconCarriesTheFullChatRequestSendFieldSet(t *testing.T) {
+	// The upstream validates events by type and rejects the *whole batch* with
+	// 400 "all events rejected by format validation" when one required field is
+	// missing. The daily bonus beacon once shipped only 16 of the 31 fields, so
+	// global accounts silently never earned the reward.
+	//
+	// Both builders emit the same event type, so their field sets must match.
+	// Compare the emitted payloads rather than hard-coding a list: a field added
+	// to one builder then fails here instead of quietly failing upstream.
+	cred := testCredential("global")
+	beacon := DailyBonusBeaconEvent(cred)
+
+	var captured map[string]any
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/report" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		// /v2/report takes a bare array of events.
+		var events []map[string]any
+		if errUnmarshal := json.Unmarshal(raw, &events); errUnmarshal != nil {
+			t.Errorf("decode report body: %v", errUnmarshal)
+			return
+		}
+		if captured == nil && len(events) > 0 {
+			captured = events[0]
+		}
+		_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+	}
+	p := localProvider(t, handler)
+	acc := &reverse.Account{Region: "global", Credentials: map[string]any{"uid": "u1", "access_token": "access"}}
+	adapter := p.tasks(acc)
+	native, errNative := adapter.Native(acc)
+	require.NoError(t, errNative)
+	require.NoError(t, adapter.client(context.Background()).ReportChatActivity(context.Background(), native, "conv", "req", "", ""))
+	require.NotNil(t, captured, "ReportChatActivity did not reach the upstream")
+
+	for field := range captured {
+		if _, ok := beacon[field]; !ok {
+			t.Errorf("beacon is missing field %q that ReportChatActivity sends", field)
+		}
+	}
+	for field := range beacon {
+		if _, ok := captured[field]; !ok {
+			t.Errorf("beacon sends field %q that ReportChatActivity does not", field)
+		}
+	}
+}
+
 func TestInNightWindow(t *testing.T) {
 	cases := []struct {
 		hour int
