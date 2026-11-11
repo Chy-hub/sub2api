@@ -138,6 +138,36 @@ func TestChatHeadersMatchGenuineClient(t *testing.T) {
 	}
 }
 
+// TestChatReplacesNonUUIDConversationIDs locks the trade the channel check
+// forces. conversationKey yields prompt_cache_key and derived hashes as well as
+// real UUIDs, and a non-UUID X-Conversation-ID is rejected outright, so the
+// header is regenerated instead of forwarded. The consequence is that such
+// requests lose upstream conversation grouping — accepted deliberately, and
+// worth a failing test if someone later tries to pass the raw value through.
+func TestChatReplacesNonUUIDConversationIDs(t *testing.T) {
+	cred := testCredential("cn")
+	for _, supplied := range []string{"cache-key-abc", "d-4f2a9c", ""} {
+		req := newHeaderRequest(t)
+		applyChatHeaders(req, cred, chatMeta{conversationID: supplied})
+		got := req.Header.Get("X-Conversation-ID")
+		if !isCanonicalUUID(got) {
+			t.Fatalf("X-Conversation-ID from %q = %q, want a canonical UUID", supplied, got)
+		}
+		if supplied != "" && got == supplied {
+			t.Fatalf("non-UUID %q was forwarded unchanged", supplied)
+		}
+	}
+
+	// A caller that supplies a real UUID keeps it, which is how stable grouping
+	// stays available.
+	chosen := newUUIDv7()
+	req := newHeaderRequest(t)
+	applyChatHeaders(req, cred, chatMeta{conversationID: chosen})
+	if got := req.Header.Get("X-Conversation-ID"); got != chosen {
+		t.Fatalf("valid conversation id was replaced: %q != %q", got, chosen)
+	}
+}
+
 // TestBillingHeadersCarryDeviceHeaders asserts billing/task calls keep the
 // device fingerprint set and a single-segment UA.
 func TestBillingHeadersCarryDeviceHeaders(t *testing.T) {

@@ -118,6 +118,14 @@ func applyAttributionHeaders(req *http.Request, reg region) {
 // X-Conversation-ID must be a canonical hyphenated UUID. An upstream-provided
 // value that is not one is replaced rather than forwarded, because the check
 // looks at shape, not at provenance.
+//
+// That replacement has a cost worth naming: conversationKey also yields
+// prompt_cache_key and a derived hash, neither of which is a UUID, so those
+// requests lose cross-request conversation grouping on the upstream side. The
+// reference plugin makes the same trade — it validates the same way and
+// regenerates on mismatch — and passing the shape through instead means the
+// channel check rejects the request outright. A caller that needs stable
+// grouping can send metadata.conversation_id as a UUID.
 func applyConversationHeaders(req *http.Request, meta chatMeta) {
 	messageID := strings.TrimSpace(meta.messageID)
 	if messageID == "" {
