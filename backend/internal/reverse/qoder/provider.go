@@ -340,37 +340,56 @@ func (p *Provider) cachedModels(acc *reverse.Account) *modelEntry {
 	return entry
 }
 
-// modelListCategories is the upstream category list, in preference order.
+// Primary catalogue categories, in preference order.
 //
 // The upstream splits its catalogue across several top-level arrays. The first
 // non-empty one used to be the only one read, which silently hid every model
 // that only appeared in a later category — the exact failure that makes "the
 // vendor client shows it, the gateway does not" unexplainable after the fact.
+//
+// These are the historical catalogue sources and are read in full, including
+// entries carrying enable=false: that flag is reported per model rather than
+// used as a filter. The upstream sets it on models that are still listed and
+// still callable, so filtering by it here dropped models the vendor client
+// happily shows.
 var modelListCategories = []string{"assistant", "developer", "chat"}
+
+// Secondary categories are product-line projections of the same catalogue.
+//
+// Only entries the upstream marks enable=true are taken from them. QoDuck
+// (key=lmodel) exists only in "app" and is free (price_factor=0); without this
+// pass it never reached /v1/models. In the other direction, the scenario-only
+// keys these lists also carry (quest-auto, nap-auto, qwork-ultimate, …) are
+// enable=false and would be noise in a catalogue of models a client can call.
+var modelListSecondaryCategories = []string{
+	"app", "qwork", "qwake", "inline", "quest", "experts", "nap",
+	"byok_enterprise", "byok_teams",
+}
 
 // parseModels reads the upstream catalogue and records what it dropped.
 func parseModels(response map[string]any) (*reverse.ModelCatalog, error) {
 	catalog := &reverse.ModelCatalog{
-		Categories: make(map[string]int, len(modelListCategories)),
+		Categories: make(map[string]int, len(modelListCategories)+len(modelListSecondaryCategories)),
 		Resolution: map[string]string{},
 	}
-	for _, category := range modelListCategories {
+	for _, category := range append(append([]string{}, modelListCategories...), modelListSecondaryCategories...) {
 		items, _ := response[category].([]any)
 		catalog.Categories[category] = len(items)
 	}
 
 	// Read every category, not just the first non-empty one, so a model that
 	// only lives in a later list is still reachable. Entries already produced
-	// by an earlier category win; the rest are reported as duplicates.
-	selected := make([]string, 0, len(modelListCategories))
-	for _, category := range modelListCategories {
+	// by an earlier category win; the rest are reported as duplicates. Primary
+	// categories come first so their projection wins on a shared key.
+	selected := make([]string, 0, len(modelListCategories)+len(modelListSecondaryCategories))
+	appendCategory := func(category string, onlyEnabled bool) {
 		items, _ := response[category].([]any)
 		if len(items) == 0 {
-			continue
+			return
 		}
-		models, resolution, skipped := extractModels(items, category)
+		models, resolution, skipped := extractModels(items, category, onlyEnabled)
 		if len(models) == 0 && len(skipped) == 0 {
-			continue
+			return
 		}
 		selected = append(selected, category)
 		for _, model := range models {
@@ -390,13 +409,25 @@ func parseModels(response map[string]any) (*reverse.ModelCatalog, error) {
 		}
 		catalog.Skipped = append(catalog.Skipped, skipped...)
 	}
+	for _, category := range modelListCategories {
+		appendCategory(category, false)
+	}
+	for _, category := range modelListSecondaryCategories {
+		appendCategory(category, true)
+	}
 	catalog.SelectedCategories = selected
 	return catalog, nil
 }
 
 // extractModels converts one upstream category into models plus the entries it
 // dropped. A dropped entry is never silent: each one carries a reason code.
-func extractModels(items []any, category string) ([]reverse.Model, map[string]string, []reverse.SkippedModel) {
+//
+// onlyEnabled is set for the secondary categories: they are projections of the
+// primary lists, so an entry the upstream marks disabled there is a
+// scenario-only key rather than a callable model. Those are reported as
+// other_category, not disabled — the model exists upstream, it simply belongs
+// to a list this provider does not serve from.
+func extractModels(items []any, category string, onlyEnabled bool) ([]reverse.Model, map[string]string, []reverse.SkippedModel) {
 	models := make([]reverse.Model, 0, len(items))
 	resolution := make(map[string]string, len(items)*2)
 	skipped := make([]reverse.SkippedModel, 0)
@@ -409,9 +440,11 @@ func extractModels(items []any, category string) ([]reverse.Model, map[string]st
 		}
 		key := stringValue(entry["key"])
 		name := stringValue(entry["display_name"])
-		if enabled, ok := entry["enable"].(bool); ok && !enabled {
-			skipped = append(skipped, reverse.SkippedModel{Key: key, DisplayName: name, Reason: reverse.SkipReasonDisabled, Category: category})
-			continue
+		if onlyEnabled {
+			if enabled, ok := entry["enable"].(bool); ok && !enabled {
+				skipped = append(skipped, reverse.SkippedModel{Key: key, DisplayName: name, Reason: reverse.SkipReasonOtherCategory, Category: category})
+				continue
+			}
 		}
 		if key == "" {
 			skipped = append(skipped, reverse.SkippedModel{Key: key, DisplayName: name, Reason: reverse.SkipReasonMissingKey, Category: category})
