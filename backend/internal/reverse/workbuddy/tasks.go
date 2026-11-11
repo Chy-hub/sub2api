@@ -2070,27 +2070,51 @@ func parseTaskGrowthHeatmap(data json.RawMessage) (growthHeatmapCell, []string, 
 // 字段形态镜像官方客户端的对话上报：conversationId/requestId 用一次性
 // 随机值，让每天看起来都是新会话而非重放；userId 必须带，缺失时上游
 // 返回 200 但静默丢弃事件。单测锁字段名——写错一个就是静默不计分。
+//
+// 字段集必须与 ReportChatSend 的那组逐字对齐：上游的 format validation 按
+// 事件类型校验必填字段，缺一个整批被拒（400 "all events rejected by format
+// validation"），表现为每日活跃奖励永远拿不到。这条曾因只发 16 个字段而
+// 悄悄失效——补齐时请保持与 ReportChatSend 同一份清单。
 func DailyBonusBeaconEvent(credential *Credential) map[string]any {
 	now := nowMs()
 	conversationID := "wb-daily-" + randomHexForExport(8)
 	return map[string]any{
-		"eventCode":            "chat_request_send",
-		"timestamp":            now,
-		"mode":                 "craft",
-		"conversationId":       conversationID,
-		"requestId":            conversationID,
-		"inputLength":          12,
-		"requestModelId":       "deepseek-v4-flash",
-		"requestModelName":     "DeepSeek V4 Flash",
-		"mentionContexts":      []any{},
-		"knowledgeId":          knowledgeIDEmpty,
-		"knowledgeName":        knowledgeNameEmpty,
-		"presentAt":            now,
-		"rootRequestId":        conversationID,
-		"parentConversationId": conversationID,
-		"agentName":            "default",
-		"agentType":            "conversation",
-		"userId":               credential.UIDValue(),
+		"eventCode":             "chat_request_send",
+		"timestamp":             now,
+		"reportDelay":           0,
+		"mode":                  "craft",
+		"conversationId":        conversationID,
+		"requestId":             conversationID,
+		"inputLength":           12,
+		"requestModelId":        defaultReportModelID,
+		"requestModelName":      defaultReportModelName,
+		"isPlan":                false,
+		"isAutoExecuteTerminal": false,
+		"isAutoModify":          false,
+		"codebaseEnable":        false,
+		"maxToken":              0,
+		"maxSteps":              0,
+		"temperature":           0,
+		"maxRetries":            0,
+		"mentionContexts":       []any{},
+		"knowledgeId":           knowledgeIDEmpty,
+		"knowledgeName":         knowledgeNameEmpty,
+		"codebaseId":            "",
+		"mentionContextCount":   0,
+		"command":               "",
+		"expertId":              "",
+		"recommendId":           "",
+		"skillId":               "",
+		"skillCount":            0,
+		"totalCount":            0,
+		"fileUri":               "",
+		"presentAt":             now,
+		"traceId":               conversationID,
+		"rootRequestId":         conversationID,
+		"parentConversationId":  conversationID,
+		"agentName":             "default",
+		"agentType":             "conversation",
+		"userId":                credential.UIDValue(),
 	}
 }
 
