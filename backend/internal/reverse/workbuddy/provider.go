@@ -39,9 +39,13 @@ const (
 	reportPath        = "/v2/report"
 )
 
-// Outbound identity. Versions mirror the genuine 5.8.3 client; the platform
-// segment must be "WorkBuddy AI" on the global realm or the upstream answers
-// 403 code=11140 "request illegal".
+// Outbound identity shared by both deployments.
+//
+// The versions below are the CN defaults, kept as package constants because the
+// desktop-fingerprint event families use them and those exist only on CN. The
+// chat/UA path reads the per-region values from endpointsFor instead: the two
+// deployments ship different genuine clients (CN 5.8.3 / CLI 2.179.0, Global
+// 5.8.4 / CLI 2.161.0) and the upstream fingerprints the UA against them.
 const (
 	clientVersion = "5.8.3"
 	cliVersion    = "2.179.0"
@@ -88,12 +92,19 @@ func normalizeRegion(raw string) region {
 func (r region) isGlobal() bool { return r == regionGlobal }
 
 // endpoints is the full endpoint table for one region.
+//
+// The client and CLI versions live here rather than in package constants
+// because the two deployments ship different genuine clients, and the upstream
+// fingerprints the UA against them: CN reports 5.8.3 / 2.179.0, Global 5.8.4 /
+// 2.161.0.
 type endpoints struct {
 	chatBase       string
 	billingBase    string
 	origin         string
 	acceptLanguage string
 	platformLabel  string
+	clientVersion  string
+	cliVersion     string
 }
 
 func endpointsFor(r region) endpoints {
@@ -103,15 +114,23 @@ func endpointsFor(r region) endpoints {
 			billingBase:    "https://www.workbuddy.ai",
 			origin:         "https://www.workbuddy.ai",
 			acceptLanguage: "en-US",
-			platformLabel:  "WorkBuddy AI",
+			// Lower case, and not "WorkBuddy AI": the global 5.8.4 client sends
+			// the slug form in the UA platform segment.
+			platformLabel: "workbuddy-ai",
+			clientVersion: "5.8.4",
+			cliVersion:    "2.161.0",
 		}
 	}
 	return endpoints{
-		chatBase:       "https://www.workbuddy.cn",
-		billingBase:    "https://www.codebuddy.cn",
-		origin:         "https://www.codebuddy.cn",
+		chatBase:    "https://www.workbuddy.cn",
+		billingBase: "https://www.codebuddy.cn",
+		// The chat/device domain is the one the CN client reports as its
+		// origin; the billing domain stays on codebuddy.cn.
+		origin:         "https://www.workbuddy.cn",
 		acceptLanguage: "zh-CN",
 		platformLabel:  "WorkBuddy",
+		clientVersion:  "5.8.3",
+		cliVersion:     "2.179.0",
 	}
 }
 

@@ -94,6 +94,42 @@ func TestSanitizeKeepsLineStructure(t *testing.T) {
 	}
 }
 
+// TestSanitizeRewritesWorkspaceRootFingerprint locks the second half of the
+// 11128 fix. Replacing the brand was not enough: a DeepSeek-Harness system
+// prompt still carries its @-path workspace convention
+// ("Tokens prefixed with @ are paths ... resolve from the workspace root"), and
+// the upstream rejects on that structure on its own.
+//
+// The line keeps its readability: only "workspace root" collapses to
+// "workspace", so the instruction still parses as an instruction.
+func TestSanitizeRewritesWorkspaceRootFingerprint(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	const text = "Tokens prefixed with @ are paths.\nResolve them from the workspace root before writing."
+	got := sanitizeText(text, rules, regexes)
+	if strings.Contains(got, "workspace root") {
+		t.Fatalf("workspace root must be rewritten: %q", got)
+	}
+	if !strings.Contains(got, "workspace") {
+		t.Fatalf("the instruction must survive the rewrite: %q", got)
+	}
+	if strings.Contains(got, "Tokens prefixed with @") {
+		t.Fatalf("the @-path signature must be rewritten too: %q", got)
+	}
+}
+
+// TestSanitizeIsIdempotent locks that running the rules twice changes nothing
+// more: the rewrite targets are themselves fingerprints, so an accidental
+// self-match would keep mutating the text.
+func TestSanitizeIsIdempotent(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	const text = "You are an AI agent powered by DeepSeek Harness.\nTokens prefixed with @ are paths resolved from the workspace root."
+	once := sanitizeText(text, rules, regexes)
+	twice := sanitizeText(once, rules, regexes)
+	if once != twice {
+		t.Fatalf("sanitize is not idempotent:\n once: %q\ntwice: %q", once, twice)
+	}
+}
+
 func TestSanitizeLeavesPlainTextUntouched(t *testing.T) {
 	rules, regexes := loadSanitizeRules()
 	// No fingerprint hit means no character-level rewrite at all, even when the
