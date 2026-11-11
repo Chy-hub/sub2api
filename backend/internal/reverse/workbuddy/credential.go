@@ -59,11 +59,9 @@ func newCredential(acc *reverse.Account) *credential {
 	cred.sessionIDv = credentialValue(creds, "auth", "session_id", "sessionId")
 	cred.machineSalt = credentialValue(creds, "auth", "machine_salt", "machineSalt")
 	cred.userAgent = credentialValue(creds, "auth", "user_agent", "workbuddy_user_agent")
-	cred.clientVersion = firstNonEmpty(credentialValue(creds, "auth", "client_version", "workbuddy_client_version"), clientVersion)
-	cred.cliVersion = firstNonEmpty(credentialValue(creds, "auth", "cli_version", "workbuddy_cli_version"), cliVersion)
-	cred.clientName = firstNonEmpty(credentialValue(creds, "auth", "client_name", "workbuddy_client_name"), clientName)
-	cred.desktopVersion = firstNonEmpty(credentialValue(creds, "auth", "desktop_version"), DesktopClientVersion)
 
+	// Resolve the deployment before the version defaults: the two regions run
+	// different genuine clients, and the defaults must follow the region.
 	regionRaw := strings.TrimSpace(acc.Region)
 	if regionRaw == "" {
 		regionRaw = credentialValue(creds, "auth", "realm")
@@ -73,6 +71,12 @@ func newCredential(acc *reverse.Account) *credential {
 	} else if inferred := regionFromDomain(cred.domain); inferred != "" {
 		cred.region = inferred
 	}
+	defaults := endpointsFor(cred.region)
+
+	cred.clientVersion = firstNonEmpty(credentialValue(creds, "auth", "client_version", "workbuddy_client_version"), defaults.clientVersion)
+	cred.cliVersion = firstNonEmpty(credentialValue(creds, "auth", "cli_version", "workbuddy_cli_version"), defaults.cliVersion)
+	cred.clientName = firstNonEmpty(credentialValue(creds, "auth", "client_name", "workbuddy_client_name"), clientName)
+	cred.desktopVersion = firstNonEmpty(credentialValue(creds, "auth", "desktop_version"), DesktopClientVersion)
 	return cred
 }
 
@@ -80,7 +84,12 @@ func (c *credential) chatUserAgent() string {
 	if c.userAgent != "" {
 		return c.userAgent
 	}
-	return "WorkBuddy/" + firstNonEmpty(c.clientVersion, clientVersion) + " " + endpointsFor(c.region).platformLabel + "/" + firstNonEmpty(c.clientVersion, clientVersion) + " CLI/" + firstNonEmpty(c.cliVersion, cliVersion)
+	// Both version segments follow the region's genuine client; newCredential
+	// already resolved them, so this only needs to guard against a zero value.
+	ep := endpointsFor(c.region)
+	version := firstNonEmpty(c.clientVersion, ep.clientVersion)
+	cli := firstNonEmpty(c.cliVersion, ep.cliVersion)
+	return "WorkBuddy/" + version + " " + ep.platformLabel + "/" + version + " CLI/" + cli
 }
 
 // credentialValue resolves a value from the flat credential map first, then
@@ -308,6 +317,41 @@ func newUUIDv7Hex() string {
 	buf[6] = (buf[6] & 0x0F) | 0x70
 	buf[8] = (buf[8] & 0x3F) | 0x80
 	return hex.EncodeToString(buf[:])
+}
+
+// newUUIDv7 returns a canonical, hyphenated UUIDv7 (RFC 9562).
+//
+// X-Conversation-ID is validated for shape rather than for being a random
+// string: the channel check rejects anything that does not look like a standard
+// UUID, which is one of the ways a request is answered with code=11128.
+func newUUIDv7() string {
+	raw := newUUIDv7Hex()
+	if len(raw) != 32 {
+		// The CSPRNG fallback produced something unexpected; a fixed shape is
+		// still better than emitting a malformed header.
+		return "00000000-0000-7000-8000-" + randomHex(6)
+	}
+	return raw[0:8] + "-" + raw[8:12] + "-" + raw[12:16] + "-" + raw[16:20] + "-" + raw[20:32]
+}
+
+// isCanonicalUUID reports whether value has the hyphenated 8-4-4-4-12 shape.
+func isCanonicalUUID(value string) bool {
+	if len(value) != 36 || strings.Count(value, "-") != 4 {
+		return false
+	}
+	for i, ch := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+		default:
+			if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // todayCST returns the current date in the upstream's natural-day timezone.

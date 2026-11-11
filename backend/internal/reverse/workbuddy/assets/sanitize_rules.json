@@ -39,7 +39,7 @@
     ],
     [
       "You are an AI agent powered by DeepSeek Harness.",
-      "You are an AI agent powered by DeepSeek-Harness."
+      "You are an AI agent powered by WorkBuddy."
     ],
     [
       "You are a coding agent powered by",
@@ -55,7 +55,11 @@
     ],
     [
       "DeepSeek Harness",
-      "DeepSeek-Harness"
+      "WorkBuddy"
+    ],
+    [
+      "workspace root",
+      "workspace"
     ]
   ],
   "regexes": {

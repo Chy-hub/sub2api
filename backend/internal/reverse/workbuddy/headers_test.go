@@ -38,10 +38,15 @@ func newHeaderRequest(t *testing.T) *http.Request {
 // TestChatHeadersMatchGenuineClient asserts the chat matrix: three-segment UA,
 // attribution family, UUIDv7 conversation family and W3C trace family, and no
 // device fingerprint headers.
+//
+// X-Conversation-ID is asserted by shape, not by equality: the upstream
+// validates it as a canonical UUID and rejects the request with 11128
+// otherwise, so a caller-supplied non-UUID is replaced rather than forwarded.
 func TestChatHeadersMatchGenuineClient(t *testing.T) {
 	cred := testCredential("cn")
 	req := newHeaderRequest(t)
-	applyChatHeaders(req, cred, chatMeta{conversationID: "conv-1", conversationRequestID: newUUIDv7Hex()})
+	conversationID := newUUIDv7()
+	applyChatHeaders(req, cred, chatMeta{conversationID: conversationID, conversationRequestID: newUUIDv7Hex()})
 
 	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.179.0" {
 		t.Fatalf("User-Agent = %q", got)
@@ -59,11 +64,14 @@ func TestChatHeadersMatchGenuineClient(t *testing.T) {
 		"X-Domain":            "www.workbuddy.cn",
 		"X-CodeBuddy-Request": "1",
 		"Authorization":       "Bearer token",
-		"X-Conversation-ID":   "conv-1",
+		"X-Conversation-ID":   conversationID,
 	} {
 		if got := req.Header.Get(key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)
 		}
+	}
+	if !isCanonicalUUID(req.Header.Get("X-Conversation-ID")) {
+		t.Fatalf("X-Conversation-ID = %q is not a canonical UUID", req.Header.Get("X-Conversation-ID"))
 	}
 
 	// Conversation family: UUIDv7 shapes, request/message ids share the value.
@@ -82,15 +90,19 @@ func TestChatHeadersMatchGenuineClient(t *testing.T) {
 	// Trace family: same-source random ids, not the conversation ids.
 	traceID := req.Header.Get("X-Trace-ID")
 	spanID := req.Header.Get("X-B3-SpanId")
-	parentSpanID := req.Header.Get("X-B3-ParentSpanId")
-	if len(traceID) != 32 || len(spanID) != 16 || len(parentSpanID) != 16 {
-		t.Fatalf("trace id lengths = %d/%d/%d", len(traceID), len(spanID), len(parentSpanID))
+	if len(traceID) != 32 || len(spanID) != 16 {
+		t.Fatalf("trace id lengths = %d/%d", len(traceID), len(spanID))
 	}
 	if req.Header.Get("traceparent") != "00-"+traceID+"-"+spanID+"-01" {
 		t.Fatalf("traceparent = %q", req.Header.Get("traceparent"))
 	}
-	if req.Header.Get("b3") != traceID+"-"+spanID+"-1-"+parentSpanID {
+	// b3 single is traceId-spanId-flags. A parent span id only exists on child
+	// spans, so inventing one is itself a fingerprint mismatch.
+	if req.Header.Get("b3") != traceID+"-"+spanID+"-1" {
 		t.Fatalf("b3 = %q", req.Header.Get("b3"))
+	}
+	if got := req.Header.Get("X-B3-ParentSpanId"); got != "" {
+		t.Fatalf("X-B3-ParentSpanId must not be sent, got %q", got)
 	}
 	if req.Header.Get("X-B3-TraceId") != traceID || req.Header.Get("X-B3-Sampled") != "1" {
 		t.Fatal("X-B3-TraceId/X-B3-Sampled mismatch")
@@ -98,11 +110,24 @@ func TestChatHeadersMatchGenuineClient(t *testing.T) {
 	if traceID == req.Header.Get("X-Conversation-Request-ID") {
 		t.Fatal("trace id must not reuse the conversation request id")
 	}
+	// X-Root-Request-ID is part of the conversation family the channel check
+	// expects, and shares the round's request id.
+	if got := req.Header.Get("X-Root-Request-ID"); got != req.Header.Get("X-Conversation-Request-ID") {
+		t.Fatalf("X-Root-Request-ID = %q, want the conversation request id", got)
+	}
 
-	// The genuine CLI path sends none of these on chat.
+	// Browser context is kept; only the device-derived identifiers are dropped.
+	for key, want := range map[string]string{
+		"Origin":          "https://www.workbuddy.cn",
+		"Referer":         "https://www.workbuddy.cn/",
+		"Accept-Language": "zh-CN",
+	} {
+		if got := req.Header.Get(key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
 	for _, key := range []string{
-		"Origin", "Referer", "Accept-Language",
-		"X-Device-Token", "X-Machine-ID", "X-Session-ID", "X-Root-Request-ID",
+		"X-Device-Token", "X-Machine-ID", "X-Session-ID",
 	} {
 		if got := req.Header.Get(key); got != "" {
 			t.Fatalf("%s must not be sent on chat, got %q", key, got)
@@ -127,8 +152,10 @@ func TestBillingHeadersCarryDeviceHeaders(t *testing.T) {
 		"X-Machine-ID":    "explicit-machine",
 		"X-Session-ID":    "explicit-session",
 		"X-Domain":        "www.codebuddy.cn",
-		"Origin":          "https://www.codebuddy.cn",
-		"Referer":         "https://www.codebuddy.cn/",
+		// The CN client's chat/device origin is workbuddy.cn even though the
+		// billing domain stays codebuddy.cn — these are two deployments.
+		"Origin":          "https://www.workbuddy.cn",
+		"Referer":         "https://www.workbuddy.cn/",
 		"Accept-Language": "zh-CN",
 	} {
 		if got := req.Header.Get(key); got != want {
@@ -160,19 +187,28 @@ func TestDerivedMachineHeadersWhenUnset(t *testing.T) {
 }
 
 // TestGlobalChatHeaders asserts global-realm tenant and UA differences.
+//
+// The global client reports its own 5.8.4 / CLI 2.161.0 versions and the lower
+// case platform slug. It does not send X-No-Enterprise-Id on chat: the global
+// chatter path omits the enterprise family entirely rather than declaring
+// "no enterprise".
 func TestGlobalChatHeaders(t *testing.T) {
 	cred := testCredential("global")
 	req := newHeaderRequest(t)
 	applyChatHeaders(req, cred, chatMeta{})
 
-	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.3 WorkBuddy AI/5.8.3 CLI/2.179.0" {
+	if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0" {
 		t.Fatalf("User-Agent = %q", got)
 	}
 	if got := req.Header.Get("X-Domain"); got != "www.workbuddy.ai" {
 		t.Fatalf("X-Domain = %q", got)
 	}
-	if req.Header.Get("X-No-Enterprise-Id") != "1" {
-		t.Fatal("global chat must send X-No-Enterprise-Id")
+	if got := req.Header.Get("X-IDE-Version"); got != "5.8.4" {
+		t.Fatalf("X-IDE-Version = %q, want the global client version", got)
+	}
+	// The global client reports private data as true; CN reports false.
+	if got := req.Header.Get("X-Private-Data"); got != "true" {
+		t.Fatalf("X-Private-Data = %q, want true on global", got)
 	}
 	if req.Header.Get("X-Enterprise-Id") != "" {
 		t.Fatal("global chat must not send X-Enterprise-Id")
