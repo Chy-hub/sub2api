@@ -220,16 +220,6 @@ func applyLoginHeaders(req *http.Request, reg region) {
 	req.Header.Set("X-CodeBuddy-Request", "1")
 }
 
-// userAgent builds the three-segment chat UA for a region.
-//
-// The version segments come from the region's endpoint table: the two
-// deployments ship different genuine clients and the upstream fingerprints the
-// UA against them.
-func userAgent(reg region) string {
-	ep := endpointsFor(reg)
-	return "WorkBuddy/" + ep.clientVersion + " " + ep.platformLabel + "/" + ep.clientVersion + " CLI/" + ep.cliVersion
-}
-
 // configDomain resolves X-Domain for model probes: the account domain when
 // present, otherwise the region's chat host.
 func configDomain(cred *credential) string {

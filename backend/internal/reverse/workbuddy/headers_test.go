@@ -168,6 +168,35 @@ func TestChatReplacesNonUUIDConversationIDs(t *testing.T) {
 	}
 }
 
+// TestUserAgentOverrideBypassesTheRegionProfile locks the escape hatch for the
+// one thing about the per-region profile that cannot be verified offline: if
+// the upstream changes the platform segment or versions it expects, the account
+// must be fixable from its credentials rather than by shipping a new build.
+//
+// A full UA override replaces every segment, including the platform slug that
+// has no field of its own.
+func TestUserAgentOverrideBypassesTheRegionProfile(t *testing.T) {
+	const override = "WorkBuddy/5.8.3 WorkBuddy AI/5.8.3 CLI/2.179.0"
+	cred := newCredential(&reverse.Account{
+		Region:      "global",
+		Credentials: map[string]any{"user_agent": override},
+	})
+	req := newHeaderRequest(t)
+	applyChatHeaders(req, cred, chatMeta{})
+	if got := req.Header.Get("User-Agent"); got != override {
+		t.Fatalf("User-Agent = %q, want the account override", got)
+	}
+
+	// Without the override the region profile applies, which is what the
+	// override is there to replace.
+	plain := newCredential(&reverse.Account{Region: "global", Credentials: map[string]any{}})
+	plainReq := newHeaderRequest(t)
+	applyChatHeaders(plainReq, plain, chatMeta{})
+	if got := plainReq.Header.Get("User-Agent"); got != "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0" {
+		t.Fatalf("default global UA = %q", got)
+	}
+}
+
 // TestBillingHeadersCarryDeviceHeaders asserts billing/task calls keep the
 // device fingerprint set and a single-segment UA.
 func TestBillingHeadersCarryDeviceHeaders(t *testing.T) {

@@ -61,6 +61,10 @@ WorkBuddy 新账号默认生成独立的 `machine_salt`，用于稳定派生未�
 `workbuddy-ai`、`X-Private-Data: true`。CN 的对话域 origin 是 `workbuddy.cn`，计费域
 仍是 `codebuddy.cn`。账号可在凭据里覆盖版本号。
 
+若某区域的具体取值被上游换掉而出现 11128，第一手段是**在账号凭据里填 `user_agent`**：
+它完整覆盖出站 UA（含平台段与两个版本号），无需改代码或重新发版。取值应以当时的
+官方客户端抓包为准；本仓库记录的值来自参考实现的实测结论，没有在本环境复验过。
+
 对话请求保留 `Origin` / `Referer` / `Accept-Language`，只剔除设备派生标识
 （`X-Device-Token` / `X-Machine-ID` / `X-Session-ID`）。会话头族要求
 `X-Conversation-ID` 为带连字符的标准 UUID，调用方提供的其它形态会被替换而不是透传；
