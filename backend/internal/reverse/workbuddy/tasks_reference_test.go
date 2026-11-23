@@ -118,18 +118,10 @@ func TestTaskSpecsForGlobalRegistersDailyBonus(t *testing.T) {
 	}
 }
 
-func TestDailyBonusBeaconCarriesTheFullChatRequestSendFieldSet(t *testing.T) {
-	// The upstream validates events by type and rejects the *whole batch* with
-	// 400 "all events rejected by format validation" when one required field is
-	// missing. The daily bonus beacon once shipped only 16 of the 31 fields, so
-	// global accounts silently never earned the reward.
-	//
-	// Both builders emit the same event type, so their field sets must match.
-	// Compare the emitted payloads rather than hard-coding a list: a field added
-	// to one builder then fails here instead of quietly failing upstream.
-	cred := testCredential("global")
-	beacon := DailyBonusBeaconEvent(cred)
-
+// captureReportBody installs a handler that records the first event of the
+// first /v2/report call and acknowledges every other path.
+func captureReportBody(t *testing.T) (http.HandlerFunc, *map[string]any) {
+	t.Helper()
 	var captured map[string]any
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/report" {
@@ -148,24 +140,58 @@ func TestDailyBonusBeaconCarriesTheFullChatRequestSendFieldSet(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
 	}
+	return handler, &captured
+}
+
+func TestReportBillingEventsStripsKnowledgeFieldsForBothRealms(t *testing.T) {
+	// The upstream /v2/report format validation rejects any chat_request_send
+	// carrying knowledgeId / knowledgeName with 400 "all events rejected by
+	// format validation" — empty or not, and since 2026-11-17 for both realms.
+	// Strip at the shared exit so no event builder can reintroduce the pair.
+	for _, realm := range []string{"global", "cn"} {
+		t.Run(realm, func(t *testing.T) {
+			handler, captured := captureReportBody(t)
+			p := localProvider(t, handler)
+			acc := &reverse.Account{Region: realm, Credentials: map[string]any{"uid": "u1", "access_token": "access"}}
+			adapter := p.tasks(acc)
+			native, errNative := adapter.Native(acc)
+			require.NoError(t, errNative)
+
+			event := map[string]any{
+				"eventCode":     "chat_request_send",
+				"userId":        "u1",
+				"knowledgeId":   "",
+				"knowledgeName": "",
+			}
+			require.NoError(t, adapter.client(context.Background()).ReportBillingEvents(context.Background(), native, []map[string]any{event}))
+			require.NotNil(t, *captured, "report did not reach the upstream")
+			require.NotContains(t, *captured, "knowledgeId")
+			require.NotContains(t, *captured, "knowledgeName")
+			require.Equal(t, "u1", (*captured)["userId"], "unrelated fields must survive the strip")
+		})
+	}
+}
+
+func TestSendDailyBonusBeaconReusesChatActivity(t *testing.T) {
+	// The hand-built beacon event was rejected by global accounts' format
+	// validation while ReportChatActivity kept working, so the beacon now reuses
+	// that builder instead of maintaining a second copy of the event shape.
+	handler, captured := captureReportBody(t)
 	p := localProvider(t, handler)
 	acc := &reverse.Account{Region: "global", Credentials: map[string]any{"uid": "u1", "access_token": "access"}}
 	adapter := p.tasks(acc)
 	native, errNative := adapter.Native(acc)
 	require.NoError(t, errNative)
-	require.NoError(t, adapter.client(context.Background()).ReportChatActivity(context.Background(), native, "conv", "req", "", ""))
-	require.NotNil(t, captured, "ReportChatActivity did not reach the upstream")
 
-	for field := range captured {
-		if _, ok := beacon[field]; !ok {
-			t.Errorf("beacon is missing field %q that ReportChatActivity sends", field)
-		}
-	}
-	for field := range beacon {
-		if _, ok := captured[field]; !ok {
-			t.Errorf("beacon sends field %q that ReportChatActivity does not", field)
-		}
-	}
+	require.NoError(t, adapter.client(context.Background()).SendDailyBonusBeacon(context.Background(), native))
+	require.NotNil(t, *captured, "beacon did not reach the upstream")
+	require.Equal(t, "chat_request_send", (*captured)["eventCode"])
+	require.Equal(t, "default", (*captured)["agentName"])
+	require.Equal(t, "u1", (*captured)["userId"])
+	conversationID, _ := (*captured)["conversationId"].(string)
+	require.True(t, strings.HasPrefix(conversationID, "wb2api-"), "beacon must use the ReportChatActivity id shape, got %q", conversationID)
+	require.NotContains(t, *captured, "knowledgeId")
+	require.NotContains(t, *captured, "knowledgeName")
 }
 
 // TestWaitGrowthClaimableQueriesBeforeSleeping locks the scheduling detail that

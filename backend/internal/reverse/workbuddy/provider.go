@@ -65,6 +65,12 @@ const (
 
 	modelCacheTTL = 10 * time.Minute
 
+	// blockedModelTTL is how long a model the upstream explicitly declared
+	// unavailable (11102 "service info not found") stays out of the listing.
+	// It is a routing-table fact rather than an account problem, but we cannot
+	// tell when upstream adds it back, so isolate instead of deleting forever.
+	blockedModelTTL = 24 * time.Hour
+
 	// degradedPromptTTL bounds how long a content-policy downgrade sticks. The
 	// marker exists to avoid retrying a rejected prompt forever; after a day a
 	// fresh attempt is reasonable, and the entry stops pinning account state.
@@ -136,10 +142,15 @@ func endpointsFor(r region) endpoints {
 
 // Provider implements reverse.Provider and reverse.LoginProvider.
 type Provider struct {
-	mu            sync.Mutex
-	catalogs      map[string]cachedCatalog
-	efforts       map[string]map[string]modelEfforts
-	degraded      map[int64]degradedPrompt
+	mu       sync.Mutex
+	catalogs map[string]cachedCatalog
+	efforts  map[string]map[string]modelEfforts
+	degraded map[int64]degradedPrompt
+	// blockedModels records models the upstream said its backend does not serve
+	// (11102). Keyed by region|model: the routing table is upstream-wide, so a
+	// dead model is dead for every account in the same realm. Expired entries
+	// are dropped lazily on the next listing or cleanup.
+	blockedModels map[string]time.Time
 	clientFactory func(*reverse.Account) *http.Client
 }
 
@@ -172,9 +183,10 @@ var (
 // New builds the WorkBuddy provider.
 func New() reverse.Provider {
 	return &Provider{
-		catalogs: map[string]cachedCatalog{},
-		efforts:  map[string]map[string]modelEfforts{},
-		degraded: map[int64]degradedPrompt{},
+		catalogs:      map[string]cachedCatalog{},
+		efforts:       map[string]map[string]modelEfforts{},
+		degraded:      map[int64]degradedPrompt{},
+		blockedModels: map[string]time.Time{},
 	}
 }
 
@@ -217,6 +229,11 @@ func (p *Provider) CleanupCaches(now time.Time) {
 	for id, entry := range p.degraded {
 		if entry.at.IsZero() || now.Sub(entry.at) >= degradedPromptTTL {
 			delete(p.degraded, id)
+		}
+	}
+	for key, at := range p.blockedModels {
+		if at.IsZero() || now.Sub(at) >= blockedModelTTL {
+			delete(p.blockedModels, key)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package workbuddy
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -275,8 +276,13 @@ func decodeBodyMap(body []byte) map[string]any {
 	if len(body) == 0 {
 		return nil
 	}
+	// UseNumber keeps the original numeric text. Plain Unmarshal turns every
+	// number into float64, which silently distorts integers above 2^53 when the
+	// payload is re-encoded (seeds, timestamps, tool-call arguments).
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
 	var payload map[string]any
-	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil {
+	if errUnmarshal := decoder.Decode(&payload); errUnmarshal != nil {
 		return nil
 	}
 	return payload

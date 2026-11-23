@@ -71,6 +71,17 @@ func TestPrepareBodyCoreRules(t *testing.T) {
 	}
 }
 
+// TestPrepareBodyTokenAliasIntegralSpellings keeps the UseNumber path from
+// regressing: 32000.0 and 3.2e4 are integral and must still be translated.
+func TestPrepareBodyTokenAliasIntegralSpellings(t *testing.T) {
+	for _, raw := range []string{"32000.0", "3.2e4"} {
+		payload := prepareForTest(t, `{"model":"m","max_completion_tokens":`+raw+`,"messages":[]}`, prepareOptions{})
+		if payload["max_tokens"] != float64(32000) {
+			t.Fatalf("%s: max_tokens = %v, want 32000", raw, payload["max_tokens"])
+		}
+	}
+}
+
 func TestPrepareBodyExplicitMaxTokensWins(t *testing.T) {
 	payload := prepareForTest(t, `{"model":"m","max_tokens":100,"max_completion_tokens":200,"messages":[]}`, prepareOptions{})
 	if payload["max_tokens"] != float64(100) {

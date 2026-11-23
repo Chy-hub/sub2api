@@ -159,6 +159,16 @@ func translateMaxCompletionTokens(payload map[string]any) {
 
 func positiveInt64(value any) (int64, bool) {
 	switch typed := value.(type) {
+	case json.Number:
+		// decodeBodyMap uses UseNumber, so request numbers arrive as the
+		// original text. Accept the integral spellings too (5.0, 1e3): they
+		// parsed as float64 before the switch and must keep working.
+		if parsed, errParse := typed.Int64(); errParse == nil && parsed > 0 {
+			return parsed, true
+		}
+		if parsed, errParse := typed.Float64(); errParse == nil && parsed > 0 && parsed == float64(int64(parsed)) {
+			return int64(parsed), true
+		}
 	case float64:
 		if typed <= 0 || typed != float64(int64(typed)) {
 			return 0, false

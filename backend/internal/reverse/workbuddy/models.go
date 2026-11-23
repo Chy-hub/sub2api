@@ -68,7 +68,8 @@ func (e dynModelEntry) efforts() modelEfforts {
 }
 
 // nonChatModel rejects entries that cannot serve chat (selecting them yields
-// 11102): embedding/completion/code-only ids, tiny outputs, image generation.
+// 11102 or "Backend [maas] is not supported"): embedding/completion/code-only
+// ids, tiny outputs, and image/video/audio generation models.
 func nonChatModel(entry dynModelEntry) bool {
 	id := strings.ToLower(entry.resolvedID())
 	for _, prefix := range []string{"nes-", "completion-", "codewise-"} {
@@ -76,11 +77,23 @@ func nonChatModel(entry dynModelEntry) bool {
 			return true
 		}
 	}
+	// Video/audio generation models: the upstream catalogue lists them like
+	// ordinary chat models, but there is no chat backend behind them and every
+	// call fails with 400 "Backend [maas] is not supported" (measured with
+	// kling-video-v3 and seedance-2.5). Filter by family name so clients cannot
+	// select a model that always fails.
+	for _, family := range []string{"kling", "seedance", "sora", "veo-", "veo2", "veo3", "hailuo", "jimeng", "vidu", "pixverse", "runway", "luma", "cogvideo", "wan2", "hunyuanvideo", "minimax-video"} {
+		if strings.Contains(id, family) {
+			return true
+		}
+	}
 	if entry.MaxOutputTokens > 0 && entry.MaxOutputTokens <= 256 {
 		return true
 	}
 	for _, tag := range entry.Tags {
-		if strings.EqualFold(strings.TrimSpace(tag), "text-to-image") {
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case "text-to-image", "text-to-video", "image-to-video", "video-generation",
+			"text-to-speech", "audio-generation":
 			return true
 		}
 	}
@@ -144,7 +157,75 @@ func (p *Provider) ListModelCatalog(ctx context.Context, acc *reverse.Account) (
 	if err != nil {
 		return nil, err
 	}
-	return &reverse.ModelCatalog{Models: models, Skipped: skipped}, nil
+	catalog := &reverse.ModelCatalog{Models: models, Skipped: skipped}
+	return p.filterBlockedModels(newCredential(acc).region, catalog), nil
+}
+
+// blockedModelKey scopes an isolation entry to one realm: the same model name
+// can exist in both deployments independently.
+func blockedModelKey(reg region, model string) string {
+	return string(reg) + "|" + strings.TrimSpace(model)
+}
+
+// markModelBlocked records one model-level avoidance (upstream 11102).
+//
+// The catalogue keeps models upstream has already retired (measured with
+// workbuddyglobal's o4-mini: every call fails with 400 "model [o4-mini] service
+// info not found"). Leaving them listed only steers clients into a guaranteed
+// failure, so drop them after one observation and let the TTL bring them back.
+func (p *Provider) markModelBlocked(reg region, model string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.blockedModels == nil {
+		p.blockedModels = map[string]time.Time{}
+	}
+	p.blockedModels[blockedModelKey(reg, model)] = time.Now()
+}
+
+// filterBlockedModels removes models inside the isolation window and records
+// them as skipped evidence. If every model is blocked the catalogue is returned
+// unchanged: an empty list is worse for clients than one dead entry.
+func (p *Provider) filterBlockedModels(reg region, catalog *reverse.ModelCatalog) *reverse.ModelCatalog {
+	p.mu.Lock()
+	if len(p.blockedModels) == 0 {
+		p.mu.Unlock()
+		return catalog
+	}
+	now := time.Now()
+	blocked := make(map[string]struct{}, len(p.blockedModels))
+	for key, at := range p.blockedModels {
+		if now.Sub(at) > blockedModelTTL {
+			delete(p.blockedModels, key)
+			continue
+		}
+		blocked[key] = struct{}{}
+	}
+	p.mu.Unlock()
+	if len(blocked) == 0 {
+		return catalog
+	}
+	kept := make([]reverse.Model, 0, len(catalog.Models))
+	skipped := append([]reverse.SkippedModel(nil), catalog.Skipped...)
+	for _, model := range catalog.Models {
+		if _, bad := blocked[blockedModelKey(reg, model.ID)]; bad {
+			skipped = append(skipped, reverse.SkippedModel{
+				Key:         model.ID,
+				DisplayName: model.DisplayName,
+				Reason:      reverse.SkipReasonModelBlocked,
+				Category:    "runtime",
+			})
+			continue
+		}
+		kept = append(kept, model)
+	}
+	if len(kept) == 0 {
+		return catalog
+	}
+	return &reverse.ModelCatalog{Models: kept, Skipped: skipped}
 }
 
 func (p *Provider) listModelsWithEvidence(ctx context.Context, acc *reverse.Account) ([]reverse.Model, []reverse.SkippedModel, error) {

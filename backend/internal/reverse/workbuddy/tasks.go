@@ -1016,6 +1016,25 @@ func (c *Client) ReportBillingEvents(ctx context.Context, cred *Credential, even
 	if len(events) == 0 {
 		return nil
 	}
+	// 计费域 /v2/report 的 format validation 会直接拒绝带 knowledgeId /
+	// knowledgeName 的 chat_request_send 事件——无论值为空还是非空，整个
+	// event 都被判非法（code 10001「all events rejected」，data 里
+	// dropped=1 / invalidIndices=[0]）。而 codebaseId / command / expertId
+	// 等其余空字符串字段上游都正常接受，唯独这两个 knowledge 字段不行。
+	//
+	// 历史上只有国际版（global）这样，国内版（CN）放行，所以当年只在
+	// global 剥离。2026-11-17 上游实测 CN 也收紧了：同样的 chat_request_send
+	// 事件被 400 拒（连续两天 activity 族全灭），逐变体验证——
+	//   原样            → 400 all 1 events rejected by format validation
+	//   去掉 knowledge* → 200
+	// 因此改为对两个区域一律剥离，不再按 realm 分支。
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
+		delete(ev, "knowledgeId")
+		delete(ev, "knowledgeName")
+	}
 	endpoints := GetEndpoints(cred.Realm())
 	return c.postReport(ctx, cred, endpoints.BillingBase+reportPath, events, func(req *http.Request) {
 		c.applyBillingHeaders(req, cred)
@@ -1148,16 +1167,6 @@ func (c *Client) ReportWebElementClick(ctx context.Context, cred *Credential, pa
 	}
 	return c.ReportWebEvents(ctx, cred, pageURL, []map[string]any{event})
 }
-
-// chat_request_send 事件里「未挂知识库」的标准形态。
-//
-// 官方客户端抓包一律是空字符串（credential.go 的三条事件序列就是这么来的）；
-// 每日活跃信标最初手写成空数组，于是同一个 eventCode 出现了两种类型。上游目前
-// 两种都收，但任何一次 schema 收紧都只会打断其中一条路径，所以统一到抓包形态。
-const (
-	knowledgeIDEmpty   = ""
-	knowledgeNameEmpty = ""
-)
 
 // nowMs 返回当前毫秒时间戳。
 func nowMs() int64 { return time.Now().UnixMilli() }
@@ -2079,67 +2088,22 @@ func parseTaskGrowthHeatmap(data json.RawMessage) (growthHeatmapCell, []string, 
 	return growthHeatmapCell{Date: last, Score: byDate[last].Score}, lit, nil
 }
 
-// DailyBonusBeaconEvent 构造一条每日活跃信标（chat_request_send）。
-//
-// 字段形态镜像官方客户端的对话上报：conversationId/requestId 用一次性
-// 随机值，让每天看起来都是新会话而非重放；userId 必须带，缺失时上游
-// 返回 200 但静默丢弃事件。单测锁字段名——写错一个就是静默不计分。
-//
-// 字段集必须与 ReportChatSend 的那组逐字对齐：上游的 format validation 按
-// 事件类型校验必填字段，缺一个整批被拒（400 "all events rejected by format
-// validation"），表现为每日活跃奖励永远拿不到。这条曾因只发 16 个字段而
-// 悄悄失效——补齐时请保持与 ReportChatSend 同一份清单。
-func DailyBonusBeaconEvent(credential *Credential) map[string]any {
-	now := nowMs()
-	conversationID := "wb-daily-" + randomHexForExport(8)
-	return map[string]any{
-		"eventCode":             "chat_request_send",
-		"timestamp":             now,
-		"reportDelay":           0,
-		"mode":                  "craft",
-		"conversationId":        conversationID,
-		"requestId":             conversationID,
-		"inputLength":           12,
-		"requestModelId":        defaultReportModelID,
-		"requestModelName":      defaultReportModelName,
-		"isPlan":                false,
-		"isAutoExecuteTerminal": false,
-		"isAutoModify":          false,
-		"codebaseEnable":        false,
-		"maxToken":              0,
-		"maxSteps":              0,
-		"temperature":           0,
-		"maxRetries":            0,
-		"mentionContexts":       []any{},
-		"knowledgeId":           knowledgeIDEmpty,
-		"knowledgeName":         knowledgeNameEmpty,
-		"codebaseId":            "",
-		"mentionContextCount":   0,
-		"command":               "",
-		"expertId":              "",
-		"recommendId":           "",
-		"skillId":               "",
-		"skillCount":            0,
-		"totalCount":            0,
-		"fileUri":               "",
-		"presentAt":             now,
-		"traceId":               conversationID,
-		"rootRequestId":         conversationID,
-		"parentConversationId":  conversationID,
-		"agentName":             "default",
-		"agentType":             "conversation",
-		"userId":                credential.UIDValue(),
-	}
-}
-
 // SendDailyBonusBeacon 上报一条每日活跃信标（计费域 /v2/report）。
 //
 // 刻意走单次上报出口（postReport 无重试）：理由见文件头设计要点。
+//
+// 实现说明（2026-11-11）：早期版本自己构造 chat_request_send 事件，但国际版
+// 账号实测持续返回 400「all events rejected by format validation」。而同账号的
+// ReportChatActivity（活跃上报任务，走同一 ReportBillingEvents 出口）能正常
+// 入账。两者事件结构逐字段一致，唯一稳定差异在会话 ID 形态（wb-daily-* vs
+// wb2api-*）。为消除这条差异，签到直接复用已验证能过校验的 ReportChatActivity，
+// 不再自行拼事件。
 func (c *Client) SendDailyBonusBeacon(ctx context.Context, cred *Credential) error {
 	if cred == nil {
 		return fmt.Errorf("credential is required")
 	}
-	return c.ReportBillingEvents(ctx, cred, []map[string]any{DailyBonusBeaconEvent(cred)})
+	conversationID := fmt.Sprintf("wb2api-%d", nowMs())
+	return c.ReportChatActivity(ctx, cred, conversationID, "", "", "")
 }
 
 // GlobalDailyBonus 执行一次国际版每日活跃奖励（幂等）。

@@ -101,8 +101,9 @@ type SkippedModel struct {
 	DisplayName string `json:"display_name,omitempty"`
 	// Reason is a stable code: "disabled" (enable=false), "missing_key"
 	// (no key and no usable name), "duplicate" (same canonical ID as an
-	// earlier entry), or "other_category" (lives in a category the provider
-	// did not select).
+	// earlier entry), "other_category" (lives in a category the provider
+	// did not select), or "model_blocked" (upstream reported 11102 and the
+	// model is in a runtime isolation window).
 	Reason string `json:"reason"`
 	// Category is the upstream list the entry came from.
 	Category string `json:"category,omitempty"`
@@ -114,6 +115,7 @@ const (
 	SkipReasonMissingKey    = "missing_key"
 	SkipReasonDuplicate     = "duplicate"
 	SkipReasonOtherCategory = "other_category"
+	SkipReasonModelBlocked  = "model_blocked"
 )
 
 // Model-resolution sources, reported when mapping a request's model name to an

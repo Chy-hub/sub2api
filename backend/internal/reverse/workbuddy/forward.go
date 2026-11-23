@@ -118,6 +118,11 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, apiBodyLimit))
 		_ = resp.Body.Close()
 		failure := upstreamError(resp.StatusCode, string(body), resp.Header, credentialSecrets(*cred)...)
+		if failure.Kind == string(reverse.FailureKindModelBlocked) {
+			// 11102 is a routing-table fact, not an account fault: isolate the
+			// model for the whole realm so the listing stops advertising it.
+			p.markModelBlocked(cred.region, model)
+		}
 		if failure.Kind == string(reverse.FailureKindContentBlocked) && mode != "passthrough" {
 			p.mu.Lock()
 			if p.degraded == nil {
