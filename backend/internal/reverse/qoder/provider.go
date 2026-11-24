@@ -173,6 +173,10 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 	// chat_context.text.text、chat_context.extra.originalContent.text 和
 	// business.name 三处，先洗源消息，这三处自然就是干净的。
 	if sanitizeFingerprints(acc) {
+		// 顺序有讲究：先去掉系统提示词里的 agent 声明，再跑通用指纹净化。
+		// 通用表把声明改写成 WorkBuddy 品牌，对 Qoder 仍是「另一个第三方 agent」，
+		// 只有换成通用身份才真正消掉这条判定（见 declaration.go）。
+		neutralizeAgentDeclarations(request.messages)
 		textsanitize.SanitizeMessages(request.messages)
 	}
 	br, err := p.bridgeFor(ctx, acc)

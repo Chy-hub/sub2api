@@ -117,6 +117,14 @@ WorkBuddy 与 Qoder 共用。WorkBuddy 的净化位于请求规范化最后一�
 `reasoning_content` 和工具调用参数，包含 `content: null` 的工具调用消息。
 图片数据、工具函数名和调用 ID 保留；工具定义（`tools[].description`）与 WorkBuddy 一致不做净化。
 
+Qoder 还有一步自己的收尾：通用规则把 harness 声明改写成本渠道官方名，那对 WorkBuddy
+是官方客户端、对 Qoder 只是另一个第三方 agent 名，声明结构原样保留照样会命中判定。
+因此 Qoder 在通用净化**之前**先把 system / developer 消息里的 agent 声明句换成通用身份
+`You are a helpful assistant.`：只改声明句（到第一个句号为止），句号之后的指令保留，
+markdown 标题前缀保留；用户消息不动，因为那可能是用户自己的内容。开关仍是同一个
+`reverse_sanitize_fingerprints`。实测依据来自外部反馈：删掉声明句或把 agent 改成中性
+名字后，omp / kimi code 等 agent 不再被判成第三方 agent。
+
 完整的工具参数 JSON 先解析，再净化字符串值，避免移除 header 文本时破坏引号、转义和
 JSON 结构，同时保留数值精度。未完成的 JSON 片段沿用来源的文本净化路径。
 规则命中的客户端固定模板会发生改写；账号可关闭此功能以透传原文本。
