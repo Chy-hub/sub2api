@@ -39,6 +39,9 @@ type checkinIdentity struct {
 	Type    string
 	Code    string
 	Version string
+	// UserAgent 是账号显式覆盖的 UA。为空时活动接口仍用 "Qoder"，
+	// 对话与目录接口用 defaultUserAgent；填了就让这些链路报同一个客户端。
+	UserAgent string
 }
 
 func (i checkinIdentity) native() bool { return i.Token != "" && i.Type != "" }
@@ -48,13 +51,14 @@ func (i checkinIdentity) native() bool { return i.Token != "" && i.Type != "" }
 // machine token/type pair was not issued by the official desktop client.
 func checkinIdentityFromCredentials(acc *reverse.Account) checkinIdentity {
 	identity := checkinIdentity{
-		Token:   acc.CredentialString("machine_token"),
-		Type:    acc.CredentialString("machine_type"),
-		Code:    acc.CredentialString("machine_code"),
-		Version: firstNonEmpty(acc.CredentialString("desktop_version"), acc.CredentialString("qoder_desktop_version"), desktopVersion),
+		Token:     acc.CredentialString("machine_token"),
+		Type:      acc.CredentialString("machine_type"),
+		Code:      acc.CredentialString("machine_code"),
+		Version:   firstNonEmpty(acc.CredentialString("desktop_version"), acc.CredentialString("qoder_desktop_version"), desktopVersion),
+		UserAgent: qoderUserAgent(acc),
 	}
 	if !identity.native() {
-		return checkinIdentity{Version: identity.Version}
+		return checkinIdentity{Version: identity.Version, UserAgent: identity.UserAgent}
 	}
 	return identity
 }
@@ -469,7 +473,7 @@ func checkinHeaders(bearer string, identity checkinIdentity) map[string]string {
 		"authorization":   "Bearer " + bearer,
 		"accept":          "application/json",
 		"accept-language": "zh-CN",
-		"user-agent":      "Qoder",
+		"user-agent":      firstNonEmpty(identity.UserAgent, "Qoder"),
 		"cosy-clienttype": "10",
 		"cosy-version":    identity.Version,
 	}

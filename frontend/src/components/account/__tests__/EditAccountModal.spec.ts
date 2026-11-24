@@ -427,6 +427,19 @@ describe('EditAccountModal', () => {
     wrapper.unmount()
   })
 
+  it('writes the fingerprint-sanitization switch for Qoder accounts too', async () => {
+    const account = { ...buildAccount(), platform: 'qoder_global', type: 'reverse', credentials: { uid: 'u1' }, credentials_status: { has_access_token: true }, extra: { reverse_checkin: { status: 'ok' } } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    // 净化开关对 Qoder 生效；其余 WorkBuddy 专属字段不得写进 Qoder 账号。
+    expect(payload.extra).toMatchObject({ reverse_sanitize_fingerprints: true, reverse_checkin: { status: 'ok' } })
+    expect(payload.extra).not.toHaveProperty('reverse_prompt_mode')
+    expect(payload.extra).not.toHaveProperty('reverse_passthrough_ip')
+    wrapper.unmount()
+  })
+
   it('explicitly clears the saved Qoder machine pair when requested', async () => {
     const account = { ...buildAccount(), platform: 'qoder_global', type: 'reverse', credentials: { uid: 'u1', machine_type: 'saved-type', machine_code: 'saved-code' }, credentials_status: { has_access_token: true, has_machine_token: true } }
     updateAccountMock.mockReset().mockResolvedValue(account)

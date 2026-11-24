@@ -3538,7 +3538,7 @@ import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import ReverseAccountFields, { type ReverseFormModel } from '@/components/account/ReverseAccountFields.vue'
 import { parseReverseTaskHours } from '@/utils/reverseAccount'
-import { isReversePlatform as isReversePlatformValue } from '@/constants/platformCatalog'
+import { isReversePlatform as isReversePlatformValue, reverseProviderOf } from '@/constants/platformCatalog'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
@@ -5905,9 +5905,13 @@ const handleSubmit = async () => {
       const newExtra: Record<string, unknown> = { ...currentExtra }
       newExtra.auto_checkin = reverseEditForm.auto_checkin
       newExtra.reverse_auto_refresh = reverseEditForm.auto_refresh
+      const reverseFamily = reverseProviderOf(props.account.platform)
+      // 文本指纹净化对 Qoder 与 WorkBuddy 都生效；其余字段仍是 WorkBuddy 专属。
+      if (reverseFamily === 'workbuddy' || reverseFamily === 'qoder') {
+        newExtra.reverse_sanitize_fingerprints = reverseEditForm.sanitize_fingerprints
+      }
       if (isReversePlatformValue(props.account.platform) && props.account.platform.startsWith('workbuddy_')) {
         newExtra.reverse_prompt_mode = reverseEditForm.prompt_mode
-        newExtra.reverse_sanitize_fingerprints = reverseEditForm.sanitize_fingerprints
         newExtra.reverse_passthrough_ip = reverseEditForm.passthrough_ip
         newExtra.reverse_auto_tasks = reverseEditForm.auto_tasks
         newExtra.reverse_task_kinds = [...reverseEditForm.task_kinds]

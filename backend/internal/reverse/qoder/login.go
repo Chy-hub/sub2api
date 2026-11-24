@@ -95,7 +95,8 @@ func (p *Provider) PollLogin(ctx context.Context, state any) (*reverse.LoginPoll
 
 	client := reverse.HTTPClient(reverse.LoginProxyURL(ctx))
 	profile := reverse.LoginProfile{}
-	if userInfo, err := fetchUserInfo(ctx, client, ep.userinfo, token); err == nil {
+	// 登录阶段还没有账号凭据，因此没有 UA 覆盖可继承。
+	if userInfo, err := fetchUserInfo(ctx, client, ep.userinfo, token, ""); err == nil {
 		// The plugin's login profile reads userId specifically.
 		profile.UID = firstNonEmpty(stringValue(userInfo["userId"]), stringValue(userInfo["id"]), stringValue(userInfo["uid"]))
 		profile.Nickname = stringValue(userInfo["name"])
@@ -103,7 +104,7 @@ func (p *Provider) PollLogin(ctx context.Context, state any) (*reverse.LoginPoll
 		profile.UserType = stringValue(userInfo["userType"])
 		profile.EnterpriseID = stringValue(userInfo["organization_id"])
 	}
-	profile.Plan = fetchPlanName(ctx, client, ep.plan, token)
+	profile.Plan = fetchPlanName(ctx, client, ep.plan, token, "")
 
 	credentials := map[string]any{
 		"access_token": token,

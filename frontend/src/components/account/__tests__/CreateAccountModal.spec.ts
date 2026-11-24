@@ -761,6 +761,11 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper.get(`[data-testid="platform-button-${platform}"]`).trigger('click')
     const fields = wrapper.findComponent({ name: 'ReverseAccountFields' })
     expect(fields.exists()).toBe(true)
+    // 净化开关对两条反代线都可见；透传 IP 与提示词仍只属于 WorkBuddy。
+    expect(fields.text()).toContain('admin.accounts.reverse.sanitizeFingerprints')
+    if (platform.startsWith('qoder_')) {
+      expect(fields.text()).not.toContain('admin.accounts.reverse.passthroughIP')
+    }
     fields.vm.$emit('update:modelValue', {
       ...fields.props('modelValue'),
       access_token: 'account-access',
@@ -783,8 +788,12 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     const payload = createAccountMock.mock.calls[0]?.[0]
     expect(payload).toMatchObject({ platform, type: 'reverse', credentials: { access_token: 'account-access', refresh_token: 'account-refresh', machine_token: 'account-machine', machine_type: 'account-type', desktop_version: '1.2.3' }, extra: { auto_checkin: false, reverse_auto_refresh: false } })
     expect(payload.credentials.model_mapping).toEqual({ 'public-glm': 'public-glm', 'client-alias': 'upstream-model' })
+    if (platform.startsWith('workbuddy_') || platform.startsWith('qoder_')) {
+      // 文本指纹净化是 harness 级的，两条反代线默认都开。
+      expect(payload.extra).toMatchObject({ reverse_sanitize_fingerprints: true })
+    }
     if (platform.startsWith('workbuddy_')) {
-      expect(payload.extra).toMatchObject({ reverse_sanitize_fingerprints: true, reverse_auto_tasks: false, reverse_passthrough_ip: false })
+      expect(payload.extra).toMatchObject({ reverse_auto_tasks: false, reverse_passthrough_ip: false })
     }
     wrapper.unmount()
   })

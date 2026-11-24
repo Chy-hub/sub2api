@@ -35,6 +35,9 @@ func (p *Provider) Quota(ctx context.Context, acc *reverse.Account) (*reverse.Qu
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	// 与 cosy 签名接口共用同一份 UA：同一个账号在额度接口上报另一个客户端，
+	// 与对话接口的画像就对不上了。
+	req.Header.Set("user-agent", outboundUserAgent(acc))
 	resp, err := reverse.HTTPClient(acc.ProxyURL).Do(req)
 	if err != nil {
 		return nil, err
@@ -51,7 +54,7 @@ func (p *Provider) Quota(ctx context.Context, acc *reverse.Account) (*reverse.Qu
 	if err != nil {
 		return nil, err
 	}
-	quota := &Quota{Plan: fetchPlanName(ctx, reverse.HTTPClient(acc.ProxyURL), ep.plan, token), UserQuota: extractQuotaBucket(raw, "userQuota"), AddonQuota: extractQuotaBucket(raw, "addOnQuota"), Shared: extractSharedPackage(raw), IsQuotaExceeded: raw["isQuotaExceeded"] == true, ExpiresAt: parseQuotaExpiresAt(raw["expiresAt"])}
+	quota := &Quota{Plan: fetchPlanName(ctx, reverse.HTTPClient(acc.ProxyURL), ep.plan, token, outboundUserAgent(acc)), UserQuota: extractQuotaBucket(raw, "userQuota"), AddonQuota: extractQuotaBucket(raw, "addOnQuota"), Shared: extractSharedPackage(raw), IsQuotaExceeded: raw["isQuotaExceeded"] == true, ExpiresAt: parseQuotaExpiresAt(raw["expiresAt"])}
 	result := BuildQuotaResponse(quota)
 	return &result, nil
 }

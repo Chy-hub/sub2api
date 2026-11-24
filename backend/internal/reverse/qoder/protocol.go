@@ -404,7 +404,7 @@ func buildHeaders(sess *sessionContext, pathSig, body, accept string, extra map[
 		"cosy-machineid":        sess.MachineID,
 		"cosy-machinetoken":     sess.MachineToken,
 		"login-version":         "v2",
-		"user-agent":            "Go-http-client/2.0",
+		"user-agent":            defaultUserAgent,
 		"cosy-scene":            "assistant",
 		"cosy-business-product": "ide",
 		"cosy-business-type":    "agent",
@@ -445,6 +445,12 @@ type chatRequest struct {
 	toolsEnabled bool
 	maxTokens    int
 	includeUsage bool
+	// conversationID 是本请求所属会话的标识，取自请求体（见 conversationKey）。
+	// 为空表示调用方没有提供，session_id 退回每请求随机。
+	conversationID string
+	// sessionID 是最终的 session_id：由 Forward 在拿到账号身份后计算（见
+	// accountSessionUUID）。为空时 buildEnvelope 退回每请求随机。
+	sessionID string
 }
 
 func decodeChatRequest(payload []byte) (*chatRequest, error) {
@@ -457,6 +463,9 @@ func decodeChatRequest(payload []byte) (*chatRequest, error) {
 		req.model = "auto"
 	}
 	req.messages, _ = raw["messages"].([]any)
+	// 会话键必须在净化之前提取：净化会改写 system/正文，之后再派生就会得到
+	// 一个随净化规则变化的会话标识。
+	req.conversationID = conversationKey(raw)
 	if tools, ok := raw["tools"].([]any); ok {
 		req.tools = tools
 		req.toolsEnabled = len(tools) > 0
@@ -480,7 +489,13 @@ func buildEnvelope(template map[string]any, req *chatRequest, model, userType st
 	body["request_id"] = id
 	body["chat_record_id"] = id
 	body["request_set_id"] = newUUID()
-	body["session_id"] = newUUID()
+	// session_id 跟随调用方提供的会话键，并掺入账号身份（见 accountSessionUUID）：
+	// 同一对话的连续请求落在同一个会话里，换账号后则是另一个会话。
+	// request_id / chat_record_id / request_set_id 仍是每请求独立，与模板一致。
+	body["session_id"] = req.sessionID
+	if body["session_id"] == "" {
+		body["session_id"] = newUUID()
+	}
 	body["stream"] = true
 	body["aliyun_user_type"] = userType
 

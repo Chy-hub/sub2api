@@ -83,18 +83,39 @@ WorkBuddy 新账号默认生成独立的 `machine_salt`，用于稳定派生未�
 重新授权、自动刷新和手动刷新合并凭据时保留机器参数。网页登录、模型调用、额度查询与任务
 均使用账号所选代理；创建账号前的登录使用表单中所选代理。
 
+## 会话与出站身份
+
+Qoder 的 `session_id` 取自请求体里的会话标识：`metadata.conversation_id`、顶层
+`conversation_id`、`prompt_cache_key`，最后退化为 system + 首条 user 的哈希。
+同一对话的连续请求因此落在同一个会话里，`request_id`、`chat_record_id` 与
+`request_set_id` 仍是每请求独立。会话 id 掺入账号身份：账号池在对话中途换账号后
+是另一个会话，同一个会话不会出现在两个账号下。拿不到会话标识（正文全空）时退回
+每请求随机。
+派生的代价要记住：客户端改写 system prompt 就会换会话，需要稳定分组时应显式传
+`metadata.conversation_id`。
+
+`user_agent` 可在账号凭据里覆盖，对话、模型目录、额度、用户信息、jobToken 交换与签到
+同时生效；只有登录流程（此时还没有账号凭据）沿用各自默认值。Qoder 表单在「高级」区
+提供该输入框，也可通过导入凭据 JSON 或管理 API 设置。含控制字符或超长的值视为不可用，
+退回默认值，避免一个填错的 UA 让账号连 bridge 都建不起来。不填时对话、目录、额度、用户信息与
+jobToken 交换沿用 `Go-http-client/2.0`、活动接口沿用 `Qoder`——两者并不一致，
+这是已知的画像差异，抓到官方客户端取值后再改默认值，而不是先猜一个。
+
 ## 文本指纹净化
 
-WorkBuddy 的 `extra.reverse_sanitize_fingerprints` 默认启用，每账号可关闭。
-Qoder 不增加文本指纹净化。Qoder 的消息只取自客户端，即使没有 system 或只有 developer 消息，
-也不补入官方 CLI 提示词或中性提示词；保留协议封装和客户端实际提供的工具。
-该行为适合由外部 Agent 管理身份、工具约定和运行环境，避免捕获模板中的 Qoder 身份与固定 Windows 路径污染请求。
-上游服务端是否额外添加提示词无法从本地转发代码确认。
+WorkBuddy 与 Qoder 都支持 `extra.reverse_sanitize_fingerprints`，默认启用、每账号可关闭。
+规则命中的是 harness 模板句、与渠道无关，两条反代线共用同一份规则表。
+Qoder 仍然不补入官方 CLI 提示词或中性提示词：消息只取自客户端，由外部 Agent 管理身份、
+工具约定和运行环境；净化只改文本，不改变这个取舍。上游服务端是否额外添加提示词无法从
+本地转发代码确认。
 
-规则文件为 `internal/reverse/workbuddy/assets/sanitize_rules.json`，与来源一致。
-净化位于请求规范化最后一步，覆盖所有角色的文本内容、文本 parts、`reasoning` /
+规则文件为 `internal/reverse/textsanitize/sanitize_rules.json`，与来源逐字节一致，
+WorkBuddy 与 Qoder 共用。WorkBuddy 的净化位于请求规范化最后一步；Qoder 的净化位于
+`buildEnvelope` 之前、作用于源消息——envelope 会把 prompt 再派生到
+`chat_context.text.text`、`chat_context.extra.originalContent.text` 和 `business.name`，
+先洗源消息，这三处自然干净。两者都覆盖所有角色的文本内容、文本 parts、`reasoning` /
 `reasoning_content` 和工具调用参数，包含 `content: null` 的工具调用消息。
-图片数据、工具函数名和调用 ID 保留。
+图片数据、工具函数名和调用 ID 保留；工具定义（`tools[].description`）与 WorkBuddy 一致不做净化。
 
 完整的工具参数 JSON 先解析，再净化字符串值，避免移除 header 文本时破坏引号、转义和
 JSON 结构，同时保留数值精度。未完成的 JSON 片段沿用来源的文本净化路径。

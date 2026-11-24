@@ -134,6 +134,12 @@
             <label class="input-label">{{ t('admin.accounts.reverse.userType') }}</label>
             <input v-model="form.user_type" type="text" class="input font-mono" placeholder="personal_standard" />
           </div>
+          <!-- Qoder 的其余客户端版本头不适用，只暴露 UA 覆盖：对话、目录、额度、
+               用户信息、jobToken 交换与签到都跟着它走。 -->
+          <div>
+            <label class="input-label">{{ t('admin.accounts.reverse.userAgent') }}</label>
+            <input v-model="form.user_agent" type="text" class="input font-mono" placeholder="Go-http-client/2.0" />
+          </div>
         </div>
         <div v-else class="grid gap-3 sm:grid-cols-2">
 		  <div>
@@ -176,11 +182,14 @@
       </div>
     </div>
 
+    <!-- 文本指纹净化是渠道无关的 harness 级处理，Qoder 与 WorkBuddy 都适用；
+	 下面的透传 IP 与提示词只对 WorkBuddy 有意义。 -->
+    <div v-if="provider === 'workbuddy' || provider === 'qoder'" class="flex items-center justify-between gap-4 rounded-lg border border-gray-200 px-4 py-3 dark:border-dark-600">
+	  <div><label class="input-label mb-0">{{ t('admin.accounts.reverse.sanitizeFingerprints') }}</label><p class="input-hint">{{ t('admin.accounts.reverse.sanitizeHint') }}</p></div>
+	  <Toggle v-model="form.sanitize_fingerprints" :aria-label="t('admin.accounts.reverse.sanitizeFingerprints')" />
+	</div>
+
     <div v-if="provider === 'workbuddy'" class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-600">
-	  <div class="flex items-center justify-between gap-4">
-	    <div><label class="input-label mb-0">{{ t('admin.accounts.reverse.sanitizeFingerprints') }}</label><p class="input-hint">{{ t('admin.accounts.reverse.sanitizeHint') }}</p></div>
-	    <Toggle v-model="form.sanitize_fingerprints" :aria-label="t('admin.accounts.reverse.sanitizeFingerprints')" />
-	  </div>
 	  <div class="flex items-center justify-between gap-4">
 	    <div><label class="input-label mb-0">{{ t('admin.accounts.reverse.passthroughIP') }}</label><p class="input-hint">{{ t('admin.accounts.reverse.passthroughIPHint') }}</p></div>
 	    <Toggle v-model="form.passthrough_ip" :aria-label="t('admin.accounts.reverse.passthroughIP')" />

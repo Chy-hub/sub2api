@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/reverse"
+	"github.com/Wei-Shaw/sub2api/internal/reverse/textsanitize"
 )
 
 const (
@@ -167,11 +168,21 @@ func (p *Provider) Forward(ctx context.Context, acc *reverse.Account, ccBody []b
 	if err != nil {
 		return nil, reverse.NewUpstreamError(http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	// 文本指纹净化默认开启，账号可在 extra 里关闭（见 sanitizeFingerprints）。
+	// 必须在 buildEnvelope 之前洗源消息：envelope 会把 prompt 再派生到
+	// chat_context.text.text、chat_context.extra.originalContent.text 和
+	// business.name 三处，先洗源消息，这三处自然就是干净的。
+	if sanitizeFingerprints(acc) {
+		textsanitize.SanitizeMessages(request.messages)
+	}
 	br, err := p.bridgeFor(ctx, acc)
 	if err != nil {
 		p.invalidateOnAuthError(acc.ID, err)
 		return nil, err
 	}
+	// 会话 id 必须掺入账号身份：账号池在对话中途换账号时，调用方给的
+	// conversation_id 不变，session 不能跟着不变（见 accountSessionUUID）。
+	request.sessionID = accountSessionUUID(acc.ID, br.session.Identity.Uid, request.conversationID)
 	// A public model slug must be resolved from this account's regional catalog.
 	// Raw upstream keys remain usable if discovery is temporarily unavailable.
 	if p.cachedModels(acc) == nil && !strings.HasSuffix(strings.ToLower(request.model), "model") {
@@ -250,6 +261,8 @@ func (p *Provider) openChatStream(ctx context.Context, acc *reverse.Account, br 
 	headers, err := buildHeaders(br.session, pathSig, body, "text/event-stream", map[string]string{
 		"x-model-key":    model,
 		"x-model-source": modelConfigSource(envelope),
+		// 账号可覆盖 UA（见 outboundUserAgent）；未配置时保持默认值不变。
+		"user-agent": outboundUserAgent(acc),
 	})
 	if err != nil {
 		return nil, err
@@ -303,7 +316,7 @@ func (p *Provider) ListModelCatalog(ctx context.Context, acc *reverse.Account) (
 		p.invalidateOnAuthError(acc.ID, err)
 		return nil, err
 	}
-	response, err := br.signedGet(ctx, reverse.HTTPClient(acc.ProxyURL), endpointsFor(br.region).modelList)
+	response, err := br.signedGet(ctx, reverse.HTTPClient(acc.ProxyURL), endpointsFor(br.region).modelList, outboundUserAgent(acc))
 	if err != nil {
 		p.invalidateOnAuthError(acc.ID, err)
 		return nil, err

@@ -83,7 +83,7 @@ func newBridge(ctx context.Context, acc *reverse.Account, template map[string]an
 
 	var identity authIdentity
 	if detectTokenType(token) == tokenDevice {
-		userInfo, err := fetchUserInfo(ctx, client, ep.userinfo, token)
+		userInfo, err := fetchUserInfo(ctx, client, ep.userinfo, token, outboundUserAgent(acc))
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +102,7 @@ func newBridge(ctx context.Context, acc *reverse.Account, template map[string]an
 		// The jobToken exchange happens before the uid is known; the plugin
 		// derives a stable identity from the credential seed for this call.
 		exchangeID, exchangeToken, exchangeType := machineIdentity(acc, "cred:"+token)
-		jobToken, err := exchangeJobToken(ctx, client, ep.jobToken, token, exchangeID, exchangeToken, exchangeType)
+		jobToken, err := exchangeJobToken(ctx, client, ep.jobToken, token, exchangeID, exchangeToken, exchangeType, outboundUserAgent(acc))
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +156,7 @@ func resolveUserID(userInfo map[string]any) string {
 }
 
 // fetchUserInfo validates a device token and reads the account identity.
-func fetchUserInfo(ctx context.Context, client *http.Client, endpoint, token string) (map[string]any, error) {
+func fetchUserInfo(ctx context.Context, client *http.Client, endpoint, token, userAgent string) (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -164,6 +164,8 @@ func fetchUserInfo(ctx context.Context, client *http.Client, endpoint, token str
 		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	// 账号侧的每一次出站调用都报同一个客户端，否则画像自相矛盾。
+	setUserAgent(request, userAgent)
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
@@ -183,7 +185,7 @@ func fetchUserInfo(ctx context.Context, client *http.Client, endpoint, token str
 	return parsed, nil
 }
 
-func fetchPlanName(ctx context.Context, client *http.Client, endpoint, token string) string {
+func fetchPlanName(ctx context.Context, client *http.Client, endpoint, token, userAgent string) string {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -191,6 +193,7 @@ func fetchPlanName(ctx context.Context, client *http.Client, endpoint, token str
 		return ""
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	setUserAgent(request, userAgent)
 	response, err := client.Do(request)
 	if err != nil {
 		return ""
@@ -209,7 +212,7 @@ func fetchPlanName(ctx context.Context, client *http.Client, endpoint, token str
 
 // exchangeJobToken converts a PAT (pt-) or refresh token (drt-) into a cosy
 // session token. The response is plain JSON (or custom base64 on some gateways).
-func exchangeJobToken(ctx context.Context, client *http.Client, endpoint, token, machineID, machineToken, machineType string) (map[string]any, error) {
+func exchangeJobToken(ctx context.Context, client *http.Client, endpoint, token, machineID, machineToken, machineType, userAgent string) (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if strings.TrimSpace(endpoint) == "" {
@@ -254,7 +257,7 @@ func exchangeJobToken(ctx context.Context, client *http.Client, endpoint, token,
 	request.Header.Set("signature", signLegacy(date))
 	request.Header.Set("content-type", "application/json")
 	request.Header.Set("cosy-machineid", machineID)
-	request.Header.Set("user-agent", "Go-http-client/2.0")
+	setUserAgent(request, firstNonEmpty(userAgent, defaultUserAgent))
 
 	response, err := client.Do(request)
 	if err != nil {
@@ -275,13 +278,20 @@ func exchangeJobToken(ctx context.Context, client *http.Client, endpoint, token,
 	return parsed, nil
 }
 
-// signedGet performs a cosy-signed GET (model catalog, quota).
-func (b *bridge) signedGet(ctx context.Context, client *http.Client, endpoint string) (map[string]any, error) {
+// signedGet performs a cosy-signed GET (model catalog).
+//
+// userAgent 与对话请求共用同一份解析结果（见 outboundUserAgent）：同一个账号在
+// 目录接口上报 Go-http-client、在对话接口上报另一个 UA，本身就是画像不一致。
+func (b *bridge) signedGet(ctx context.Context, client *http.Client, endpoint, userAgent string) (map[string]any, error) {
 	pathSig, err := pathSignature(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	headers, err := buildHeaders(b.session, pathSig, "", "application/json", nil)
+	extra := map[string]string{}
+	if strings.TrimSpace(userAgent) != "" {
+		extra["user-agent"] = userAgent
+	}
+	headers, err := buildHeaders(b.session, pathSig, "", "application/json", extra)
 	if err != nil {
 		return nil, err
 	}
@@ -320,14 +330,14 @@ func refreshCredentials(ctx context.Context, acc *reverse.Account) (map[string]a
 	client := reverse.HTTPClient(acc.ProxyURL)
 
 	if detectTokenType(token) == tokenDevice {
-		if _, err := fetchUserInfo(ctx, client, ep.userinfo, token); err != nil {
+		if _, err := fetchUserInfo(ctx, client, ep.userinfo, token, outboundUserAgent(acc)); err != nil {
 			return nil, err
 		}
 		return map[string]any{"access_token": token, "refresh_token": refreshToken}, nil
 	}
 
 	machineID, machineToken, machineType := machineIdentity(acc, "cred:"+token)
-	jobToken, err := exchangeJobToken(ctx, client, ep.jobToken, token, machineID, machineToken, machineType)
+	jobToken, err := exchangeJobToken(ctx, client, ep.jobToken, token, machineID, machineToken, machineType, outboundUserAgent(acc))
 	if err != nil {
 		return nil, err
 	}

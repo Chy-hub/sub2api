@@ -6199,9 +6199,13 @@ const handleSubmit = async () => {
       auto_checkin: reverseForm.auto_checkin,
       reverse_auto_refresh: reverseForm.auto_refresh
     }
-    if (reverseProviderOf(form.platform) === 'workbuddy') {
-      extra.reverse_prompt_mode = reverseForm.prompt_mode
+    const reverseFamily = reverseProviderOf(form.platform)
+    // 文本指纹净化对 Qoder 与 WorkBuddy 都生效；其余字段仍是 WorkBuddy 专属。
+    if (reverseFamily === 'workbuddy' || reverseFamily === 'qoder') {
       extra.reverse_sanitize_fingerprints = reverseForm.sanitize_fingerprints
+    }
+    if (reverseFamily === 'workbuddy') {
+      extra.reverse_prompt_mode = reverseForm.prompt_mode
       extra.reverse_passthrough_ip = reverseForm.passthrough_ip
       extra.reverse_auto_tasks = reverseForm.auto_tasks
       extra.reverse_task_kinds = [...reverseForm.task_kinds]
