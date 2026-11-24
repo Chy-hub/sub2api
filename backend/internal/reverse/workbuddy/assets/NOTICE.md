@@ -7,8 +7,10 @@ regression tests are adapted from CLIProxyAPI-freetier2api-plugin
 source revision `e90609d`). The upstream repository was formerly published under
 the `jiandanc` account, which is gone; the current one carries the full history.
 
-`prompt_default.md`, `catalog_seed.json` and `sanitize_rules.json` are copied
-from its embedded assets. Its copyright and MIT license are reproduced in
+`prompt_default.md` and `catalog_seed.json` are copied from its embedded assets.
+`sanitize_rules.json` moved to `../../textsanitize/sanitize_rules.json`, still
+byte-identical to the reference, because the rules are harness-level and shared
+with the Qoder adapter. Its copyright and MIT license are reproduced in
 `../../LICENSE.MIT`.
 
 The original project credits Sliverkiss/workbuddy2api and

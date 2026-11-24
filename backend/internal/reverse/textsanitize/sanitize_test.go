@@ -1,4 +1,4 @@
-package workbuddy
+package textsanitize
 
 import (
 	"strings"
@@ -7,7 +7,7 @@ import (
 
 // Regression cases ported from CLIProxyAPI-freetier2api-plugin (MIT).
 func TestSanitizeRemovesFingerprints(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	if len(rules.Rewrites) == 0 && len(regexes) == 0 {
 		t.Skip("sanitize rules are not embedded")
 	}
@@ -16,20 +16,20 @@ func TestSanitizeRemovesFingerprints(t *testing.T) {
 	// 改写表里的任一条命中都应产生变化。
 	if len(rules.Rewrites) > 0 {
 		pair := rules.Rewrites[0]
-		rewritten := sanitizeText(pair[0], rules, regexes)
+		rewritten := Text(pair[0], rules, regexes)
 		if rewritten == pair[0] {
 			t.Fatalf("rewrite rule did not apply: %q", pair[0])
 		}
 	}
 	// 不命中特征串的文本原样返回（快路径）。
 	plain := "just a normal user message about go programming"
-	if got := sanitizeText(plain, rules, regexes); got != plain {
+	if got := Text(plain, rules, regexes); got != plain {
 		t.Fatalf("plain text must pass through unchanged, got %q", got)
 	}
 }
 
 func TestSanitizeMessagesCoversToolArguments(t *testing.T) {
-	rules, _ := loadSanitizeRules()
+	rules, regexes := Load()
 	if len(rules.Rewrites) == 0 {
 		t.Skip("sanitize rules are not embedded")
 	}
@@ -47,7 +47,7 @@ func TestSanitizeMessagesCoversToolArguments(t *testing.T) {
 			},
 		}},
 	}}
-	sanitizeMessages(messages)
+	Messages(messages, rules, regexes)
 
 	call := messages[0].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)
 	arguments := call["function"].(map[string]any)["arguments"].(string)
@@ -57,10 +57,10 @@ func TestSanitizeMessagesCoversToolArguments(t *testing.T) {
 }
 
 func TestSanitizeRewritesDeepSeekHarnessFingerprint(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	// The DSH kernel sentence triggers upstream 11128 when passed verbatim.
 	const text = "You are an AI agent powered by DeepSeek Harness."
-	got := sanitizeText(text, rules, regexes)
+	got := Text(text, rules, regexes)
 	if got == text {
 		t.Fatal("DeepSeek Harness fingerprint must be rewritten")
 	}
@@ -70,11 +70,11 @@ func TestSanitizeRewritesDeepSeekHarnessFingerprint(t *testing.T) {
 }
 
 func TestSanitizeStripsZeroWidthCharactersInsideFingerprint(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	// Some DSH builds insert U+200B between the words, which defeats a plain
 	// string replace on the literal.
 	const text = "You are an AI agent powered by DeepSeek​ Harness."
-	got := sanitizeText(text, rules, regexes)
+	got := Text(text, rules, regexes)
 	if strings.Contains(got, "​") {
 		t.Fatalf("zero-width characters must be stripped once a fingerprint matches: %q", got)
 	}
@@ -84,11 +84,11 @@ func TestSanitizeStripsZeroWidthCharactersInsideFingerprint(t *testing.T) {
 }
 
 func TestSanitizeKeepsLineStructure(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	// Stripping regexes end in \s*, so an over-broad pattern would swallow the
 	// newline and collapse the system prompt into a single line.
 	const text = "You are Claude Code\nx-anthropic-billing-header: abc;\nsecond line\nthird line"
-	got := sanitizeText(text, rules, regexes)
+	got := Text(text, rules, regexes)
 	if strings.Count(got, "\n") != strings.Count(text, "\n") {
 		t.Fatalf("sanitize must not change the line count: %q", got)
 	}
@@ -103,9 +103,9 @@ func TestSanitizeKeepsLineStructure(t *testing.T) {
 // The line keeps its readability: only "workspace root" collapses to
 // "workspace", so the instruction still parses as an instruction.
 func TestSanitizeRewritesWorkspaceRootFingerprint(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	const text = "Tokens prefixed with @ are paths.\nResolve them from the workspace root before writing."
-	got := sanitizeText(text, rules, regexes)
+	got := Text(text, rules, regexes)
 	if strings.Contains(got, "workspace root") {
 		t.Fatalf("workspace root must be rewritten: %q", got)
 	}
@@ -121,21 +121,21 @@ func TestSanitizeRewritesWorkspaceRootFingerprint(t *testing.T) {
 // more: the rewrite targets are themselves fingerprints, so an accidental
 // self-match would keep mutating the text.
 func TestSanitizeIsIdempotent(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	const text = "You are an AI agent powered by DeepSeek Harness.\nTokens prefixed with @ are paths resolved from the workspace root."
-	once := sanitizeText(text, rules, regexes)
-	twice := sanitizeText(once, rules, regexes)
+	once := Text(text, rules, regexes)
+	twice := Text(once, rules, regexes)
 	if once != twice {
 		t.Fatalf("sanitize is not idempotent:\n once: %q\ntwice: %q", once, twice)
 	}
 }
 
 func TestSanitizeLeavesPlainTextUntouched(t *testing.T) {
-	rules, regexes := loadSanitizeRules()
+	rules, regexes := Load()
 	// No fingerprint hit means no character-level rewrite at all, even when the
 	// text carries zero-width characters.
 	const text = "ordinary user message with a zero width​ space"
-	if got := sanitizeText(text, rules, regexes); got != text {
+	if got := Text(text, rules, regexes); got != text {
 		t.Fatalf("plain text must pass through unchanged: %q", got)
 	}
 }
